@@ -90,7 +90,7 @@ class FilterCache;
  * branch's real direction (from the next TB's address) and feeds it via
  * BranchFunc, exactly as for the OOO core. The in-order core runs the SAME
  * BranchPredictorPAg<11,18,14> predictor as OOOCore; on a mispredict it charges
- * a fixed front-end flush/refill bubble. 1.11.97 (R2313 (b)): two bubbles,
+ * a fixed front-end flush/refill bubble. 1.11.97: two bubbles,
  * both from the core record (params/core/default.yaml, derivations there):
  * a conditional direction mispredict charges the EXECUTE-depth
  * mispredPenalty (record 7 = ISSUE_STAGE, the fetch-to-issue refill); a
@@ -99,7 +99,7 @@ class FilterCache;
  * PIMID_INORDER_RESTEER_PENALTY; disable the whole feed with
  * PIMID_INORDER_NOBRANCH=1 (mirrors PIMID_OOO_NOBRANCH).
  *
- * PIMID 1.12.1 (ticket #114): TWO predictor modes, zsim key branchPredictor
+ * PIMID 1.12.1: TWO predictor modes, zsim key branchPredictor
  * (required, emitted by PIMID from pim.pe.branch_predictor or the core
  * record's in_order.branch_predictor):
  *   pag   (staticNotTaken = false) the predictor path above, unchanged.
@@ -123,7 +123,7 @@ class FilterCache;
  */
 class InOrderCore : public Core {
     private:
-        /* 1.11.43 (audit E23): per-core FPU capability. Was the GLOBAL
+        /* 1.11.43: per-core FPU capability. Was the GLOBAL
          * zinfo->hierarchy.peHasFpu/fpEmulCycles, which applied the device
          * PE's soft-float penalty to every core in the simulation -- a co-sim
          * host with a real FPU included. Set per group by init.cpp. */
@@ -199,9 +199,9 @@ class InOrderCore : public Core {
         Address branchPc;        // 0 if the BBL being simulated did not end in a jcc
         bool branchTaken;
         Address branchTarget;    // 1.11.98: the taken target (for the direct-branch BTB lookup)
-        /* 1.11.97 (R2313 (b)): TWO penalties (core record params/core/
+        /* 1.11.97: TWO penalties (core record params/core/
          * default.yaml, in_order.*; zsim keys mispredPenalty / resteerPenalty,
-         * required). 1.11.98 (user ruling (a) 2026-10-03, refining R2313):
+         * required). 1.11.98 (refining R2313):
          * mispredPenalty is charged for everything resolved at EXECUTE -- a
          * conditional direction mispredict AND an indirect jmp/call or return
          * target miss (their target is known only when they execute);
@@ -212,7 +212,7 @@ class InOrderCore : public Core {
         uint32_t resteerPenalty; // decode-depth resteer bubble (cycles)
         uint64_t branches;           // resolved conditional branches fed to the predictor
         uint64_t takenBranches;      // 1.12.1: of those, taken (both modes; diagnostic, ROI-windowed stat)
-        bool staticNotTaken;         // 1.12.1 (#114): branchPredictor "none" -- no prediction structure
+        bool staticNotTaken;         // 1.12.1: branchPredictor "none" -- no prediction structure
         uint64_t mispredBranches;    // mispredicted branches
         uint64_t mispredStallCycles; // total cycles charged for mispredict bubbles
 
@@ -254,7 +254,7 @@ class InOrderCore : public Core {
         uint64_t roiBaseRas      = 0;
         uint64_t roiBaseBtbMiss  = 0;   // 1.11.98: direct-branch BTB misses
         uint64_t roiBaseDirect   = 0;   // PIMID (1.12.32): taken direct branches looked up in the BTB
-        uint64_t roiBaseBpHist   = 0;   // 1.11.97 (R2476): predictor table writes
+        uint64_t roiBaseBpHist   = 0;   // 1.11.97: predictor table writes
         uint64_t roiBaseBpPht    = 0;
         uint64_t roiBaseCycle  = 0;
         uint64_t roiBaseCCycles = 0;   // 1.11.17: contention-cycle ROI base (parity with OOO 1.11.9)
@@ -266,7 +266,7 @@ class InOrderCore : public Core {
         // _mispredPenalty / _resteerPenalty (1.11.97): the core record's
         // in_order.mispredict_penalty_cycles / resteer_penalty_cycles (zsim
         // keys mispredPenalty / resteerPenalty, required; no default here).
-        // _staticNotTaken (1.12.1, #114): zsim key branchPredictor = "none"
+        // _staticNotTaken (1.12.1): zsim key branchPredictor = "none"
         // (required): no prediction structure, static not-taken.
         InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t domain, g_string& _name,
                     uint32_t _issueWidth, uint32_t _mispredPenalty, uint32_t _resteerPenalty,
@@ -284,7 +284,7 @@ class InOrderCore : public Core {
         // same wall-free clock.
         uint64_t pimidPhantomWait = 0;
         void pimidRewindCycles(uint64_t delta) override { pimidPhantomWait += delta; }
-        uint64_t pimidRawCycle() const override { return curCycle; }   // 1.12.18 (R2)
+        uint64_t pimidRawCycle() const override { return curCycle; }   // 1.12.18
         uint64_t getCycles() const {
             uint64_t c = cRec.getUnhaltedCycles(curCycle);
             return (c > pimidPhantomWait) ? (c - pimidPhantomWait) : 0;
@@ -293,13 +293,13 @@ class InOrderCore : public Core {
         void contextSwitch(int32_t gid);
         virtual void join();
         virtual void leave();
-        /* 1.11.97 (review H05): an MPI message charge stalls the issue cursor.
+        /* 1.11.97: an MPI message charge stalls the issue cursor.
          * Core::addDelay() was the empty default here, so every MPI_CONTEND /
          * MPI_ADVANCE charge on an in-order element was dropped; the ALU and
          * (since retired) simple cores had always advanced. memRespCycle is untouched: a
          * response already in flight still arrives when it arrives. */
         void addDelay(uint32_t cycles) override { curCycle += cycles; }
-        /* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h:
+        /* 1.12.18 (model the lock word), see core.h:
          * the issue cursor (global phase axis), advanced like addDelay. */
         uint32_t lockClockDomain() const override { return 1; }
         uint64_t lockClock() const override { return curCycle; }
@@ -310,7 +310,7 @@ class InOrderCore : public Core {
             cRec.pimidAddWait(skip);   // 1.12.21: waiting, not unhalted (as the ALU PE)
             return skip;
         }
-        /* 1.12.21 (user ruling 2026-10-24): the waker's release, as syncToLock
+        /* 1.12.21: the waker's release, as syncToLock
          * (the issue cursor; the pipeline was drained at join). */
         void cutHoldWait(uint64_t t) override { if (t > curCycle) { cRec.pimidAddWait(t - curCycle); curCycle = t; } }   // (1.12.188), see core.h
         void heldPhase() override;   // (1.12.216), in_order_core.cpp
@@ -333,8 +333,8 @@ class InOrderCore : public Core {
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseTaken = takenBranches;                        // 1.12.1
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns; roiBaseBtbMiss = btbMisses;   // 1.11.93 (F6)
-            roiBaseDirect = directBranches;                      // PIMID (1.12.32, ruling 2026-10-25 (1))
-            roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
+            roiBaseDirect = directBranches;                      // PIMID (1.12.32)
+            roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10
         }

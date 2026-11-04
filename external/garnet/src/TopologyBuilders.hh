@@ -116,7 +116,7 @@ public:
     static void validateFile(const std::string& filename);
 
 private:
-    // 1.11.94 (H35): the mesh body, shared by MESH_2D and TORUS_2D. With
+    // 1.11.94: the mesh body, shared by MESH_2D and TORUS_2D. With
     // torus_routers the routers are dateline-aware RingRouters; without it
     // they are the plain makeRouter routers MESH_2D has always used.
     static TopologyResult buildMeshImpl(

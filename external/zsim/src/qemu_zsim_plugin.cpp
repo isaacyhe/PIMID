@@ -70,8 +70,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #include "stats.h"
 #include "cache.h"   // 1.11.40 (N7): zsimAllCaches; 1.11.57 (D001-D003): flushDirtyLines
 #include "zsim.h"
-#include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
-#include "pe_memory_interface.h"  // 1.12.18 (ruling 2026-10-24): singleProcCut / cutRoiRel
+#include "dram_epoch_replay.h"   // 1.11.98
+#include "pe_memory_interface.h"  // 1.12.18: singleProcCut / cutRoiRel
 #include "mem_ctrls.h"           // 1.12.18 (bug 7): SimpleMemory::flushWriteback
 #include "ooo_core.h"     // CtrlFlowKind codes for the branch/indirect feed
 #include "x86_decoder.h"  // minimal x86-64 decoder -> DynUops for the real OOO path
@@ -82,8 +82,8 @@ GlobSimInfo* zinfo;
 uint32_t procIdx;
 uint32_t lineBits;
 uint64_t procMask;
-bool dqDataReadable = false;   // measured DQ data: set at init (user ruling 2026-10-25: measured termination duty)
-/* (1.12.137, user ruling 2026-10-27): guest line reads for the measured data statistics through QEMU's guest page table
+bool dqDataReadable = false;   // measured DQ data: set at init (measured termination duty)
+/* (1.12.137): guest line reads for the measured data statistics through QEMU's guest page table
  * (dq_data_stats.h), on vCPU threads (QEMU's read needs the calling thread's vCPU); elsewhere process_vm_readv. */
 static thread_local bool t_pimidVcpu = false;
 static int pimidPluginGuestRead(uint64_t addr, uint8_t* dst, uint32_t n) {
@@ -330,7 +330,7 @@ static uint64_t mpi_roi_base_cyc[MAX_THREADS] = {0};
  * the 1.8.7 tid/cid baseline correction to co-sim only. */
 static bool g_cosim_mode = false;
 
-/* 1.11.97 (gate 1207B, MPI barrier rendezvous): the GENERATION of the ROI
+/* 1.11.97 (MPI barrier rendezvous): the GENERATION of the ROI
  * clock baseline. Every snapshotRoiBaseCyc() moves roiRelCycles() to a new
  * origin; a barrier release published on the previous origin must not be
  * charged on the new one (see the MPI_ADVANCE handler). */
@@ -384,7 +384,7 @@ static inline void snapshotRoiBaseCyc() {
     // ROI-relative -- the wall-dependent pre-ROI phase count cannot then shift the
     // ROI epoch boundaries. Set BEFORE mpiNocBaselined so the flag gates cleanly.
     zinfo->hierarchy.mpiNocRoiBasePhase = zinfo->numPhases;
-    zinfo->hierarchy.mpiRoiBaseCyc = mpi_roi_base_cyc;   // 1.12.18 (R2, B3): host cores' ROI origin
+    zinfo->hierarchy.mpiRoiBaseCyc = mpi_roi_base_cyc;   // 1.12.18: host cores' ROI origin
     zinfo->hierarchy.mpiRoiBaseCycN = MAX_THREADS;
     __sync_synchronize();
     zinfo->hierarchy.mpiNocBaselined = 1;
@@ -400,8 +400,8 @@ static inline void snapshotRoiBaseCyc() {
  * dropped, once per call, so a log shows the window it reports. */
 static void roiRebaseTrafficCounters(const char* where) {
     rtRoiSnapshot();   // 1.12.18: the PIM runtime statistics window opens with the traffic counters'
-    if (zinfo && zinfo->dramReplay) zinfo->dramReplay->markRoi();   // 1.11.98 (gate 1208A): the replay's statistics window opens with the traffic counters'
-    if (zinfo && zinfo->hostDramReplay) zinfo->hostDramReplay->markRoi();   // 1.12.18 (ruling 17 / R0605): the host memory's replay, same window
+    if (zinfo && zinfo->dramReplay) zinfo->dramReplay->markRoi();   // 1.11.98: the replay's statistics window opens with the traffic counters'
+    if (zinfo && zinfo->hostDramReplay) zinfo->hostDramReplay->markRoi();   // 1.12.18: the host memory's replay, same window
     if (!zinfo) return;
     uint64_t pre_mem = 0;
     uint32_t groups = 0;
@@ -551,12 +551,12 @@ static bool thread_initialized[MAX_THREADS];            // false until ensureThr
  * getenv; false in per-rank trace-gen processes (PIMID_MPI_RANK set), which
  * keep process-mode semantics. */
 static bool g_mpi_thread_mode = false;
-/* 1.12.18 (ruling 2026-10-24): single-process run priced with the thread-MPI
+/* 1.12.18: single-process run priced with the thread-MPI
  * cut mechanism (PEMemoryInterface::singleProcCut); set at install. */
 static bool g_spCut = false;
 static bool threadMpiMode() { return g_mpi_thread_mode; }
 /* 1.11.19 (D4): emulated MPI rank count, resolved once at install.
- * 1.11.62 (ruling 5b): the coherence flush no longer DIVIDES by this. Every
+ * 1.11.62: the coherence flush no longer DIVIDES by this. Every
  * rank's arrival walks the caches itself and charges the delta it finds, so
  * D4's "the TOTAL is the working set once, independent of rank count" now
  * holds because every walk cleans, not because a footprint is cut into slices.
@@ -584,7 +584,7 @@ static inline void markRankEntered(uint32_t tid) {
     if (tid < MAX_THREADS && !g_rankEntered[tid]) { g_rankEntered[tid] = true; g_ranksEnteredN.fetch_add(1); }
 }
 
-/* 1.11.97 (x01-qemu-zsim-plugin-5, ruled): the DEVICE-scope thread-MPI ROI
+/* 1.11.97: the DEVICE-scope thread-MPI ROI
  * ends at the LAST rank's roi_end, not the opener's.
  *
  * What it did before: every MPI kernel calls zsim_roi_begin/zsim_roi_end on
@@ -654,7 +654,7 @@ static inline void recordTailMarker(uint32_t tid) {
         g_tailMarker[tid]    = zinfo->cores[cid]->getCycles();
         g_tailDeviceCid[tid] = cid;
         g_tailMarked[tid]    = true;
-        /* (1.12.181): the tail is outside the priced window (ruling 1 (a)). Its cycles leave through the protocolTail
+        /* (1.12.181): the tail is outside the priced window. Its cycles leave through the protocolTail
          * receipt; its activity now leaves too: the PE's counters are taken here and reported as they stood
          * (recordProtocolTailStats), and its memory accesses from here on are in none of the interface's ROI
          * counters (pe_memory_interface.h, g_peTailRun). */
@@ -706,7 +706,7 @@ static inline bool hostRankLastRankRule() {
 }
 static inline bool lastRankRule() { return devScopeLastRankRule() || hostRankLastRankRule(); }
 
-/* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): the
+/* 1.12.18 (run time = elapsed wall clock): the
  * ROI's elapsed time on the global clock (zinfo->roiWall, see zsim.h). A
  * stamp is the phase clock plus the stamping core's offset in its phase --
  * PEMemoryInterface::phaseStamp, the axis the DRAM replay records on -- so
@@ -721,13 +721,13 @@ static inline uint64_t roiWallStamp(uint32_t tid) {
     }
     return (uint64_t)zinfo->numPhases * pl + off;
 }
-/* 1.12.18 (user ruling 2026-10-23, "sync to waker"): a release stamp per
+/* 1.12.18 (sync to waker): a release stamp per
  * futex word. FUTEX_WAKE-class ops stamp the word(s) with the waker's clock
  * at the syscall; a FUTEX_WAIT-class op that returns 0 (woken) syncs the
  * waiter's clock to the stamp of the word it waited on, at its next Join.
  * Only device PEs stamp and sync (Core::wakeStampable): their clocks are
  * their own timelines; the host cores re-base to the global phase clock on
- * join already. 1.12.21 (user ruling 2026-10-24): the in-order / OOO cores
+ * join already. 1.12.21: the in-order / OOO cores
  * stamp and sync as well, in their own table (clkStampPut below): a waiter
  * that rejoins inside the phase of its wake still resumes no earlier than
  * the release. A requeued waiter (FUTEX_CMP_REQUEUE / WAKE_OP) syncs to
@@ -764,7 +764,7 @@ static void wakeStampPut(uint64_t addr, uint64_t cyc, uint64_t org = 0, uint32_t
     s.cid = cid; s.gen = g_spOrgGen.load(std::memory_order_relaxed);   // (1.12.206)
     g_wakeStampN.fetch_add(1, std::memory_order_relaxed);
 }
-/* 1.12.21 (user ruling 2026-10-24): the in-order / OOO cores (lock clock
+/* 1.12.21: the in-order / OOO cores (lock clock
  * domain 1: host cores, and device PEs of those models) stamp and sync too,
  * in their OWN table (their raw clock is on the global phase axis, not
  * comparable with an ALU PE's own timeline; a separate table also leaves the
@@ -809,7 +809,7 @@ static bool wakeStampGet(uint64_t addr, uint64_t& cyc, uint64_t* org = nullptr, 
  * FUTEX_CLOCK_REALTIME 256 masked off) */
 static void wakeSyncOnFutexEntry(uint32_t tid, uint32_t cid, uint64_t uaddr, uint64_t op, uint64_t uaddr2) {
     if (g_mpi_thread_mode) return;   // the transport models thread-MPI waits (see above)
-    /* 1.12.18 (ruling 2026-10-24): a single-process thread entering a futex
+    /* 1.12.18: a single-process thread entering a futex
      * WAIT is SLEEPING: its core is QUIESCENT (exempt from the consistent cut)
      * until the thread joins again (Join). */
     if (g_spCut && cid < MAX_THREADS) {
@@ -889,7 +889,7 @@ static void wakeSyncApply(uint32_t tid, uint32_t cid) {
         org = PEMemoryInterface::spOriginOf(g_wakeSyncCid[tid]);   // (1.12.206): woken before this ROI's baseline: the waker's present origin
     if (sk && g_spCut && zinfo->hierarchy.mpiNocBaselined) PEMemoryInterface::spSetOrigin(cid, org);   // 1.12.18: the clock is the waker's, so is its origin
 }
-/* 1.12.18 (user ruling 2026-10-23, "model the lock word"): lock handoffs.
+/* 1.12.18 (model the lock word): lock handoffs.
  * Sync to waker (above) carries a release only through a futex wake; on a
  * lightly loaded host a contended lock is taken by spinning (CAS/XCHG in user
  * space) without any futex sleep, no handoff was seen, and critical sections
@@ -1074,7 +1074,7 @@ static void roiWallBegin(uint32_t tid) {   // non-thread-MPI roi_begin (re-opens
     zinfo->roiWall.beginStamp = roiWallStamp(tid);
     zinfo->roiWall.source = 1;
 }
-/* (next, ruling 2026-10-30 (3)/(4)) the DRAM reconciliation at the end of the run and at message passing:
+/* 1.12.189: the DRAM reconciliation at the end of the run and at message passing:
  *  - g_rtEnd[c]: core c's end on the run time's axis when the run time is taken (g_rtEndKnown: the core is one of the
  *    cores the run time is the latest end of); the run time is raised to max(end + the balance no barrier applied)
  *    before the statistics are written (recExtendRunTime);
@@ -1097,26 +1097,26 @@ static void roiWallEnd(uint32_t tid, const char* how) {
     zinfo->roiWall.endStamp = (e > zinfo->roiWall.beginStamp) ? e : zinfo->roiWall.beginStamp;
     if (!g_spCut) zinfo->roiWall.endStamp = zinfo->roiWall.beginStamp + roiWallLinkFloor(zinfo->roiWall.endStamp - zinfo->roiWall.beginStamp, how);   // (1.12.171)
     zinfo->roiWall.ended = true;
-    info("[roi] run time: ROI elapsed %lu cycles on the global phase clock (stamps %lu -> %lu, %s) [1.12.18, ruling 2026-10-23]",
+    info("[roi] run time: ROI elapsed %lu cycles on the global phase clock (stamps %lu -> %lu, %s) [1.12.18]",
          (unsigned long)zinfo->roiWall.cycles(), (unsigned long)zinfo->roiWall.beginStamp,
          (unsigned long)zinfo->roiWall.endStamp, how);
-    {   /* 1.12.18 (user ruling 2026-10-23, "sync to waker"): the wake syncs of the ROI */
+    {   /* 1.12.18 (sync to waker): the wake syncs of the ROI */
         uint64_t tl = 0; bool tlOk = false;
         if (tid < MAX_THREADS && thread_initialized[tid] && cids[tid] == g_roiTlCid && g_roiTlCid < zinfo->numCores) {
             const uint64_t e = zinfo->cores[g_roiTlCid]->getCycles();
             tl = (e > g_roiTlBegin) ? e - g_roiTlBegin : 0; tlOk = true;
         }
-        info("[wake-sync] ROI: %lu futex wakes synced a PE clock to its waker (%lu cycles skipped), %lu release stamps, %lu woken waits without a stamp; roi_begin core's own timeline elapsed %s%lu cycles [1.12.18, ruling 2026-10-23]",
+        info("[wake-sync] ROI: %lu futex wakes synced a PE clock to its waker (%lu cycles skipped), %lu release stamps, %lu woken waits without a stamp; roi_begin core's own timeline elapsed %s%lu cycles [1.12.18]",
              (unsigned long)(g_wakeSyncN.load() - g_roiWakeSyncN), (unsigned long)(g_wakeSyncSkip.load() - g_roiWakeSyncSkip),
              (unsigned long)(g_wakeStampN.load() - g_roiWakeStampN), (unsigned long)(g_wakeMissN.load() - g_roiWakeMissN),
              tlOk ? "" : "(n/a: roi_end on another core) ", (unsigned long)tl);
-        /* 1.12.18 (user ruling 2026-10-23, "model the lock word") */
-        info("[lock-sync] ROI: %lu lock handoffs synced a core clock to the releaser (%lu cycles skipped), %lu releases, %lu acquires, %lu acquire/release races (%s) [1.12.18, ruling 2026-10-23]",
+        /* 1.12.18 (model the lock word) */
+        info("[lock-sync] ROI: %lu lock handoffs synced a core clock to the releaser (%lu cycles skipped), %lu releases, %lu acquires, %lu acquire/release races (%s) [1.12.18]",
              (unsigned long)(g_lockSyncN.load() - g_roiLockSyncN), (unsigned long)(g_lockSyncSkip.load() - g_roiLockSyncSkip),
              (unsigned long)(g_lockRelN.load() - g_roiLockRelN), (unsigned long)(g_lockAcqN.load() - g_roiLockAcqN),
              (unsigned long)(g_lockRaceN.load() - g_roiLockRaceN), g_lockSync ? "simulation.lock_sync on" : "off");
     }
-    /* 1.12.18 (user ruling 2026-10-24 (a)): a single-process cut run's run time
+    /* 1.12.18: a single-process cut run's run time
      * is the latest device PE's ROI end on its own clock -- the axis its NoC
      * and DRAM records carry (PEMemoryInterface::cutRoiRel; co-sim: the device
      * axis from the host doorbell) -- the same rule as thread-MPI source 2.
@@ -1154,7 +1154,7 @@ static void roiWallEnd(uint32_t tid, const char* how) {
         zinfo->roiWall.mpiEnd = mx;
         zinfo->roiWall.source = 3;
         recMarkRunEnd();   // (1.12.189)
-        info("[roi] run time: ROI elapsed %lu cycles = the latest %s ROI end on its own clock (%lu core(s), core %d; single-process cut, %s) [1.12.18, ruling 2026-10-24 (a)]",
+        info("[roi] run time: ROI elapsed %lu cycles = the latest %s ROI end on its own clock (%lu core(s), core %d; single-process cut, %s) [1.12.18]",
              (unsigned long)mx, (f == 0) ? "device PE's" : "host core's", (unsigned long)n, (int)endCore, how);
     }
 }
@@ -1182,7 +1182,7 @@ static void roiWallCloseMpi(const char* how) {
         }
         fromMarkers = (n > 0);
     }
-    /* 1.12.18 (user ruling R2 2026-10-24): the ranks run on whichever cores
+    /* 1.12.18: the ranks run on whichever cores
      * the run gives them -- the device PEs, or, in a no-offload baseline, the
      * HOST cores. The run time is the same rule on either: the first ROI
      * barrier (the baseline snapshot) to the latest rank's ROI end. A host
@@ -1208,7 +1208,7 @@ static void roiWallCloseMpi(const char* how) {
             if (c < MAX_THREADS) { g_rtEnd[c] = v; g_rtEndKnown[c] = true; }   // (1.12.189): host ranks: replaced by the grid end below
         }
     }
-    {   /* 1.12.18 (R2): the clock mpiEnd is counted in (the DRAM replay converts it) */
+    {   /* 1.12.18: the clock mpiEnd is counted in (the DRAM replay converts it) */
         uint32_t f = 0;
         const uint32_t probe = endCore;
         for (uint32_t nd = 0; probe != ~0u && nd < zinfo->nodeMap.numNodes && nd < 16; nd++)
@@ -1245,7 +1245,7 @@ static void roiWallCloseMpi(const char* how) {
     zinfo->roiWall.source = 2;
     zinfo->roiWall.ended = true;
     recMarkRunEnd();   // (1.12.189)
-    info("[roi] run time: thread-MPI ROI elapsed %lu cycles = max over %lu rank core(s) of the ROI-relative end (%s, %s) [1.12.18, ruling 2026-10-23]",
+    info("[roi] run time: thread-MPI ROI elapsed %lu cycles = max over %lu rank core(s) of the ROI-relative end (%s, %s) [1.12.18]",
          (unsigned long)mx, (unsigned long)n, fromMarkers ? "closing-barrier markers" : "core clocks at the cut", how);
 }
 /* Env-gated thread-lifecycle trace for the in-image startup-hang hunt
@@ -1262,7 +1262,7 @@ static bool g_cosim_trace = false;
  * to device PEs rather than host cores. */
 static std::atomic<bool> g_in_device_region{false};
 
-/* 1.11.94 (H11 x01-qemu-zsim-plugin-3): true between a non-thread-MPI co-sim
+/* 1.11.94: true between a non-thread-MPI co-sim
  * ROI_BEGIN offload (cosimRoiBeginOffload) and its ROI_END. A thread's domain
  * was fixed at birth from g_in_device_region, and ROI_BEGIN moved only the
  * caller, so OpenMP pool workers created by a parallel region BEFORE
@@ -1273,7 +1273,7 @@ static std::atomic<bool> g_in_device_region{false};
  * be performed by the thread itself: sched->leave/finish detach the CALLING
  * thread's core, and another thread may be mid-BBL on that core, so the
  * opener cannot detach its peers. Scoped to the ROI window (not WORK
- * regions), matching the ruling. */
+ * regions), matching the rule. */
 static std::atomic<bool> g_roi_offload_window{false};
 
 /* Per-vCPU pending magic op from mov $imm, %rcx -- persists across TB
@@ -2184,13 +2184,13 @@ void EndOfPhaseActions() {
      * cut). */
     /* 1.12.17: the same cut also folds the device DRAM epoch replay under
      * message passing (DramEpochReplay cut mode). */
-    /* 1.12.18 (ruling 2026-10-24): single-process runs (g_spCut) fold at the
+    /* 1.12.18: single-process runs (g_spCut) fold at the
      * same consistent cut after the ROI baseline, on cutRoiRel. */
     const bool foldNoc = (g_mpi_thread_mode || g_spCut) && zinfo->garnetNetwork &&
                          zinfo->garnetNetwork->isCycleAccurate();
     const bool foldDram = (g_mpi_thread_mode || g_spCut) && zinfo->dramReplay &&
                           zinfo->hierarchy.dramEpochReplay && zinfo->dramReplay->cutMode();
-    /* 1.12.18 (ruling 17 / R0605): the decoupled host memory's replay folds at
+    /* 1.12.18: the decoupled host memory's replay folds at
      * the same cut (a host sharing the device's instance folds with it). */
     const bool foldHostDram = (g_mpi_thread_mode || g_spCut) && zinfo->hostDramReplay && zinfo->hostDramReplay->cutMode();
     uint64_t spNocCut = 0; bool spNocFolded = false;   // 1.12.18: for the epoch publish below
@@ -2239,7 +2239,7 @@ void EndOfPhaseActions() {
             else if (g_mpi_thread_mode && (st == 1 || st == 4) && g_cutFrozenRr[c] < rr) rr = g_cutFrozenRr[c];   // (1.12.178): the clock it resumes at
             if (g_mpi_thread_mode && g_setFrozen[c].load(std::memory_order_acquire) && g_setFloor > rr) rr = g_setFloor;   // (1.12.216): it waits for its settlement
             if (rr == 0) continue;       // baselined but no ROI traffic yet
-            /* 1.12.18 (ruling 2026-10-24): a SLEEPING single-process core (futex
+            /* 1.12.18: a SLEEPING single-process core (futex
              * wait, QUIESCENT) is exempt from BOTH cuts: it resumes at its waker's
              * clock (sync to waker), not at its own frozen one, so holding the DRAM
              * cut there would stall the replay for the whole sleep. */
@@ -2291,12 +2291,12 @@ void EndOfPhaseActions() {
         }
         if ((foldDram || foldHostDram) && cutDram != ~0ull) g_recLastCut = cutDram;   // (1.12.189): see g_recSyncClk
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
-            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
+            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->dramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }
         if (foldHostDram) {   // 1.12.18: as above, the host interfaces' epoch length is the same
-            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28)
+            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145)
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
             zinfo->hostDramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }
@@ -2318,7 +2318,7 @@ void EndOfPhaseActions() {
         }
     }
 
-    /* 1.12.18 (user ruling 2026-10-24, "OMP NoC: epoch-frozen"): single-process
+    /* 1.12.18 (OMP NoC: epoch-frozen): single-process
      * runs (no thread-MPI, no shared detailed-MPI NoC) fold the phase that just
      * ended HERE, single-threaded, and publish each completed epoch's measured
      * pair latencies; accesses read that table, which changes only here. */
@@ -2329,7 +2329,7 @@ void EndOfPhaseActions() {
             if (!gn->epochFrozenPublish()) {
                 gn->setEpochFrozenPublish(true);
                 info("[EpochFeedback] shared-memory run: NoC accesses priced from the epoch-frozen measured pair latencies "
-                     "(folded at the phase barrier; an access in epoch k reads epoch k-1; E_phases=%u x %u cycles) [1.12.18, ruling 2026-10-24]",
+                     "(folded at the phase barrier; an access in epoch k reads epoch k-1; E_phases=%u x %u cycles) [1.12.18]",
                      gn->detEpochPhases(), (unsigned)zinfo->phaseLength);
             }
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -2509,7 +2509,7 @@ static void recordProtocolTailStats() {
         uint64_t finalDev = zinfo->cores[dcid]->getCycles();
         uint64_t tail = (finalDev > g_tailMarker[tid]) ? (finalDev - g_tailMarker[tid]) : 0;
         g_mpiProtocolTailCyc[dcid] = tail;   // receipt only (fixed global array), no ledger move
-        g_mpiRoiCyc[dcid] = g_tailMarker[tid];   // 1.12.3 (ruling 1 (a)): the kernel-window receipt = the marker
+        g_mpiRoiCyc[dcid] = g_tailMarker[tid];   // 1.12.3: the kernel-window receipt = the marker
         zinfo->cores[dcid]->restoreActivity(g_tailAct[tid]);   // (1.12.181): the activity as it stood at the marker
         info("Protocol tail: rank %u PE(cid %u) post-ROI inter-PE collective tail %lu cyc "
              "(device-resident); kernel window %lu cyc", tid, dcid, (unsigned long)tail,
@@ -2522,12 +2522,12 @@ static void recordProtocolTailStats() {
  * process lives on to finish its MPI protocol (closing barrier, serving
  * reduces as root). The later real SimEnd (natural guest exit) skips the
  * re-dump. */
-/* 1.11.40 (audit E17): dump the inter-event gap histograms. They answer the
+/* 1.11.40: dump the inter-event gap histograms. They answer the
  * question E17 raised before any residency redesign is attempted: does idle
  * time at a gating-relevant scale actually EXIST in these workloads, and how
  * much of it?
  *
- * 1.11.57 (audit round 3, residual on F006): "MEASUREMENT ONLY -- nothing in
+ * 1.11.57 (residual on F006): "MEASUREMENT ONLY -- nothing in
  * the power model reads these" is FALSE of the devMC half and has been since
  * 1.11.51, which reads the devMC buckets back to weight DRAM power-down
  * residency (init.cpp exports them; src/main.cpp replaces mc_r_idle from
@@ -2582,7 +2582,7 @@ static void dumpGapHistograms() {
                  it.name, b, (double)(1ull << b) * 1000.0 / mhz,
                  (unsigned long)h->count[b], (unsigned long)h->cycles[b]);
         }
-        /* 1.11.57 (audit round 3, residual on F007): "% of run" against an
+        /* 1.11.57 (residual on F007): "% of run" against an
          * ROI-SPAN divisor. `total` is spanCycles(), the window the samples
          * cover -- on the detailed cell the surrounding comment cites, that
          * is 1016 phases of 7086, so a reader who took the label at face
@@ -2636,7 +2636,7 @@ static uint64_t postRoiWallSec() {
 bool pimidPostRoiFree() {
     return g_postRoiFree && g_termStatsDumped && postRoiWallSec() < g_postRoiSince + kPostRoiWaitSec;
 }
-/* (next, ruling 2026-10-30 (3)) the balance no barrier could apply (reads settled after a core's last barrier, or a
+/* 1.12.189: the balance no barrier could apply (reads settled after a core's last barrier, or a
  * core parked or exited when they settled) extends that core's end: the replays are settled (what is pending replayed,
  * the controllers drained) and the run time raised to the latest end + balance of the cores it is taken over. The
  * replays' windows close at the raised run time (finalize). Cut mode only (the closed-loop replay). */
@@ -2696,7 +2696,7 @@ static void recExtendRunTime() {
     }
 }
 
-/* (next, ruling 2026-10-30 (4)) a rank enters a message-passing operation: its DRAM balance first (see g_recSyncClk) */
+/* 1.12.189: a rank enters a message-passing operation: its DRAM balance first (see g_recSyncClk) */
 static void recCommEntry(uint32_t tid) {
     if (tid >= MAX_THREADS || !cores[tid]) return;
     const uint32_t c = cids[tid];
@@ -2784,22 +2784,22 @@ static void dumpTerminationStats() {
     if (!__sync_bool_compare_and_swap(&g_termStatsDumped, 0, 1)) return;
 
     recordProtocolTailStats();   // 1.8.7: fill the protocolTail receipt BEFORE the dump
-    /* 1.12.18 (ruling 2026-10-23): the run time is closed before the stats
+    /* 1.12.18: the run time is closed before the stats
      * and the DRAM replay's window read it. */
     cutHoldReport();   // (1.12.188): the cut hold's counters (device scope: the window ends here)
     if (g_mpi_thread_mode) roiWallCloseMpi("termination dump");
     else roiWallEnd(MAX_THREADS, "no roi_end before the stats write: closed at the dump's phase");
-    recExtendRunTime();   // (next, ruling 2026-10-30 (3))
+    recExtendRunTime();   // 1.12.189
     info("Dumping termination stats");
     rtPrintStats();   // 1.12.18: PIM runtime primitives, per core
     zinfo->trigger = 20000;
     for (StatsBackend* backend : *(zinfo->statsBackends)) {
-        if (zinfo->dramReplay) zinfo->dramReplay->finalize();   // 1.11.98 (ruling 4 (c)): replay the tail, fold the controller totals
-        if (zinfo->hostDramReplay) zinfo->hostDramReplay->finalize();   // 1.12.18 (ruling 17 / R0605)
+        if (zinfo->dramReplay) zinfo->dramReplay->finalize();   // 1.11.98: replay the tail, fold the controller totals
+        if (zinfo->hostDramReplay) zinfo->hostDramReplay->finalize();   // 1.12.18
         backend->dump(false);
     }
 
-    dumpGapHistograms();   // 1.11.40 (audit E17): measurement only
+    dumpGapHistograms();   // 1.11.40: measurement only
 
     if (zinfo->garnetNetwork) {
         /* 1.11.92 (F11): the records of the phase after the last drain were
@@ -2811,11 +2811,11 @@ static void dumpTerminationStats() {
         if (tail)
             info("[roi] %lu pending NoC records replayed before the final stats write",
                  (unsigned long)tail);
-        if (g_spCut && zinfo->garnetNetwork->cutAxis()) {   // 1.12.18 (ruling 2026-10-24)
+        if (g_spCut && zinfo->garnetNetwork->cutAxis()) {   // 1.12.18
             uint64_t late = 0, lateEp = 0, stale = 0, reads = 0;
             zinfo->garnetNetwork->frozenCounters(late, lateEp, stale, reads);
             info("[EpochFeedback] single-process cut: %lu NoC record(s) behind a cut already taken, %lu packet(s) joined a later epoch, "
-                 "%lu of %lu keyed read(s) took an epoch before the lag [1.12.18, ruling 2026-10-24]",
+                 "%lu of %lu keyed read(s) took an epoch before the lag [1.12.18]",
                  (unsigned long)late, (unsigned long)lateEp, (unsigned long)stale, (unsigned long)reads);
         }
         zinfo->garnetNetwork->setTotalCycles(zinfo->globPhaseCycles);
@@ -3048,9 +3048,9 @@ static void Join(uint32_t tid) {
     if (tr) COSIMTRACE("tid=%u sched->join done cid=%u", tid, cid);
     setCid(tid, cid);
     if (unlikely(g_spmPendAny.load(std::memory_order_relaxed))) spmApplyPending(tid);   // (1.12.164)
-    wakeSyncApply(tid, cid);   // 1.12.18 (user ruling 2026-10-23, "sync to waker")
+    wakeSyncApply(tid, cid);   // 1.12.18 (sync to waker)
     detTurnBegin(tid, cid);
-    if (g_spCut && cid < MAX_THREADS) {   // 1.12.18 (ruling 2026-10-24): awake again -> ACTIVE (after the wake sync)
+    if (g_spCut && cid < MAX_THREADS) {   // 1.12.18: awake again -> ACTIVE (after the wake sync)
         uint32_t q = 1;
         g_coreRoiState[cid].compare_exchange_strong(q, 0);
     }
@@ -3218,7 +3218,7 @@ static uint8_t  g_ctrlPending[MAX_THREADS];
 static uint64_t g_ctrlPc[MAX_THREADS];
 static uint64_t g_ctrlRet[MAX_THREADS];
 
-/* ==== 1.12.18: PIM runtime primitives (user rulings 2026-10-23) ===========
+/* ==== 1.12.18: PIM runtime primitives ===========
  *
  * "The PIM way, not as full SW overhead": a PE is NOT charged for executing
  * the parallel runtime's own code. Each runtime EVENT is charged the cost of
@@ -3274,7 +3274,7 @@ static uint64_t g_ctrlRet[MAX_THREADS];
  *  - OpenMP reduction combine: PrIM Fig. 21 HANDS tree 304 / 768 / 1392 /
  *    2654 cycles at T = 2 / 4 / 8 / 16 (measured, includes the adds).
  *  - MPI point-to-point protocol: one handshake notify/wait pair (UPMEM SDK
- *    handshake.c, ~10 instructions x 11 cycles = 110), DERIVED.
+ *    handshake.c, ~10 instructions x 11 cycles = 110), derived.
  *  - MPI collective step: one point-to-point handshake (110); MPI barrier:
  *    the barrier table.
  * Cycles are used as published (UPMEM DPU pipeline cycles, PrIM's DPU at
@@ -3940,7 +3940,7 @@ static void mem_cb(unsigned int vcpu_index,
     } else {
         fPtrs[tid].loadPtr(tid, vaddr);
     }
-    if (g_lockSync) {   // 1.12.18 (user ruling 2026-10-23, "model the lock word"): after the access is timed
+    if (g_lockSync) {   // 1.12.18 (model the lock word): after the access is timed
         if (userdata == &lock_rmw_tag) lockRmw(tid, vaddr, info);
         else if (g_lockAny.load(std::memory_order_relaxed) && qemu_plugin_mem_is_store(info)) lockStore(tid, vaddr, info);
     }
@@ -3970,7 +3970,7 @@ static void migrateThreadToDomain(uint32_t tid, int domain) {
  * g_migrateMutex (non-blocking bookkeeping only); the re-init -- which can
  * BLOCK on the scheduler's phase machinery -- must run OUTSIDE the lock, or
  * a barrier-release stampede deadlocks (one rank blocks in the join while
- * the phase system waits on ranks queued behind the mutex; v184 round 5). */
+ * the phase system waits on ranks queued behind the mutex). */
 static void detachThreadForMigration(uint32_t tid, int domain) {
     thread_domain[tid].store(domain);
     if (thread_initialized[tid]) {
@@ -4017,7 +4017,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
      * domain at birth the way OMP workers forked inside the ROI do. It
      * migrates ITSELF here, at its first BBL after the window opens.
      * Deterministic under the serial weave. */
-    /* 1.11.94 (H11 x01-qemu-zsim-plugin-3): the lazy migrate-in also runs
+    /* 1.11.94: the lazy migrate-in also runs
      * outside thread-MPI, for any thread alive when the ROI window opened
      * (g_roi_offload_window). An OpenMP worker does not pay its own
      * flush+launch: the offload is one kernel launch, charged once on the
@@ -4046,7 +4046,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
          * entry-barrier leg). Charge on THIS rank's host core -- still
          * DOMAIN_HOST and scheduled (it has been feeding host BBLs, so it is
          * initialized) -- BEFORE the locked detach and OUTSIDE g_migrateMutex
-         * (v184 round 5: drainHostCharges can block the phase system, so it
+         * (drainHostCharges can block the phase system, so it
          * must not run under the migrate mutex). */
         if (thread_initialized[tid]) {
             chargeCoherenceFlush(tid);   // PART A (1.7.2): Case-1 coherence flush
@@ -4071,7 +4071,7 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
      * transport's own instructions (the wall-clock poll stays invisible). */
     if (mpi_comm_window[tid].load(std::memory_order_acquire)) return;
 
-    /* 1.12.18 (user ruling 2026-10-23): PIM runtime primitives. A block of
+    /* 1.12.18: PIM runtime primitives. A block of
      * runtime code is not fed to the core; the thread stays attached. */
     if (g_rt.enabled) {
         if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = true;
@@ -4524,7 +4524,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
              * 6/6 histogram clean; serializing the churn against the phase sim
              * left gemv failing (the re-init Join + guest re-entry stay
              * concurrent), and holding a lock across the Join re-deadlocks the
-             * parallelism==1 phase system (v184 round 5).
+             * parallelism==1 phase system.
              *
              * FIX: do NOT migrate the drained rank back to a host core. The
              * per-rank ROI window still opens (migrate-IN offloads every rank,
@@ -4543,11 +4543,11 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
             info("Thread %d: ROI window close (co-sim MPI rank, stays on device PE, tail marked) [1.8.7]", tid);
             if (g_deviceWorkers.fetch_sub(1) - 1 == 0 && g_ranksEnteredN.load() >= g_mpi_rank_count) {   // (1.12.170): every rank has entered
                 /* Last rank out: window close is a bookkeeping event only --
-                 * no migration, no dump (heap abort, round 3), no termination
-                 * (kill-mid-protocol, rounds 4-6), no in_roi freeze (round 7).
+                 * no migration, no dump (heap abort), no termination
+                 * (kill-mid-protocol, rounds 4-6), no in_roi freeze.
                  * The guest runs to natural exit; the exit path dumps. */
                 info("Thread %d: ROI window drained (last rank out)", tid);
-                /* 1.12.3 (ruling 1 (a)): the device kernel window closes HERE,
+                /* 1.12.3: the device kernel window closes HERE,
                  * at the last rank's closing-barrier marker. Snapshot the
                  * power-gating residency window (phase index + active phases)
                  * so the priced window ends with the kernel and the tail that
@@ -4717,7 +4717,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
     if (op == ZSIM_MAGIC_OP_MPI_TIME) {
         gp->sim_now = roiRelCycles(tid);
         gp->sim_now_freq_mhz = coreFreqMHzFor(tid);
-        /* 1.11.97 (gate 1207B): record which barrier generation this arrival
+        /* 1.11.97: record which barrier generation this arrival
          * belongs to and the ROI-clock origin in force at that generation's
          * first arrival (MPI_ADVANCE checks it). */
         if (tid < MAX_THREADS) {
@@ -4740,7 +4740,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                      (unsigned long)zinfo->hierarchy.mpiNocRoiBase, (unsigned long)gp->sim_now);
             }
         }
-        /* 1.11.97 (x01-qemu-zsim-plugin-5): MPI_TIME is the thread-mode
+        /* 1.11.97: MPI_TIME is the thread-mode
          * barrier's ARRIVAL op. Device scope counts arrivals per barrier
          * generation; the N-th arrival of the first generation completed
          * after the opener's roi_end is the last rank's roi_end, and the
@@ -4783,12 +4783,12 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                                            coreFreqMHzFor(tid));
         uint64_t cur = roiRelCycles(tid);
         Core* cc = cores[tid];
-        /* 1.11.97 (gate 1207B, root cause of the MPI cycle inflation): the
+        /* 1.11.97 (root cause of the MPI cycle inflation): the
          * shim publishes every rank's arrival (MPI_TIME = roiRelCycles), takes
          * the max as the release, and each rank then ADVANCEs to it. The ROI
          * clock origin can move in between: the ENTRY barrier synthesizes the
          * ROI baseline in the BARRIER op that follows the first rank's
-         * ADVANCE (H10 "the entry barrier rebases as designed"), and rank 0's
+         * ADVANCE (the entry barrier rebases as designed), and rank 0's
          * roi_begin re-baselines every core right after. A rank whose ADVANCE
          * comes after such a re-baseline compared a release on the OLD origin
          * (rank 0's whole pre-ROI preparation, 105 M cycles on the ALU gate
@@ -4874,7 +4874,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
      * ALL ranks report kernel-relative, workload-scaling cycles/instrs. Each MPI
      * rank is its own process, so mpi_roi_baselined is per-rank; rank 0 sets it
      * in the roi_begin handler and is therefore left untouched here. */
-    /* 1.11.97 (review H10): a communication call NEVER baselines the ROI.
+    /* 1.11.97: a communication call NEVER baselines the ROI.
      * This block synthesised a per-rank baseline at the first SEND/RECV, so
      * ranks 1..N-1 of gemv_mpi counted their data preparation as ROI work.
      * roi_begin (every rank calls it; in thread mode it sweeps all cores) and
@@ -4927,7 +4927,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
 
     /* 2. NoC latency (if Garnet is available)
      *
-     * 1.11.97 (x01-qemu-zsim-plugin-6, ruled): ONE MESSAGE IS INJECTED ONCE,
+     * 1.11.97: ONE MESSAGE IS INJECTED ONCE,
      * BY ITS SENDER. Both libpimid_mpi timing ops reach this point for every
      * message -- MPI_SEND from the sending rank, MPI_RECV from the receiving
      * rank -- and both used to put the message's ceil(size/64) packets on the
@@ -4986,7 +4986,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
                     gn->recordBatchAccess(srcNode, dstNode, stamp + p);
             /* Deterministic pricing: static analytic RTT only (the EWMA
              * read is wall-order-dependent; see pe_memory_interface).
-             * 1.11.94 (x02-zsim-garnet-htree-9): this is a PROBE -- the
+             * 1.11.94: this is a PROBE -- the
              * message is already counted by the replay above. getRTTProbe
              * counts nothing under PIMID_NOC_PROBE_UNCOUNTED=1 and is
              * getRTT otherwise (the 1.11.93 default). */
@@ -5258,7 +5258,7 @@ static void spmApplyPending(uint32_t tid) {
 }
 
 static inline bool isMpiMagicOp(uint64_t op) {
-    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) /* 1.11.97 (x01-qemu-zsim-plugin-10): MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */
+    return (op >= ZSIM_MAGIC_OP_MPI_REGISTER && op <= ZSIM_MAGIC_OP_MPI_TRANSPORT_RANGE) /* 1.11.97: MPI_TIME 2058 and MPI_ADVANCE 2059 dispatch; the barrier's exit-time equalisation was dead */
            || op == ZSIM_MAGIC_OP_MPI_WAIT_PEER;
 }
 
@@ -5339,7 +5339,7 @@ static uint32_t getPCIeLatency(uint32_t transfer_bytes = 0) {
  * getPCIeLatency for system-scope co-sim; the flat model remains the fallback
  * for legacy configs with no sys.bridge block.
  */
-/* (user ruling 2026-10-27: serial links calibrated): THE LINK'S ASPM L1. A transfer that finds the
+/* (serial links calibrated): THE LINK'S ASPM L1. A transfer that finds the
  * host-device link idle for longer than its L1 entry timer finds it in L1 and
  * pays the L1 exit latency first; the idle time up to the timer was spent in L0.
  * One link: the state is global, on the reference (phase) clock the bridge's
@@ -5370,7 +5370,7 @@ static uint32_t getBridgeLatency(uint32_t transfer_bytes = 0) {
     if (!zinfo || !zinfo->bridge.enabled) return 0;
     uint32_t base = zinfo->bridge.phyLatencyCycles + zinfo->bridge.protocolOverheadCycles;
     uint32_t serCycles = 0;
-    /* (user ruling 2026-10-27: serial links calibrated): the link's framing crosses with the payload */
+    /* (serial links calibrated): the link's framing crosses with the payload */
     const uint32_t wire_bytes = transfer_bytes + zinfo->bridge.headerBytes;
     if (zinfo->bridge.bytesPerCycle > 0.0 && wire_bytes > 0) {
         serCycles = static_cast<uint32_t>(
@@ -5399,11 +5399,11 @@ static uint32_t boundaryTransferCycles(uint32_t transfer_bytes = 0) {
  * writeback traffic (conservative-against-PIM), so
  *   cycles = flushFixedCycles + ceil(deltaBytes / writebackBytesPerCycle),
  * where deltaBytes is what THIS arrival's own walk found still in M -- the
- * data dirtied since the previous walk (1.11.62, ruling 5b: every arrival
+ * data dirtied since the previous walk (1.11.62, every arrival
  * walks and every walk cleans, so each arrival measures its own delta and
  * nothing is divided), and flushFixedCycles is charged PER RANK because each
- * core issues its own flush instruction and stalls on it (1.11.62, ruling 5a).
- * (1.11.59, audit F021: this line still named `footprintBytes`,
+ * core issues its own flush instruction and stalls on it (1.11.62).
+ * (1.11.59, this line still named `footprintBytes`,
  * the configured override that 1.11.40 stopped using and init.cpp now
  * refuses outright -- a formula naming a config key as its input, five
  * releases after the input became a measurement.)
@@ -5413,7 +5413,7 @@ static uint32_t boundaryTransferCycles(uint32_t transfer_bytes = 0) {
  * NO_OFFLOAD baselines never reach the co-sim roi_begin block, so they are
  * never charged.
  */
-/* 1.11.40 (audit N7, user ruling: the footprint is MEASURED). Walk every cache
+/* 1.11.40 (the footprint is MEASURED). Walk every cache
  * and sum the lines in M -- exactly the bytes a writeback flush must move.
  *
  * Why this is the right quantity and the constant was not: a flush writes back
@@ -5431,7 +5431,7 @@ static uint32_t boundaryTransferCycles(uint32_t transfer_bytes = 0) {
  * visible; a cache-bearing PE type would require making this role-aware. */
 
 /* ------------------------------------------------------------------------
- * 1.11.62 (ruling 5b): THE COHERENCE FLUSH -- ONE WALK AT EVERY RANK'S
+ * 1.11.62: THE COHERENCE FLUSH -- ONE WALK AT EVERY RANK'S
  * ARRIVAL. This replaces the 1.11.57 "one epoch, one walk, N equal slices"
  * design. State the design before the code, because what is GONE (the
  * division, the remainder, the epoch open/close bookkeeping) is exactly what
@@ -5481,8 +5481,8 @@ static uint32_t boundaryTransferCycles(uint32_t transfer_bytes = 0) {
  *    unmodified dirty line being billed to several ranks, which is exactly
  *    what 1.11.55 did and what the 1.11.57 division existed to undo.
  *
- * 3. THE FIXED COST IS PER RANK, AND THAT IS PHYSICAL (ruling 5a; round-4 D001
- *    is thereby ruled INTENDED, not a defect). coherence.flushFixedCycles --
+ * 3. THE FIXED COST IS PER RANK, AND THAT IS PHYSICAL (intended,
+ *    not a defect). coherence.flushFixedCycles --
  *    emitted from coherence_flush_fixed_ns -- models ONE CORE issuing its own
  *    flush instruction and stalling on it. Every rank runs on its own host
  *    core and executes that instruction itself, so every rank pays that
@@ -5532,7 +5532,7 @@ static uint32_t boundaryTransferCycles(uint32_t transfer_bytes = 0) {
  * excludes the first walk's lines, and that a single-rank run walks once.
  * ------------------------------------------------------------------------ */
 
-/* 1.11.62 (ruling 5b): flush-walk state. g_flushWalkMutex guards all of it AND
+/* 1.11.62: flush-walk state. g_flushWalkMutex guards all of it AND
  * serialises the walks themselves. What is deliberately absent, versus
  * 1.11.57: the participant count divisor, the per-rank slice, the integer
  * remainder, the epoch id, the per-tid "already took its share" array and the
@@ -5609,7 +5609,7 @@ static bool takeFlushWalkDelta(uint32_t tid, uint64_t* deltaBytes,
                                std::vector<Address>* linesOut) {
     if (!zinfo || !zinfo->coherence.enabled) return false;
     if (zinfo->coherence.mode != 0) return false;  // separate = cache bypass, no flush
-    /* 1.11.62 (ruling 5b): the gate hook. Read once; the fast path is the
+    /* 1.11.62: the gate hook. Read once; the fast path is the
      * common case where it is off and this is a predictable load. */
     static const bool flushTrace = (getenv("PIMID_FLUSH_TRACE") != nullptr);
     std::lock_guard<std::mutex> lk(g_flushWalkMutex);
@@ -5617,7 +5617,7 @@ static bool takeFlushWalkDelta(uint32_t tid, uint64_t* deltaBytes,
     const uint64_t delta = measureAndCleanFlushDelta(&cleaned, linesOut);
     g_flushWalkBytesTotal += delta;
     g_flushWalkCount++;
-    /* 1.11.57 (audit D015), restated for 1.11.62: footprintMeasured is a
+    /* 1.11.57, restated for 1.11.62: footprintMeasured is a
      * DIAGNOSTIC field that no stat exports and no consumer reads. It now
      * holds the CUMULATIVE measured dirty bytes -- the sum of every walk's
      * delta, which is the whole working set the flush has written back so far
@@ -5665,9 +5665,9 @@ static void chargeCoherenceFlush(uint32_t tid) {
      * request (source_id 1) whose ACTs and row state the controller counts.
      * The flush runs at the co-sim roi_begin offload, after the traffic
      * counters are rebased, so it lands in the ROI window. */
-    /* 1.11.62 (ruling 5a): the FIXED term is charged per rank because each
+    /* 1.11.62: the FIXED term is charged per rank because each
      * core issues its own flush instruction and stalls on it -- see decision 3
-     * of the design block. 1.11.62 (ruling 5b): the DATA term is this
+     * of the design block. 1.11.62: the DATA term is this
      * arrival's own delta, which is what this rank's flush actually has to
      * move, because the previous walker already wrote back what it found. */
     uint64_t flushCyc = zinfo->coherence.flushFixedCycles;
@@ -5711,7 +5711,7 @@ static void chargeCoherenceFlush(uint32_t tid) {
     }
 
 
-    /* 1.11.62 (ruling 5b): the bytes are booked whether or not there are
+    /* 1.11.62: the bytes are booked whether or not there are
      * cycles to inject. The walk has already CLEANED those lines, so if the
      * accounting were skipped here they could never be counted by any later
      * walk -- the D002 loss, re-created at the exit. Only the timeline
@@ -5727,7 +5727,7 @@ static void chargeCoherenceFlush(uint32_t tid) {
     __sync_fetch_and_add(&zinfo->xing.count, 1);
     __sync_fetch_and_add(&zinfo->coherence.flushCount, 1);
     __sync_fetch_and_add(&zinfo->coherence.flushCyclesCharged, flushCyc);
-    /* 1.11.62 (ruling 5b): the log states the three quantities the design
+    /* 1.11.62: the log states the three quantities the design
      * rests on -- the rank that walked, the DELTA it charged, and the running
      * cumulative, whose final value is the whole working set priced once.
      * (1.11.57, D004: the per-level cleaned count is a different quantity from
@@ -5834,7 +5834,7 @@ static void cosimRoiBeginOffload(uint32_t tid) {
     drainHostCharges(tid);
     cosimLaunchNote(tid);   // (1.12.202): launch causality (thread-MPI; applied when it runs on its PE)
     if (g_spCut && !g_mpi_thread_mode && tid < MAX_THREADS && cids[tid] < zinfo->numCores && zinfo->cores[cids[tid]]) {
-        /* 1.12.18 (ruling 2026-10-24): the device's ROI starts at the doorbell
+        /* 1.12.18: the device's ROI starts at the doorbell
          * on the host's ROI-relative clock (PEMemoryInterface::spDevShift). */
         const uint32_t hc = cids[tid];
         PEMemoryInterface::spDevShift() = PEMemoryInterface::cutRoiRel(hc, zinfo->cores[hc]->pimidRawCycle());   // 1.12.18 (W9): the raw clock (cutRoiRel converts)
@@ -5851,7 +5851,7 @@ static void cosimRoiBeginOffload(uint32_t tid) {
     if (g_mpi_thread_mode) markRankEntered(tid);   // (1.12.170)
     g_roiClosing.store(false);
     if (!g_mpi_thread_mode)
-        g_roi_offload_window.store(true, std::memory_order_release);   // 1.11.94 (H11)
+        g_roi_offload_window.store(true, std::memory_order_release);   // 1.11.94
     ++offload_count;
     if (thread_initialized[tid]) {
         uint32_t cid = cids[tid];
@@ -5935,12 +5935,12 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 zinfo->cores[cid]->markRoiBegin();
             g_cutOpenerBegun.store(true);   // (1.12.178): the DRAM cut may fold from here on
             if (prev == 0) {
-                /* 1.11.97 (review H10, refined by gate 1207D): did the ENTRY
+                /* 1.11.97 (refined by gate 1207D): did the ENTRY
                  * barrier already rebase every core? In all thirteen MPI
                  * kernels the first MPI_Barrier is the line before rank 0's
                  * zsim_roi_begin(), after the data preparation, so the
                  * barrier's synthesized baseline IS the kernel entry of every
-                 * rank (H10: "the entry barrier rebases as designed"). Sweeping
+                 * rank (the entry barrier rebases as designed). Sweeping
                  * every core again here caught ranks 1..N-1 at whatever point
                  * of their kernel they had reached when rank 0 got here -- the
                  * 1.6 jitter the comment above warns about -- and dropped those
@@ -5959,7 +5959,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                     cosimRoiBeginOffload(tid);
                     return;
                 }
-                /* 1.11.97 (review H10): no barrier has rebased: the first
+                /* 1.11.97: no barrier has rebased: the first
                  * roi_begin in thread mode baselines EVERY core, not only the
                  * calling rank's: the other ranks are threads of this process
                  * and would otherwise keep their pre-ROI (data preparation)
@@ -5969,7 +5969,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
                 flushHeldWritebacks();   // 1.12.18 (B3)
-                /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
+                /* 1.11.54: OPEN THE PG/GAP WINDOW HERE TOO. This
                  * branch returns before the legacy path's
                  * pgres.markRoi(), so under thread-MPI the power-gating
                  * residency counters and the devMC gap histogram were either
@@ -6013,7 +6013,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         // the first MPI op (see handleMpiMagicOp). rank 0 takes this path.
         mpi_roi_baselined = true;
         snapshotRoiBaseCyc();
-        if (g_spCut) {   // 1.12.18 (ruling 2026-10-24): each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
+        if (g_spCut) {   // 1.12.18: each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
             for (uint32_t c = 0; c < zinfo->numCores; c++)
                 if (zinfo->cores[c] && zinfo->cores[c]->wakeStampable()) PEMemoryInterface::spSetOrigin(c, zinfo->cores[c]->getRoiBaseCycle());
             PEMemoryInterface::clkClearOrigins();   // 1.12.21: in-order / OOO cores start on their snapshot origin
@@ -6032,7 +6032,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         // global phase clock and host cycles absorb the device execution.
         if (g_cosim_mode && !g_cosim_no_offload && tid < MAX_THREADS) {
             g_in_device_region.store(false);
-            g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94 (H11)
+            g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94
             if (g_mpi_thread_mode) {
                 /* 1.8.7: the MPI opener (rank 0) is a PE-resident rank exactly
                  * like the others -- NO migration (removes even 1.8.6's residual
@@ -6099,7 +6099,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
                 return;
             }
             if (lastRankRule()) {
-                /* 1.11.97 (x01-qemu-zsim-plugin-5): device scope, same
+                /* 1.11.97: device scope, same
                  * reason. The opener's roi_end only marks the ROI as
                  * closing; the N-th arrival at the next barrier (MPI_TIME
                  * handler) freezes the stats. See g_devRoiClosing. The host
@@ -6329,11 +6329,11 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                 zinfo->cores[cid]->markRoiBegin();
             g_cutOpenerBegun.store(true);   // (1.12.178): the DRAM cut may fold from here on
             if (prev == 0) {
-                /* 1.11.97 (H10 refined, gate 1207D): the same rule as the
+                /* 1.11.97: the same rule as the
                  * other magic-op entry point -- when the entry barrier has
                  * already rebased every core at kernel entry, nothing is
                  * re-snapshotted (rank 0's core neither, (1.12.199));
-                 * otherwise every core is baselined here (H10). */
+                 * otherwise every core is baselined here. */
                 const bool barrierBaselined = mpi_roi_baselined;
                 in_roi.store(true);
                 mpi_roi_baselined = true;
@@ -6344,11 +6344,11 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                     return;
                 }
                 for (uint32_t c = 0; c < zinfo->numCores; c++)
-                    if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();   // 1.11.97 (H10): no barrier has rebased
+                    if (zinfo->cores[c]) zinfo->cores[c]->markRoiBegin();   // 1.11.97: no barrier has rebased
                 snapshotRoiBaseCyc();
                 roiRebaseTrafficCounters("thread-MPI first roi_begin");   // 1.11.90
                 flushHeldWritebacks();   // 1.12.18 (B3)
-                /* 1.11.54 (audit F008): OPEN THE PG/GAP WINDOW HERE TOO. This
+                /* 1.11.54: OPEN THE PG/GAP WINDOW HERE TOO. This
                  * branch returns before the legacy path's
                  * pgres.markRoi(), so under thread-MPI the power-gating
                  * residency counters and the devMC gap histogram were either
@@ -6392,7 +6392,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         // the first MPI op (see handleMpiMagicOp). rank 0 takes this path.
         mpi_roi_baselined = true;
         snapshotRoiBaseCyc();
-        if (g_spCut) {   // 1.12.18 (ruling 2026-10-24): each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
+        if (g_spCut) {   // 1.12.18: each device PE's ROI origin starts at its own baseline (PEMemoryInterface::cutRoiRel)
             for (uint32_t c = 0; c < zinfo->numCores; c++)
                 if (zinfo->cores[c] && zinfo->cores[c]->wakeStampable()) PEMemoryInterface::spSetOrigin(c, zinfo->cores[c]->getRoiBaseCycle());
             PEMemoryInterface::clkClearOrigins();   // 1.12.21: in-order / OOO cores start on their snapshot origin
@@ -6405,7 +6405,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
         if (!g_mpi_thread_mode) roiWallEnd(tid, "roi_end");   // 1.12.18: on the core that ran the ROI, before any migration
         if (g_cosim_mode && !g_cosim_no_offload && tid < MAX_THREADS) {
             g_in_device_region.store(false);
-            g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94 (H11)
+            g_roi_offload_window.store(false, std::memory_order_release);   // 1.11.94
             if (g_mpi_thread_mode) {
                 /* 1.8.7: the MPI opener (rank 0) is a PE-resident rank exactly
                  * like the others -- NO migration (removes even 1.8.6's residual
@@ -6472,7 +6472,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
                 return;
             }
             if (lastRankRule()) {
-                /* 1.11.97 (x01-qemu-zsim-plugin-5): device scope, same
+                /* 1.11.97: device scope, same
                  * reason. The opener's roi_end only marks the ROI as
                  * closing; the N-th arrival at the next barrier (MPI_TIME
                  * handler) freezes the stats. See g_devRoiClosing. The host
@@ -6645,12 +6645,12 @@ static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
      *  - indirect call (FF /2,/3)   -> BTB target check + RAS push
      *  - indirect jmp (FF /4,/5)    -> BTB target check
      *  - ret (C3/C2)                -> RAS pop + target check
-     *  - direct jmp (E9/EB)         -> CF_DIR_JMP (1.12.1, ticket #114): the
+     *  - direct jmp (E9/EB)         -> CF_DIR_JMP (1.12.1): the
      *    decode resteer of the predictor-less in-order mode (branchPredictor
      *    none); the OOO and the PAg in-order cores ignore it, as they ignored
      *    the unfed jmp before (a fixed target, always predicted).
      * The replay classifier (zsim_trace_driver.cpp classifyTerminator) is a
-     * copy of this one and must stay identical (1.11.100 H40).
+     * copy of this one and must stay identical (1.11.100).
      * Since 1.11.15 g_decode_enabled defaults to TRUE for every core type
      * (census decode-always); only the PIMID_NODECODE escape restores the
      * old (ooo && !ooo_nodecode) || (inorder && !inorder_nodecode) gate. */
@@ -7043,7 +7043,7 @@ static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, vo
          * on, so new threads take their cores in the order they were created */
         if (g_detOrder && detActive()) detSettle();
     }
-    if (num == 202 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // 1.12.18 (ruling 2026-10-23, "sync to waker")
+    if (num == 202 && vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index]) {   // 1.12.18 (sync to waker)
         const uint32_t t = vcpuToTid[vcpu_index];
         if (t < MAX_THREADS) wakeSyncOnFutexReturn(t, ret);
         return;
@@ -7410,7 +7410,7 @@ static void syscall_cb(unsigned int vcpu_index,
                 else if ((c7 == 0 || c7 == 9 || c7 == 11) && a1 &&
                          *(volatile uint32_t*)(uintptr_t)a1 == (uint32_t)a3) synth_pc = kFutexWaitSynthPc;
             }
-            if (num == 202) wakeSyncOnFutexEntry(tid, cid, a1, a2, a5);   // 1.12.18 (ruling 2026-10-23, "sync to waker")
+            if (num == 202) wakeSyncOnFutexEntry(tid, cid, a1, a2, a5);   // 1.12.18 (sync to waker)
             if (g_detOrder) {   // (1.12.123): before a leave, every thread this turn woke, created or moved has joined
                 if (in_roi.load()) {
                     detSettle();
@@ -7553,7 +7553,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init_cb, NULL);
     qemu_plugin_register_vcpu_exit_cb(id, vcpu_exit_cb, NULL);
 
-    /* 1.12.18 (ruling 2026-10-24): an exec-method run; a single-process one
+    /* 1.12.18: an exec-method run; a single-process one
      * (no PIMID_MPI_RANK, no thread-MPI) is priced with the cut mechanism
      * (PEMemoryInterface::singleProcCut, read by SimInit's replay instances). */
     setenv("PIMID_EXEC_CUT", "1", 1);
@@ -7615,7 +7615,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
      * procIdx > 0 the process bits are OR-ed into it, and another process's
      * lines are not in this address space. */
     dqDataReadable = (procIdx == 0 && zinfo->numProcs == 1);
-    pimidGuestReadHook = pimidPluginGuestRead;   // (1.12.137, user ruling 2026-10-27)
+    pimidGuestReadHook = pimidPluginGuestRead;   // (1.12.137)
     perProcessEndFlag = 0;
 
     /* Compute core-type masks for co-sim domain routing.
@@ -7654,7 +7654,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
      * basic block. PIMID_NODECODE=1 restores the old gating as an escape
      * hatch (value-checked: PIMID_NODECODE=0 means decode-always). */
     const char* nodecode_env = getenv("PIMID_NODECODE");
-    /* 1.11.43 (audit E25, user ruling: make the in-order legacy path honest
+    /* 1.11.43 (make the in-order legacy path honest
      * WITH decode). PIMID_INORDER_NODECODE used to control TWO unrelated
      * things: the core's timing model (legacy IPC=1 vs decoded pipeline) AND
      * this decoder gate. The interlock made the legacy path's mix counting
@@ -7667,7 +7667,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
      * byte-identical: the mix counters do not feed timing.
      * The OOO escape is unchanged -- an OOO core cannot execute without
      * uops, so its decode kill-switch is genuinely about decode. */
-    /* 1.11.44: the in-order NODECODE escape hatch is deleted (user ruling);
+    /* 1.11.44: the in-order NODECODE escape hatch is deleted;
      * decode is unconditional for in-order. Only OOO retains a kill-switch,
      * because an OOO core genuinely cannot execute without uops and the
      * switch exists for decoder-fault triage, not as a timing mode. */
@@ -7768,9 +7768,9 @@ int qemu_plugin_install(qemu_plugin_id_t id,
         const char* mpi_ranks_env = getenv("PIMID_MPI_RANKS");
         g_mpi_thread_mode = (mpi_ranks_env && atoi(mpi_ranks_env) > 1 &&
                              !getenv("PIMID_MPI_RANK"));
-        g_spCut = PEMemoryInterface::singleProcCut();   // 1.12.18 (ruling 2026-10-24)
-        /* 1.11.19 (user decision D4): remember the rank count.
-         * 1.11.62 (ruling 5b): the flush no longer slices by it -- each rank
+        g_spCut = PEMemoryInterface::singleProcCut();   // 1.12.18
+        /* 1.11.19: remember the rank count.
+         * 1.11.62: the flush no longer slices by it -- each rank
          * walks the caches at its own arrival and charges the delta that walk
          * finds, so the count is now only the expected walker count in the
          * flush log (see chargeCoherenceFlush). */
@@ -7835,7 +7835,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
             info("[ZSim] fixed rank order: one rank at a time, a phase each, in the seeded shuffle order (thread-MPI) [(1.12.126)]");
         }
     }
-    {   /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): simulation.lock_sync, default on;
+    {   /* 1.12.18 (model the lock word): simulation.lock_sync, default on;
          * never under thread-MPI (see lockRmw) */
         const char* ls = getenv("PIMID_LOCK_SYNC");
         const bool on = !(ls && atoi(ls) == 0);

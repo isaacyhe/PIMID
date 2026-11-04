@@ -14,7 +14,7 @@ earlier lines are superseded history.
 
 Uses only the Python 3 standard library.
 
-1.12.5 (ruling F5, user 2026-10-15): the tool ships in the tree (scripts/) and
+Since 1.12.5 the tool ships in the tree (scripts/) and
 resolves its default root the way the binary does -- the cache/ directory of
 the tree it sits in. It defaulted to the pre-1.11.52 per-user store
 ~/.cache/pimid, which no PIMID binary has written since 1.11.52.
@@ -253,7 +253,7 @@ def cmd_stale(args):
     if not rows:
         print("no stale entries (all match tool_version %s)" % current)
         return 0
-    print("stale entries (tool_version != %s) — refresh with `--cache wo`:"
+    print("stale entries (tool_version != %s) -- refresh with `--cache wo`:"
           % current)
     print_table(rows, ["backend", "key", "tool_version", "timestamp", "params"])
     return 0
@@ -338,7 +338,7 @@ def cmd_prune(args):
         if not is_keeper:
             dropped_dupe.append((lineno, raw))
             continue
-        # keeper line — but maybe stale-prune it
+        # keeper line -- but maybe stale-prune it
         if args.stale and rec.get("tool_version", "-") != current:
             dropped_stale.append((lineno, raw, rec))
             continue

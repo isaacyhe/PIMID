@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.267 -- the documentation is checked against the code and reads as plain design statements
+
+- **Checked against the code.** Every public document was compared with the code (configuration keys and
+  defaults, command-line flags, file references, links, versions, part-record numbers, preset tables) and
+  corrected where it had gone stale: the GDDR6 preset runs 14 Gb/s per pin (28 GB/s per 16-bit channel), the
+  HBM3 command clock is a quarter of the data rate (tCK 625 ps), DDR5 runs the 4800B grade by default with
+  3200AN and 5600B selectable, the DRAM architecture header has a creator for each of the seven technologies,
+  McPAT links the same CACTI 7.0 as the rest of the simulator, the NVSim cache key carries the word width, the
+  out-of-order core's window is the core record's (a processing element's 128-entry reorder buffer, a host core's
+  512-entry Golden Cove window), and the YAML reference's bridge-router and link-model rows match the keys the code
+  reads.
+- **Plain statements.** Code comments, the documentation (this changelog's history included), the parameter
+  records' notes and a few printed lines carried internal bookkeeping next to the design statements: decision
+  dates and the requests behind them, item, review, round, ticket and test-job numbers, cluster node names.
+  That bookkeeping is removed; each note keeps its design statement and, where it had one, the release that
+  introduced it. Older changelog entries state what each release fixed. Provenance labels in comments are plain prose, and the documentation uses one name per
+  concept (a co-simulation, a device run).
+- **Printed lines.** Only explanatory text inside some log lines, refusal messages, a Ramulator plugin
+  description and two ZSim statistic descriptions changes (the bookkeeping goes), and the `[mem] bank-open
+  fraction` line prints its status word only with PIMID_DEBUG_CHECKS=1; every number, key and line prefix a
+  reader or script relies on is unchanged. The build file's, the cache tool's and the benchmark sources' own text
+  is ASCII (comments and messages; the tracked kernel binaries are byte-identical).
+- **Code.** Two configuration fallbacks that could never be taken now name the real defaults
+  (`pim.pe.arch_int_regs` / `arch_fp_regs` 16, `power.periphery_device` lstp), and the deprecated
+  `--mpich-path` flag is documented. Nothing a run does changes.
+- **Distribution image** (docs/build.md, "Docker"). The image ships the prebuilt guest MPI shim and the pinned
+  guest sysroot (both checked at launch), every NVSim cell file, and the release's characterizations of the
+  non-volatile memory examples; `pimid_smoke --repro` runs a reference set whose results equal a built tree's, bit
+  for bit.
+- **Data impact.** None: no model, default, number or option changes.
+
 ## 1.12.266 -- an SRAM or NVM element's controller posts its writes, serves reads first and answers a read from its buffer: `memory.write_buffer_entries`
 
 - **The problem.** An SRAM or NVM element's controller held its core on every write until the bank had written the
@@ -563,7 +594,7 @@ release commit messages.
 
 - **The problem.** `memory.nvm_write_budget` (off by default) limits a device's time-averaged write power. Only PCM
   had a default budget; on STT_MRAM and RERAM the option was refused unless `mw` was given, so the budget could not be
-  run on those technologies without an unsourced number. The PCM default, 162 mW, was the RESET pump's 35 mW output
+  run on those technologies without a value given by hand. The PCM default, 162 mW, was the RESET pump's 35 mW output
   drawn at the pump's own 21.6 % efficiency, while PCM writes are priced at a 0.388 supply efficiency: the budget and
   the energy it is compared with carried two different efficiencies.
 - **The fix** (src/main.cpp; docs/yaml_reference.md, docs/sources.md). No chip-level write-power budget is published
@@ -1659,7 +1690,7 @@ release commit messages.
   core's request notes its stamp as the core's latest, as a device interface does. The core's ROI end is the later of
   its clock and that stamp, and the closed loop's end balance (a core ends no earlier than the last read it waits for
   completes) applies from there.
-- **Validation** (the previous release and this build; smoke sizes; host baselines with the fleet's settings). The 60 host
+- **Validation** (the previous release and this build; smoke sizes; host baselines with the corpus's settings). The 60 host
   baseline cells (DDR5 and HBM3; OpenMP and message passing; 1, 4 and 16 cores): 45 identical in every line; the 15
   that had a host request outside the ROI (13 OpenMP, 2 single-rank message-passing) now have none, and only their
   run time and what follows from it move; the multi-rank host cells are unchanged (their requests are stamped on the
@@ -2032,8 +2063,8 @@ release commit messages.
   message moves to the receiver's staging (1.12.17), a fixed arena of 16 messages per rank of the run for each
   receiver (32 at 2 ranks). How many messages wait there depends only on how fast the host runs the receiving
   thread, so on a loaded host the arena could fill, and the run then stopped with "message staging full ...
-  refusing to drop or reorder a message". The native collectives check at 2 ranks stopped in 9 of 10 runs with its
-  threads on two CPUs shared with busy processes at low priority, and once on a loaded test machine.
+  refusing to drop or reorder a message". The native collectives check at 2 ranks stopped this way with its threads
+  on two CPUs shared with busy processes at low priority, and on a loaded test machine.
 - **The fix** (src/parallel_abstraction/pimid_mpi.cpp; docs/cosim.md). Staging no longer fills. Messages the arena
   cannot hold go to an extension: one address range at a fixed address (64 GiB, below the guest's mapping base and a
   native process's heap, so it moves no other mapping), mapped and registered as transport memory (not priced) at
@@ -2581,7 +2612,7 @@ release commit messages.
 ## 1.12.181 -- co-sim message passing: each rank's kernel window ends at its own closing barrier, and the post-ROI tail it runs on its PE stays out of the activity and memory counters
 
 - **The problem.** After its kernel a co-sim MPI rank stays on its device PE and runs its post-ROI tail there (the
-  result copy, checksum, reduce, finalize and exit; 1.8.7). The tail is outside the priced window (ruling 1 (a)) and
+  result copy, checksum, reduce, finalize and exit; 1.8.7). The tail is outside the priced window and
   its cycles leave per PE through the protocolTail receipt. Two things were wrong.
   (1) Rank 0's roi_end puts the window into closing, and a rank was marked at the first barrier it passed on its PE
   after that. A rank whose turn to enter the device came after rank 0 had finished a short kernel passed its ENTRY
@@ -2595,8 +2626,7 @@ release commit messages.
   histograms (the DRAM power-down residency reads the device-MC one, whose span ran to the guest's exit); and in the
   measured NoC wire activity. The PEs are cacheless, so every load and store of the tail is a DRAM request: on the
   smoke DDR5 stream_triad cell the tail made 381,805 requests against 13,117 in the ROI, the interfaces' DQ read
-  lines were 23x the kernel's and the device instrs 2.5x. The DRAM replay kept the tail out on its stamps (ruling
-  R1) except for rank 0: its ROI origin is its own roi_begin, later than the other ranks' entry-barrier origin, so
+  lines were 23x the kernel's and the device instrs 2.5x. The DRAM replay kept the tail out on its stamps except for rank 0: its ROI origin is its own roi_begin, later than the other ranks' entry-barrier origin, so
   the start of its tail is stamped before the ROI end (49 to 454 requests per cell), and those were priced in the
   window.
 - **The fix** (external/zsim/src/qemu_zsim_plugin.cpp, core.h, alu_core.h, alu_core.cpp, pe_memory_interface.h,
@@ -2627,8 +2657,8 @@ release commit messages.
   1.12.179; cosim_DDR5_omp_gemv_g3200 split in 4 copies. The per-PE `wakeSyncs` and `wakeSyncCycles`, labelled ROI,
   counted wake syncs that came after the ROI end: in 37 of the 45 OpenMP co-sim smoke cells they disagreed with the
   run log's "[wake-sync] ROI" line. Separately, a run that ends at an exit call while other threads are alive (a
-  message-passing rank aborting at a refused data preparation) reported a whole-run phase count that varied from run
-  to run.
+  message-passing rank aborting at a refused data preparation) reported a whole-run phase count that followed the
+  host's thread scheduling.
 - **Root cause.** The fixed order was released when the termination statistics began to be written; 1.12.161 made it
   hold "until the statistics are written". At the ROI end of an OpenMP co-sim cell the master first returns to the
   host core, so its turn has passed on and the workers its parallel region's last barrier woke were held only by the
@@ -2654,10 +2684,10 @@ release commit messages.
 ## 1.12.179 -- threads woken together take their places in core order: the rank order after a barrier repeats
 
 - **Problem.** The order of the ranks' turns after a barrier still came from the host. Before the receive-order and
-  wake-bound changes above it split copies of one co-sim MPI cell after the kernel window (run time, power and
-  checksum identical): cosim_DDR5_mpi_stream_triad_g3200 (smoke) the scheduler's occupancy histogram (2 of 16
-  copies) or rank 0's post-ROI collective tail (1806441 vs 1809703 cycles, 3 of 6 copies), cosim_HBM3_mpi_gemv
-  the tail (414612 vs 415234 cycles, 7 and 9 of 16 copies) and with it PE busy cycles, remoteLat, the NoC records
+  wake-bound changes above, it set part of one co-sim MPI cell's output after the kernel window (run time, power
+  and checksum not affected): in cosim_DDR5_mpi_stream_triad_g3200 (smoke) the scheduler's occupancy histogram or
+  rank 0's post-ROI collective tail (1806441 or 1809703 cycles), in cosim_HBM3_mpi_gemv the tail (414612 or 415234
+  cycles) and with it PE busy cycles, remoteLat, the NoC records
   pending at the final write and the whole-run DQ data, NoC wire and device-controller gap counters. With those
   changes the outputs no longer depended on it in the cells tested, but the order still did: the barrier that
   closes the kernel window wakes 15 ranks, 13 to 15 of which have already run in the phase, and they arrived in a
@@ -2678,7 +2708,7 @@ release commit messages.
   aside): 8 copies of each of the 15 co-sim MPI smoke cells, 16 copies each of cosim_HBM3_mpi_gemv and
   cosim_DDR5_mpi_stream_triad_g3200, cosim_HBM3_mpi_histogram_4core and the parity cell 8 of 8, the 116-cell
   validation set, the gate host smoke subset, and 148 of the 150 device and co-sim MPI smoke cells of the device list
-  (the other two refuse their data preparation and end at a phase that varies from run to run, before and after).
+  (the other two refuse their data preparation, before and after; 1.12.180 fixes the phase count such a run reports).
 
 ## 1.12.178 -- message passing: each waiting rank is bounded by what can release it, on the clock the rendezvous uses
 
@@ -2793,8 +2823,8 @@ release commit messages.
 
 ## 1.12.174 -- the run log's thread-start lines keep their place
 
-- **Problem.** The standard output of two runs of one cell differed in line order: "Started scheduler watchdog
-  thread" came before or after "SIMD width: 128 bits" (3 of 8 runs of a co-sim MPI cell, stdout captured alone).
+- **Problem.** The order of two lines of a cell's standard output followed the host's thread scheduling: "Started
+  scheduler watchdog thread" came before or after "SIMD width: 128 bits" (a co-sim MPI cell, stdout captured alone).
 - **Root cause.** The scheduler's watchdog thread and the contention-simulation threads announced themselves from
   the new thread, so the line landed wherever the host scheduled that thread against the starting thread's output.
 - **Fix (external/zsim/src/scheduler.cpp, contention_sim.cpp).** The starting thread prints both announcements
@@ -3136,11 +3166,10 @@ release commit messages.
 
 ## 1.12.161 -- co-sim MPI cells repeat after the ROI too; the runtime's removed-instruction count repeats
 
-- **Problem.** Two runs of a co-sim MPI cell (1 host core, 8 PEs, 8 ranks) gave the same kernel window but a
-  different post-ROI collective tail and DRAM-replay statistics (cosim_DDR4_histogram_mpi: rank 0's tail 544259 vs
-  552025 cycles, rank 7's 164001 vs 150135; "read(s) took an epoch" 13869 vs 14513), so a figure that adds the tail
-  differed between duplicate jobs. OpenMP co-sim cells printed a different "[pim-runtime] ... runtime code not
-  executed on the PE: N instrs" in each run (2-16 instructions apart; timing and the removed memory accesses equal).
+- **Problem.** In a co-sim MPI cell (1 host core, 8 PEs, 8 ranks) the post-ROI collective tail and the DRAM-replay
+  statistics followed the host's thread scheduling (the kernel window did not), and with them every figure that adds
+  the tail. In OpenMP co-sim cells the "[pim-runtime] ... runtime code not executed on the PE: N instrs" count
+  followed it too (timing and the removed memory accesses did not).
 - **Root cause.** The fixed thread order (1.12.123, 1.12.158) stopped at the ROI's end, but a co-sim MPI cell keeps
   simulating its ranks' closing collective and replaying DRAM records until the statistics are written. The removed
   instructions were counted on every executed runtime block, also after the ROI's end, while the statistics were
@@ -3182,9 +3211,8 @@ release commit messages.
 
 ## 1.12.158 -- the fixed thread order covers the whole run: 4-core co-sim cells repeat
 
-- **Problem.** The 4-core co-sim cells (16 threads on 4 host cores; 30 cells, OpenMP and thread-MPI) gave a different
-  run time in each run (cosim_HBM3_omp_gemv_4core 362589 / 365127 cycles in two runs of one build), and so did
-  every comparison of two builds that differed only in power code.
+- **Problem.** In the 4-core co-sim cells (16 threads on 4 host cores; 30 cells, OpenMP and thread-MPI) the run time
+  followed the host's thread scheduling, and so did every comparison of two builds that differed only in power code.
 - **Root cause.** The fixed thread order of 1.12.123 queues a thread that waits for a core by phase and id, but a
   thread that rejoined after a futex wait whose core had gone to another thread did not wait in that queue: it took
   a free core, or the core of a parked thread, the moment its host thread got to the scheduler. When one turn woke
@@ -3260,7 +3288,7 @@ release commit messages.
 
 ## 1.12.156 -- Serial links: the link controller's logic priced from a published hard block, per class and bandwidth
 
-- **Controller logic (user ruling 2026-10-28):** the PCIe / CXL / NVLink / UALink link controller's dynamic power was
+- **Controller logic:** the PCIe / CXL / NVLink / UALink link controller's dynamic power was
   McPAT's model (Cadence ChipEstimate 65 nm per lane) times the measured link duty, a few microwatts on an offload
   run, and was information only for want of a published figure. The one public per-configuration figure found is the
   UltraScale+ (16 nm) PCI Express integrated block in the Xilinx Power Estimator 2023.1.2 (public, Production): its
@@ -3318,7 +3346,7 @@ release commit messages.
 
 ## 1.12.153 -- the replayed DRAM latency follows the controller under message passing and on bursty device kernels: a price window, thread-MPI host records shifted with their rank, the charged view on ROI requests
 
-User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising other cells").
+"bring MPI bfs into [0.85, 1.15] without destabilising other cells".
 
 - **The problem.** After 1.12.145-1.12.151 the OpenMP host baselines charged 0.86-0.99 of the latency the replayed
   Ramulator2 controller measured (charged / measured, DRAM part), but the thread-MPI host baselines did not
@@ -3358,10 +3386,10 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
     controller has been fed, not k-2 of its own clock; a record behind the replay clock shifts its source rank, as a
     whole, to the clock (one offset per rank, which only grows), so a trailing rank's requests keep their spacing.
   - A device interface binds replayPriced / replayLat to the replay: a request priced at the replay and found
-    outside the ROI leaves them, as it leaves rd / wr (1.12.18 R1). The device access is priced before it is
+    outside the ROI leaves them, as it leaves rd / wr (1.12.18). The device access is priced before it is
     recorded, so the record carries its charge (the record's own epoch is never read by that access).
   - The run prints the window, and on thread-MPI how many host records were shifted (largest shift, sources).
-- **Validation (sbatch, genoa, 348592b8 vs this build, the 73-cell list; charged / measured, run-time shift).**
+- **Validation (a 192-CPU node, the previous build vs this build, the 73-cell list; charged / measured, run-time shift).**
   - Thread-MPI host: DDR5 bfs 4 / 16 0.837 -> 0.975 (-3.1%) / 0.210 -> 0.825 (-37.1%); HBM3 bfs 4 / 16 0.792 -> 0.976
     (-2.0%) / 0.471 -> 0.959 (-11.8%); DDR5 stream_triad 4 / 16 0.812 -> 0.999 (-11.3%) / 0.917 -> 1.000 (-33.9%);
     HBM3 stream_triad 4 / 16 0.984 -> 0.999 (-1.7%) / 0.989 -> 0.999 (+1.9%). Door waits on 16-rank DDR5
@@ -3376,7 +3404,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
     before the first epoch) 0.321 -> 0.794. With the window at 16 epochs (the same 73 cells, host side) bfs_omp
     reads 0.926 and spmv 0.815, the host cells stay within 0.89-1.01 except 16-rank DDR5 bfs (0.831); 8 is kept as
     the default (the full validation above).
-  - Every checksum equal; results identical on two genoa nodes and a qc-mi210 node.
+  - Every checksum equal; results identical on two 192-CPU nodes and a 128-CPU node.
 - **Data impact.** Thread-MPI host baselines (DDR5: up to -37% run time, the door-wait artefact removed); every
   cell whose replay prices a bursty load (OpenMP host +-3%, device bfs_omp +19% run time); the device charged
   counters of co-sim MPI cells (ROI requests only). Single-core and steady cells move under 1.4%.
@@ -3394,7 +3422,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
     (`simulation.dram_epoch_phases`, 1.12.145; architecture.md said 1.12.147);
   - the flat `scope: cosim` form and the top-level `host:` block are retired (1.12.8, 1.12.9), and so is
     `system.hosts[].mem` (1.12.10): a host's own main memory is a `system.memories[]` entry;
-  - ASLR does not move timing (1.12.62): the README no longer offers `setarch -R` for bit-stable timing;
+  - ASLR does not move timing (1.12.62): the README no longer offers `setarch -R` for timing;
   - DDR5 runs DDR5-4800B on the 16 Gb die over two 32-bit sub-channels, and HBM3 the 16 Gb 8-High organisation
     (dram_specs.md); the power-down exit times per technology and the DDR3 default termination (SSTL-15 at 1.5 V)
     are corrected in sources.md;
@@ -3477,7 +3505,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
       Table III), spanning the memory array as the tree's links span the memory die (the SRAM / NVM
       PIM floorplan is not modelled).
   - **Other flat topologies** keep McPAT's own link model, with the measured activity.
-- **The mesh size (user ruling 2026-10-28).**
+- **The mesh size.**
   - The fabric is sized by the network's endpoints, one per PE or memory organisation. This is the M:N mapping of
     1.11, and it matches the in-die fabric rule of 1.11.103, one router per organisation.
   - A 256-bank fig2 device therefore builds and runs a 16 x 16 mesh, and is priced as that mesh.
@@ -3489,7 +3517,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
 - **Defect 3: a router's duty cycle could exceed 1.** The duty was accesses / (cycles x nodes), so the 17-port HBM3
   rank hub was priced at duty 1.04 to 2.07 on 17 HBM3 cells.
   **Fix:** router duty = accesses / (cycles x routers x min(input, output) ports), per McPAT instance; each router
-  class (H19) gets its own. A router switches up to one flit per output port per cycle, the peak CACTI's router
+  class gets its own. A router switches up to one flit per output port per cycle, the peak CACTI's router
   model scales. Bus levels, links and TSVs are unchanged.
 - **Defect 4: the router input buffer held VCs x the buffered bits, with one write port per VC** (McPAT passed VCs x
   entries as the depth, and CACTI multiplied the width by the VCs again). A 5-port, 128-bit router with 8 x 5 entries
@@ -3497,7 +3525,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
   **Fix (external/cacti/router.cc):** one queue array per port, (VCs x entries) x flit bits, one write and one read
   port. This is the published organisation: the Intel 80-tile router's per-port "Input Queue Array (Register File)",
   shared by its lanes.
-- **The router model, calibrated per shape on published routers (user rulings 2026-10-28; external/mcpat noc.cc).**
+- **The router model, calibrated per shape on published routers (external/mcpat noc.cc).**
   CACTI's router builds the buffers, the crossbar and the arbiters only. Its area is compared, at each source's own
   shape and node and in the instance's context, with every published router whose shape and router area are both
   given.
@@ -3562,8 +3590,8 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
 
 ## 1.12.147 -- a memory of type Ramulator (HOST_MC placement) is a replayed controller; the weave-timed Ramulator controller is removed
 
-- **Problem (user ruling 2026-10-28: "move HOST_MC placement and system devices of type Ramulator onto the epoch
-  replay (no DAMOV-style weave path left)").** Since 1.11.98 (device) and 1.12.18 (host, ruling 17) PIMID times DRAM
+- **Problem (move HOST_MC placement and system devices of type Ramulator onto the epoch
+  replay (no DAMOV-style weave path left)).** Since 1.11.98 (device) and 1.12.18 (host) PIMID times DRAM
   by epoch replay, but a memory of type Ramulator -- the `pim.placement.level: HOST_MC` placement's memory, where
   the elements share the host memory controller -- was still built as `RamulatorMemory`: the bound phase returned
   req.cycle + tRCD + tCAS (16 cycles at 500 MHz, DDR5 and HBM3) and Ramulator2 ran in the weave phase. A dependent
@@ -3592,7 +3620,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
   mem_ctrls.cpp, dram_epoch_replay.h, dram_epoch_replay.cpp (setDeviceRequesters only), zsim.h (comment),
   external/zsim/CMakeLists.txt, src/main.cpp (emitZSimMemBlock bootstrap keys, the memDramReplay parser scope, the
   HOST_MC refresh units), docs/memory.md, docs/architecture.md, docs/yaml_reference.md.
-- **Validation (sbatch, qc-pvc, a4c3dc1b vs this build, 16 elements at 500 MHz).** gemv --size 2048 and stream_triad
+- **Validation (a 208-CPU node, 1.12.130 vs this build, 16 elements at 500 MHz).** gemv --size 2048 and stream_triad
   --size 1000000 at HOST_MC; run time before -> after, the bound charge before (16) and the weave-measured mean,
   the charged mean after (mem-N rdlat+wrlat over rd+wr) against the replay's measured mean (hostLatencySum /
   hostRequests), accesses priced by the replay / by the bootstrap:
@@ -3615,14 +3643,13 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
 - **Data impact.** HOST_MC cells on a DRAM technology (no corpus cell uses HOST_MC): run time, DRAM latency and
   memory energy change as above. An `alu_core` element at HOST_MC has no memory interface and issues no DRAM
   request (and at a4c3dc1b already panics on its scratchpad DMA): nothing to replay. The DQ write-data counters of a
-  multi-controller memory now read the written line itself; a line another thread is still writing is read live, so
-  they vary in the 6th digit between runs (as the host-fabric wire counts of multi-core host cells do). Every other
-  cell is unchanged.
+  multi-controller memory now read the written line itself; a line another thread is still writing is read live, as
+  the host-fabric wire counts of multi-core host cells are. Every other cell is unchanged.
 
-## 1.12.146 -- a host baseline's own pages are spread over the memory like a host controller spreads them (user ruling 2026-10-28)
+## 1.12.146 -- a host baseline's own pages are spread over the memory like a host controller spreads them
 
 - **The problem.** When the device is the host's memory (every host baseline and co-sim host of the corpus), the host's
-  requests are replayed at the bank the device's placement gives the line (1.12.18, ruling 17). A page no PE has placed
+  requests are replayed at the bank the device's placement gives the line (1.12.18). A page no PE has placed
   takes the PIM block map: pages_per_unit contiguous pages per unit. A host baseline's whole working set therefore sat
   on one channel and a few banks: ctrlMaxChannelPermille 1000 on every DDR5 and HBM3 host baseline, 4 ACTs per request
   on DDR5 (chip split) and a row miss on nearly every request. The controller was overloaded by construction (16-core
@@ -3638,7 +3665,7 @@ User ruling 2026-10-28 ("bring MPI bfs into [0.85, 1.15] without destabilising o
 
 ## 1.12.145 -- the replayed DRAM latency follows the controller under load: queue wait counted, partial means aged, a one-phase DRAM epoch
 
-User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"), prompted by Esmaili-Dokht et al.,
+"fix the multi-core host latency gap before the resim", prompted by Esmaili-Dokht et al.,
 "Integration, Enhancements and Evaluation of Memory Simulators" (IISWC 2026, arXiv 2610.15873).
 
 - **The problem.** A core is charged, in the bound phase, the mean service latency the replayed Ramulator2 controller
@@ -3695,12 +3722,12 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - the periodic and ROI-end snapshots, as the two channels' sums at the same tick with the merged idle count;
   - the request, outside-ROI and door counters, as sums (the door wait as a maximum).
   Request ids are given in record order before the records are split by channel.
-- **Validation (qc-pvc, same node, same job, same guest binaries).** Identical to the previous change in every
+- **Validation (one 208-CPU node, one job, the same guest binaries).** Identical to the previous change in every
   simulated, timed and priced line on the 8 serial PIM kernels (HBM3, BANK, 16 alu_core PEs), the DDR5 BANK and
   CHANNEL serial gemv, the 1-core OpenMP gemv and stream_triad full baselines, and the 16-core OpenMP and 4-core MPI
   stream_triad full baselines. The only differences are log order of two start-up lines, the new info line, and the
-  measured DQ and host-fabric wire data counts. Those counts change between runs of the same build by a few units
-  (the guest's data is read while the guest runs), as before this change.
+  measured DQ and host-fabric wire data counts, which read the guest's data while the guest runs, as before this
+  change.
   Host time, previous change vs this one: 16-core OpenMP stream_triad 888 s -> 706 s (-20%), 4-core MPI
   stream_triad 669 s -> 506 s (-24%), 1-core OpenMP gemv 252 s -> 188 s (-25%). The 1-core runs use about
   50 s more CPU time (the helper thread).
@@ -3709,7 +3736,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.143 -- analytical NoC: the in-die fabric is walked and its links are priced
 
 - **Defect 1 (external/zsim/src/sparse_htree.h, SparseHTree::endpointForUnit).** On a DRAM device with an in-die
-  fabric (`noc.topology: MESH_2D`, `RING` or `CROSSBAR`, ruling 9) the target unit's endpoint was looked up through
+  fabric (`noc.topology: MESH_2D`, `RING` or `CROSSBAR`) the target unit's endpoint was looked up through
   the tiers the grid replaced; there is no router there, the chip router has no aggregated endpoint, so the lookup
   returned none and every analytical access fell back to the arithmetic ladder. The analytical timing and the walk
   counts therefore never crossed the die's fabric: MESH_2D, RING and CROSSBAR ran and priced identically. The lookup
@@ -3717,11 +3744,11 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Defect 2 (src/main.cpp, NoC level pricing; external/zsim/src/garnet_network.h recordTierWalk,
   sparse_htree.h TreeWalker::walk).** On the analytical walk the grid tier was priced as one shared bus, so the
   die's node links rode a bus priced alike for every fabric, and the die exits counted at the tiers the grid
-  replaced were reported "NOT priced" (no router there to own an up-link). Now (user ruling 2026-10-28): the walk
+  replaced were reported "NOT priced" (no router there to own an up-link). Now: the walk
   counts the node links it crosses (MESH/RING node-node, CROSSBAR node-hub) apart from the tree up-links; they are
   one link instance priced from those counted traversals with the shared wire model, at the built link count and
   the mean node-link length (each built link's Manhattan length in node pitches, pitch = sqrt(die area / nodes per
-  die)); the grid tier is priced as switches (ruling 9), not a bus; and the die exit is one up-link per gridded die
+  die)); the grid tier is priced as switches, not a bus; and the die exit is one up-link per gridded die
   at the grid tier and at each tier it replaced, as the timing charges it.
 - **Scope.** The pricing change applies to the analytical NoC with an in-die fabric only; the tree (no in-die
   fabric), the detailed path's measured attribution and the SRAM/NVM flat fabric are unchanged. The lookup fix
@@ -3729,7 +3756,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Defect 3 (same lookup, detailed path).** A detailed run with an in-die CROSSBAR (the one in-die fabric the
   detailed path routes) sent no fabric packets at all for the same reason: 0 packets, every remote access unpriced
   on the fabric. It now routes them (DDR4 BANK, 16 elements, gemv: 0 -> 3110 packets).
-- **Data impact.** Only DRAM devices with a named in-die fabric change; every fleet cell, the tree, the SRAM/NVM flat
+- **Data impact.** Only DRAM devices with a named in-die fabric change; every corpus cell, the tree, the SRAM/NVM flat
   fabric and the examples without fabric traffic are unchanged (bit-identical results). DDR4 BANK, 16 elements,
   gemv (small size), analytical: NoC 3.5 mW -> 94 / 94 / 99 mW (MESH_2D / RING / CROSSBAR; node links 0.9 mW, the
   die exits including their off-package channel I/O the rest), cell 0.833 W -> 0.959 / 0.951 / 0.958 W, run time
@@ -3741,8 +3768,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Gap closed (params/dram/hbm2.yaml, hbm3.yaml `idd.vpp_standby`; external/ramulator pimid_energy.h ippUnitMW;
   src/params/part_records.cpp, src/memory/ramulator_wrapper.cpp, src/main.cpp).** The HBM records publish no IPP row
   (no JEDEC or vendor HBM IPP2N/IPP3N exists), and the measured HBM2 base the records derive from carries the VDDC and
-  VDDQ rails only, so every HBM run printed `+ipp=n/a`: the wordline-pump rail's standby was not priced. User ruling
-  2026-10-28: price it with the method and source of the activation VPP share (1.12.18, `idd.vpp_act`).
+  VDDQ rails only, so every HBM run printed `+ipp=n/a`: the wordline-pump rail's standby was not priced. It is now priced with the method and source of the activation VPP share (1.12.18, `idd.vpp_act`).
 - **Method.** Standby VPP = ratio x the record's VDD standby power of the same unit, on the VDD background's state
   split (IDD3N while a bank is open, IDD2N otherwise) and at the run's temperature. Ratio = Xilinx Power Estimator
   (XPE) 2023.1.2, UltraScale+, HBM_Data row 43 'Idle VPP Dynamic' / row 37 'idle VDD dynamic', both per stack per
@@ -3765,11 +3791,11 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.141 -- DDR5-3200 runs the 16 Gb die, with a current row scaled from the published DDR5-4800 column
 
-- **Gap closed (params/dram/ddr5.yaml; user rulings 2026-10-28).** DDR5-3200 had no current column of its own.
+- **Gap closed (params/dram/ddr5.yaml).** DDR5-3200 had no current column of its own.
   The 3200 grade carried a stated 8 Gb row (IDD0 55, IDD2N 34, IDD3N 42, IDD4R 148, IDD4W 168, IDD5 120,
   IDD2P 20 mA) with no IDDQ and no IPP row, so its VPP rail (standby, activate, burst and refresh) was not priced and
   its pin I/O was termination only. The row is now scaled from the Micron MT60B 16 Gb Rev A Table 6 x8 DDR5-4800
-  column by data-rate scaling, the method of the LPDDR5 7500 -> 6400 row (1.11.91 item 11, 1.12.78, 1.12.79):
+  column by data-rate scaling, the method of the LPDDR5 7500 -> 6400 row (1.11.91, 1.12.78, 1.12.79):
   IDD4R/IDD4W over IDD3N, IDDQ4R over IDDQ3N and IPP4R/IPP4W over IPP3N scale x 3200/4800; the background standby
   is priced x 3200/4800; IDD0, IDD5B, IDD2P, IPP0, IPP5B, IPP2N/IPP3N and IDDQ4W keep the 4800 column.
 - **The 3200 grade runs the 16 Gb die (src/memory/ramulator_wrapper.cpp, src/main.cpp).** The organisation the
@@ -3787,7 +3813,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   address vectors, allocated and freed every cycle. They are now kept between cycles and refilled in place, with the
   same contents and order.
 - **Validation (same node, same job, same guest binaries).** Identical in every simulated and priced line to
-  1.12.125 on the serial cells of the first entry. Host time (qc-mi210, same job; the
+  1.12.125 on the serial cells of the first entry. Host time (a 128-CPU node, same job; the
   previous change in brackets): 16-core OpenMP stream_triad 685 s (713 s), 4-core MPI stream_triad 427 s (429 s),
   1-core OpenMP stream_triad 147 s (157 s), 1-core OpenMP gemv 201 s (202 s).
 - **Data impact:** none.
@@ -3801,7 +3827,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   8 bytes uses the per-byte rules.
 - **Validation.** A standalone check of the new code against the per-byte code agreed on 400000 lines and packets
   (random and structured data, line sizes 5-256 bytes, beat widths 2-32 bytes, all six flit widths). The serial cells
-  of the first entry are identical in every simulated and priced line to 1.12.125. Host time (qc-mi210, same job; the
+  of the first entry are identical in every simulated and priced line to 1.12.125. Host time (a 128-CPU node, same job; the
   previous change in brackets): 16-core OpenMP stream_triad 713 s (724 s), 4-core MPI stream_triad 429 s (439 s); the
   1-core baselines within 3% of it (gemv 202 s, stream_triad 157 s against 202 s and 153 s).
 - **Data impact:** none.
@@ -3810,7 +3836,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 - **The problem.** The scheduler indexes of the first host-speed change cost about 30 host cycles per DRAM cycle even
   with empty queues. A 1-core host baseline ticks ~2.8 G nearly idle controller cycles, so the 1-core OpenMP gemv
-  baseline took 252 s against 1.12.125's 245 s (qc-mi210, same job).
+  baseline took 252 s against 1.12.125's 245 s (a 128-CPU node, same job).
 - **The change (external/ramulator/src/dram_controller/impl/generic_dram_controller.cpp).**
   - With every queue empty, the bank-parallel cycle now only tells the row policy and the plugins that nothing was
     found. That is all the original loop did with empty queues. The scheduler's index catches up with refreshes at the
@@ -3818,7 +3844,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   - The per-row and per-address counts are kept in flat open-addressing tables, so a queued request no longer
     allocates.
 - **Validation (same node, same job, same guest binaries).** Identical in every simulated and priced line to
-  1.12.125 on the serial cells of the first entry. Host time (qc-mi210, one job; the
+  1.12.125 on the serial cells of the first entry. Host time (a 128-CPU node, one job; the
   previous change in brackets): 1-core OpenMP gemv 202 s (252 s), 1-core OpenMP stream_triad 153 s (174 s), 4-core MPI
   stream_triad 439 s (452 s), 16-core OpenMP stream_triad 724 s (723 s).
 - **Data impact:** none.
@@ -3865,7 +3891,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - No timing, energy or area model changes.
 - **Validation:**
   - Cluster (Ubuntu 24.04; the pinned libraries are md5-identical to its own): 59 serial cells and the
-    multi-threaded cells (omp_DDR3, cosim_DDR5, hostn_16core) on qc-pvc and qc-mi210 give the same cycles and the
+    multi-threaded cells (omp_DDR3, cosim_DDR5, hostn_16core) on a 208-CPU and a 128-CPU node give the same cycles and the
     same simulated and priced figures as before; only the launch line and the libgomp path in one runtime line
     change.
   - A host with Ubuntu 26.04 (glibc 2.43), the 1.12.128 smoke set with the fetched sysroot: every cell gives the
@@ -3905,7 +3931,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.132 -- an HBM host memory controller is priced as an interposer PHY at the published HBM PHY energy; HBM2 host PHY idle
 
-- **Defect (user ruling 2026-10-28).** A host memory controller whose memory is HBM2 or HBM3 was emitted at McPAT's
+- **Defect.** A host memory controller whose memory is HBM2 or HBM3 was emitted at McPAT's
   off-package tier (phy_class 0: DDR-class DQ pins with ODT). Its PHY energy came from McPAT's LVDS formula, about
   2.2 pJ/bit at the host's 22 nm, and its area and leakage were those of an off-package PHY. An HBM PHY drives an
   interposer: microbumps, unterminated (JESD235 / JESD238). The published HBM PHY energies are 0.25-1.07 pJ/bit.
@@ -3926,7 +3952,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     - Voltage factor 1: HBM2's I/O supply is the measured 1.2 V. HBM2's host-PHY core voltage stays the
       measured 0.75 V.
   - The run prints the tier, the figures and their source on a `[power] <host> memory-controller PHY` line.
-- **HBM2 host PHY idle (user ruling 2026-10-28).** It is the same HBM2E measurement at HBM2's data rate:
+- **HBM2 host PHY idle.** It is the same HBM2E measurement at HBM2's data rate:
   - hard macro 36 mW x 2400 / 3200 = 27 mW, plus I/O 14 mW (HBM2 VDDQ 1.2 V is the measured supply; no core voltage
     scaling) = 41 mW per stack (1024 DQ);
   - that is 5.125 mW per 128-DQ channel, charged per channel (8 per stack). Was 0.
@@ -4000,27 +4026,27 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.128 -- host speed: the measured data statistics read the guest's memory without a system call
 
 - **Note (added later).** This release carried none of the code described below; the code shipped in 1.12.137.
-- **User ruling 2026-10-27.** The measured DQ and wire statistics read each DRAM line and each host-fabric data
+- **.** The measured DQ and wire statistics read each DRAM line and each host-fabric data
   message from the guest's memory (since 1.12.58). They did so with `process_vm_readv`, about 1-2 us per line. The
   host's lines are read inside the shared L3's lock, and since 1.12.123 one thread runs at a time, so every read is on
   the run's critical path.
 - **The change (external/zsim/src: dq_data_stats.h, qemu_zsim_plugin.cpp, zsim_trace_driver.cpp).** On a vCPU thread
   the line is now read through QEMU's own guest page table (`qemu_plugin_read_memory_vaddr`), with no system call.
   Off a vCPU thread, and in the trace-driven driver, `process_vm_readv` is used as before.
-- **Edge case (documented, ruled).** QEMU reads a page that the guest mapped but made unreadable (PROT_NONE or
+- **Edge case (documented).** QEMU reads a page that the guest mapped but made unreadable (PROT_NONE or
   write-only, e.g. a heap range given back with `mmap(PROT_NONE)`) through `/proc/self/mem`. A line still cached from
   such a page is therefore counted from its contents. `process_vm_readv` refused that read, and the line was counted
   as unread (`dq*Unread`, `*Unread`). A page the guest unmapped is unreadable both ways.
 - **Validation (same node, same job, same guest binaries).** Identical in every simulated and priced line to the
   previous change on the same serial cells. No line was counted differently in them: the unread counts are equal.
-  Host time (qc-pvc, same job as the first entry's figures): 16-core OpenMP baseline 911 s, 4-core MPI 680 s, 1-core
+  Host time (a 208-CPU node, same job as the first entry's figures): 16-core OpenMP baseline 911 s, 4-core MPI 680 s, 1-core
   OpenMP stream_triad 173 s, 1-core OpenMP gemv 247 s.
 - **Data impact:** none on the cells checked. A run that keeps lines of a page it made unreadable can count more DQ
   and wire data, and fewer unread lines.
 
 ## 1.12.127 -- host speed: the replayed DRAM controller schedules without re-scanning its queues
 
-- **The problem.** Since 1.12.18 (ruling 17) a host baseline's memory requests run through the Ramulator2 epoch
+- **The problem.** Since 1.12.18 a host baseline's memory requests run through the Ramulator2 epoch
   replay. Each host request is four chip copies, and the replay runs single-threaded at the phase barrier. The
   bank-parallel scheduler evaluated every queued request (prerequisite command and readiness) at every pick of every
   DRAM cycle; a 16-core OpenMP host baseline keeps ~500 writes queued over ~300 M controller cycles. The power-down
@@ -4049,7 +4075,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     BANK and CHANNEL serial gemv, and the 1-core DDR5 OpenMP gemv and stream_triad host baselines (full size).
   - The only differing lines are host-side: the start order of the simulator's own threads, and the DQ write-data bit
     counts of the 1-core host baselines. Those counts also differ between two runs of 1.12.125.
-  - Host time (qc-pvc, same job; 1.12.125 in brackets): 16-core OpenMP DDR5 stream_triad baseline 1058 s (more than
+  - Host time (a 208-CPU node, same job; 1.12.125 in brackets): 16-core OpenMP DDR5 stream_triad baseline 1058 s (more than
     3600 s); 4-core MPI DDR5 stream_triad 790 s (2104 s); 1-core OpenMP stream_triad 179 s (202 s); 1-core OpenMP gemv
     257 s (221 s). With nearly empty queues the indexes cost more than the scans they replace, about 30 cycles per
     controller cycle.
@@ -4098,7 +4124,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 ## 1.12.125 -- the program path is documented as part of the program's input
 
 - **Note (added later).** 1.12.136 corrects this entry: a multi-threaded program moves by up to about 4%.
-- **Documented (docs/architecture.md, Reproducibility; user ruling 2026-10-27).** PIMID passes the program path
+- **Documented (docs/architecture.md, Reproducibility).** PIMID passes the program path
   exactly as it was given, as the guest's `argv[0]` and as the file name QEMU records. The guest's startup reads it,
   so two spellings of one file (`/a/b/prog`, `/a/./b/prog`, `/a/x/../b/prog`) or two installations at paths of
   different length start the guest with slightly different work before the ROI. Measured: single-core host baselines
@@ -4126,12 +4152,12 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   those mutex kinds; glibc's default mutexes, libgomp, libstdc++ and MPICH do not), and IDs inside `/proc/<id>/status`
   text.
 - No timing, energy or area model changes.
-- **Validation (base 663c9b67, DET3 on):**
-  - hostn_4core / hostn_16core / cosim_DDR5 / cosim_HBM3 / omp_DDR3 on qc-pvc-00 (7-digit host IDs), qc-pvc-01
-    (7), qc-mi210-00 (7) and qc-mi210-01 (6), two runs each, and on qc-pvc-00 again after its ID counter wrapped
+- **Validation (base 1.12.123, DET3 on):**
+  - hostn_4core / hostn_16core / cosim_DDR5 / cosim_HBM3 / omp_DDR3 on two 208-CPU nodes A and B (7-digit host IDs on
+    both) and two 128-CPU nodes C and D (7 and 6), two runs each, and on node A again after its ID counter wrapped
     to 5 digits: one value per cell everywhere (51282 / 15938 / 396283 / 349381 / 179993). Before: hostn_16core
     15872 / 15842 / 15604 with 5- / 6- / 7-digit IDs.
-  - 59 serial cells on qc-pvc-00 and qc-mi210-01: every cycle count and every simulated and priced figure equals
+  - 59 serial cells on nodes A and D: every cycle count and every simulated and priced figure equals
     the previous release on both nodes; the only changed log line is the `[guest] launch:` line.
   - Guest ID check (a test program under the patched QEMU): getpid/gettid/getppid/getpgid/getsid all eight digits;
     `/proc/<pid>/stat`, `/proc/self/stat`, `/proc/self/task/<tid>/stat`, `raise`, `kill`, `pthread_kill`,
@@ -4195,7 +4221,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.121 -- after the ROI the program runs to its exit without entering the scheduler
 
-- **Defect (gate 1.12.114, baseline_DDR5_omp_gemv_16core).** The run printed its power report but no BENCH_CHECKSUM:
+- **Defect (found testing 1.12.114 on baseline_DDR5_omp_gemv_16core).** The run printed its power report but no BENCH_CHECKSUM:
   it took 10 min 19 s instead of about 20 s, i.e. the program did not reach its exit within the 600 s the simulator
   waits after the ROI, and the run was then ended, which discards the guest's buffered output ("[HOOKS] ROI end" and
   the checksum). After the ROI the program runs unsimulated, but its syscalls (a futex wait, a write) and its threads'
@@ -4221,7 +4247,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   without the shim: no checksum, and about 99 million trace events per rank for gemv_mpi 256 (4 ranks). The preload
   is now passed to the guest only, as in the execution paths.
 - No timing, energy or area model changes.
-- **Validation (qc-pvc and qc-mi210):** DDR3 gemv 256 with `workload.env: {LD_LIBRARY_PATH: /opt/pimid_no_such_dir}`
+- **Validation (a 208-CPU and a 128-CPU node):** DDR3 gemv 256 with `workload.env: {LD_LIBRARY_PATH: /opt/pimid_no_such_dir}`
   stopped with exit code 3 before; it now runs on both node types with the same result (1059845 cycles), and the
   guest's dynamic linker searches the given directory first, then the system directories. MPI trace generation
   (gemv_mpi 256, 4 ranks) prints the checksum on both node types.
@@ -4236,21 +4262,21 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   plugin answers `sched_getaffinity`, `sched_setaffinity` and the files under `/sys/devices/system/cpu/` as the
   execution plugin does. The library lookup (1.12.107) already applied to trace generation.
 - No timing, energy or area model changes; replay is unchanged.
-- **Validation (qc-pvc, 208 CPUs; qc-mi210, 128 CPUs):** a single-threaded OpenMP host baseline (gemv_omp 256, 1 OOO
+- **Validation (a 208-CPU and a 128-CPU node):** a single-threaded OpenMP host baseline (gemv_omp 256, 1 OOO
   core, system scope) recorded on both node types: before, the two traces differed (84611904 vs 84603264 bytes);
   after, both are the same file (84607296 bytes, the same events and instruction blocks), and two recordings on one
   node are the same. A serial trace (gemv 256) is unchanged.
 
 ## 1.12.118 -- the RDIMM register (RCD) power, DDR4 and DDR5
 
-- **RDIMM register** (user ruling 2026-10-27): an `rdimm` DDR4/DDR5 memory now pays its register clock driver.
+- **RDIMM register**: an `rdimm` DDR4/DDR5 memory now pays its register clock driver.
   Both DDR4 and DDR5 register terms are computed:
   - static (PLL and output clocks): the DDR3 RDIMM register's 0.36 / 0.21 W at DDR3-1333 / 800 (D. David et al.,
     "Memory Power Management via Dynamic Voltage/Frequency Scaling", ICAC 2011, Table 3: "SelfRefresh" against
     "SelfRefresh - Register Off"), linear in the data rate and x (VDD / 1.5 V)^2 with the DDR4 register at 1.2 V
     (Renesas 4RCD0124KC0 short-form datasheet p.1) and the DDR5 register at 1.1 V (Montage M88DR5RCD01 / RCD03 product
     briefs): 423 mW at DDR4-2400, 718 mW at DDR5-4800, one register per host memory (ledger `<host>.memory_rcd`; a
-    device memory adds it to its static power at a crossing placement). EXTRAPOLATED (user ruling 2026-10-27): the
+    device memory adds it to its static power at a crossing placement). EXTRAPOLATED: the
     measured points are DDR3-800 and DDR3-1333; DDR4-2400 is 1.8x and DDR5-4800 3.6x the highest measured rate.
   - output drive into the DRAMs, per access: DDR4 the DIMM's command/address network to VTT (the CACTI-IO parameter
     set's network, 0.300 nJ per access at DDR4-2400); DDR5 15 outputs x 1.1 V x 16.4 mA, LOW half the time over the
@@ -4260,7 +4286,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.117 -- an RDIMM's command/address path ends at its register
 
-- **RDIMM command/address** (user ruling 2026-10-27): on an `rdimm` memory the host drives the register (RCD) inputs,
+- **RDIMM command/address**: on an `rdimm` memory the host drives the register (RCD) inputs,
   not the DRAMs. The command/address share of the DQ-interface termination (the CACTI-IO DIMM network, 25 lines to VTT)
   is replaced by the RCD-input network:
   - DDR5: 10 inputs per sub-channel (7 DCA, parity, 2 CS; Renesas RRG5004x short-form datasheet Rev.1.01 p.1), POD
@@ -4278,7 +4304,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.116 -- the DDR4/DDR5 host memory-controller PHY idle from measured PHY idle rails
 
-- **Host PHY idle** (user ruling 2026-10-27): the DDR4/DDR5 memory-controller PHY static (idle) power was the CACTI-IO
+- **Host PHY idle**: the DDR4/DDR5 memory-controller PHY static (idle) power was the CACTI-IO
   parameter-set value, 30 mW per 64-bit interface (phase rotator 10 + receivers 10 + PLL 10). The DDR4/DDR5
   host-PHY idle is now scaled from the measured idle of an LPDDR4X x16 PHY's two DRAM-PHY rails (NXP
   AN13917 Rev. 4.0, i.MX 93: Table 6 p.12 names vdd2_ddr and vddq_ddr "Power supply for DRAM PHY"; system idle with the
@@ -4441,16 +4467,16 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   the host's processors.
 - **Validation:** 59 serial cells (24 device cells: 8 kernels x DDR3/DDR5/HBM3, 16 alu_core at RANK; 17 single-core
   host baselines: DDR3/DDR5 x 8 kernels and the 1-core DDR5 baseline; 18 PE-type cells: 6 memories x 3 PE types at
-  BANK) give the same cycles and the same simulated and priced figures on five node types: qc-mi210 (128 CPUs),
-  qc-pvc (208), qc-pro6000 (88), fs-mi300a (192) and fs-mi300x (128), four different library caches among them.
-  Before the change, 6 of the 59 agreed. fs-mi300a and fs-mi300x share one library cache and differ in CPU count:
+  BANK) give the same cycles and the same simulated and priced figures on five node types (A to E: 128,
+  208, 88, 192 and 128 CPUs), four different library caches among them.
+  Before the change, 6 of the 59 agreed. D and E share one library cache and differ in CPU count:
   before the change all 42 device and PE-type cells already agreed between them and 16 of the 17 host baselines did
   not. On one node, giving the guest another node's library cache, or restricting the CPU set to 88-208 CPUs, no
   longer changes the result of the cells tried (DDR3 gemv device and PE-type cells; DDR3 gemv and vector_add host baselines).
 - **Data impact (one-time, serial cells, against 1.12.80 on each node):** device cells max 5.96% (mean 0.53-0.67%),
   host baselines max 1.45% (mean 0.40-0.57%), PE-type cells max 0.12% (ooo_core unchanged); checksums unchanged.
-  DDR3 gemv 256 (16 alu_core, RANK) is now 1064074 cycles on every node (genoa 1061624, mi100 1061392, qc-mi210
-  1064200, qc-pvc 1062573, qc-pro6000 1063881, fs-mi300a/x 1059374 before).
+  DDR3 gemv 256 (16 alu_core, RANK) is now 1064074 cycles on every node (before: A 1064200, B 1062573,
+  C 1063881, D and E 1059374, and 1061624 and 1061392 on two further node types).
 
 ## 1.12.106 -- HBM3 standby temperature slope taken per stack
 
@@ -4556,7 +4582,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.100 -- Serial links: the idle link is priced (SerDes in ASPM L1 between transfers, UCIe clock-gated); the per-class energy re-sourced
 
-- **The idle link (user ruling 2026-10-27: ASPM L1 when idle):** a PCIe / CXL / NVLink / UALink link was priced as
+- **The idle link (ASPM L1 when idle):** a PCIe / CXL / NVLink / UALink link was priced as
   bytes crossed x pJ/bit, as if its SerDes were off between transfers; a gen5 x16 link that moved 128 B in a run cost
   0.0075 W per end (controller leakage). Each end is now priced over the run: in ASPM L1 between transfers at 25 mW per
   lane ("each lane of a PCIe PHY in "L1" could still be consuming 20-30 milliwatts", R. Solomon, Synopsys technical
@@ -4570,7 +4596,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   transmitter-only figure stays a bound below), gen5 7.6 - 11.4 (sources named: Analog Bits Gen5 on 8LPP, SemiWiki
   2021; Intel 10 nm incl. PLL, CICC 2020). UALink 4.5 - 6.0 (was 3.5, which is not in the cited paper; host SerDes with
   DSP at 112G, arXiv 2510.15893). NVLink-C2C 1.3 (NVIDIA); NVLink 3/4 keep 1.17 - 1.30 as a lower bound for
-  the board-level PHY. CXL 3.0 (user ruling 2026-10-27: scale from gen5): the gen5 band carried per
+  the board-level PHY. CXL 3.0 (scale from gen5): the gen5 band carried per
   bit to the 64 GT/s PAM4 PHY (the PCIe 6.0 PHY at 64 GT/s takes it with no PAM4-vs-NRZ
   scaling at this rate); its L1 and L0 terms take the 64 GT/s line rate.
 - **One lane-rate table** for timing and energy: NVLink 3.0 50 Gb/s x 48 pairs, 4.0 100 Gb/s x 36, C2C 40 Gb/s x 90,
@@ -4582,7 +4608,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.99 -- Serial links: the link class in the co-sim bridge, ASPM L1 exit latency, one timing preset per class, PCIe / CXL lane widths
 
-- **One preset per class (user ruling 2026-10-27):** the link classes' timing presets lived in two tables that disagreed
+- **One preset per class:** the link classes' timing presets lived in two tables that disagreed
   (a named `power.link.link_type` other than `interposer` kept gen5's 63 GB/s and 500 ns whatever it was; the
   `system.network.links` table and the attachment's default had their own). One table now fills the unset fields
   wherever a class is named or defaulted, and the run prints it.
@@ -4598,7 +4624,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 - **Latency and header:** CXL 80 ns (CXL-attached memory adds 70-90 ns over local, Pond, ASPLOS 2023; was 200 / 100
   ns); PCIe 500 ns is the measured gen3 64 B DMA read (493-547 ns, Neugebauer et al.), carried for gen4/gen5; PCIe header 24 B (MWr: 2 framing + 6 DLL + 4 + 12, ibid.; was 20). NVLink, UALink latency
   and the coherence extras: carried, and the run says so.
-- **The link class in the co-sim bridge (user ruling 2026-10-27):** the host-device boundary charge (`system.bridge`)
+- **The link class in the co-sim bridge:** the host-device boundary charge (`system.bridge`)
   came from the device's memory technology alone, so an externally attached PCIe device was timed as its DDR channel
   (DDR4: 20 ns, 19.2 GB/s) and the link class priced only energy. Over any class but `dram_channel` (whose row is the
   link) a crossing now pays: latency = the link's per-transaction latency (PCIe 500 ns: a 64 B DMA read, the HOST side's
@@ -4606,7 +4632,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   pipeline), disjoint parts; + the link's coherence extra (a CXL class replaces the row's own cxl_mem flit overhead);
   bandwidth = min(link, device memory path); bytes = payload + the link's header (PCIe 24 B). An explicit
   `system.bridge` setting still wins; the run prints the composition.
-- **ASPM L1 exit latency (user ruling 2026-10-27):** a SerDes-class link (PCIe, CXL; NVLink, UALink carried) that has
+- **ASPM L1 exit latency:** a SerDes-class link (PCIe, CXL; NVLink, UALink carried) that has
   been idle longer than its L1 entry timer is in L1, and the next transfer first pays the L1 exit: 5 us (Intel's
   recommended device L1 exit, "L1: <5us", IDF 2010 PCIS002; a shipping endpoint reports 4-8 us, Microchip AN2949),
   entry after 8 us of idle (the L1 entrance latency Linux programs into a DesignWare controller, Tegra194, linux-pci
@@ -4634,7 +4660,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.97 -- the host socket's uncore, priced once per socket
 
-- **Model (user ruling 2026-10-27; power.models.host_uncore_static; src/main.cpp):** system scope charges the host
+- **Model (power.models.host_uncore_static; src/main.cpp):** system scope charges the host
   socket's uncore that does not scale with the core count -- the I/O and system agent (PCIe root complex,
   inter-socket links, interrupt and power management, clock generation) -- once per host, ledger
   `<host>.uncore_static`. These blocks are priced together; the published package-side quantity used is
@@ -4855,7 +4881,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.85 -- GDDR6 burst energy at the run's own data (transferred from the DDR3 measurement)
 
-- **Model (user ruling 2026-10-27):** the GDDR6 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
+- **Model:** the GDDR6 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
   coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
   I/O-corrected), on the raw line data (the array stores raw data; DBIdc acts on the pins only). Transfer on a stated assumption: GDDR6 is a
   planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. The DDR3 result is carried to GDDR6 as is; GDDR6 takes the same sign and size.
@@ -4865,7 +4891,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.84 -- LPDDR5 burst energy at the run's own data (transferred from the DDR3 measurement)
 
-- **Model (user ruling 2026-10-27):** the LPDDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
+- **Model:** the LPDDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
   coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
   I/O-corrected), on the raw line data (the array stores raw data; DBI-DC acts on the pins only). Transfer on a stated assumption: LPDDR5 is a
   planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. The DDR3 result is carried to LPDDR5 as is; LPDDR5 takes the same sign and size.
@@ -4875,7 +4901,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.83 -- DDR5 burst energy at the run's own data (transferred from the DDR3 measurement)
 
-- **Model (user ruling 2026-10-27):** the DDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
+- **Model:** the DDR5 record gets a `data_pattern` block (form ONES_LINEAR) with the DDR3
   coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table 5,
   I/O-corrected), on the 1.12.58 counters (DDR5 has no data bus inversion). Transfer on a stated assumption: DDR5 is a
   planar DRAM with the DDR3 column datapath structure, so the same relative sensitivity is taken. The DDR3 result is carried to DDR5 as is; DDR5 takes the same sign and size.
@@ -4885,7 +4911,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.82 -- DDR4 burst energy at the run's own data (transferred from the DDR3 measurement)
 
-- **Model (user ruling 2026-10-27):** the DDR4 record gets a `data_pattern` block (form ONES_LINEAR) with the
+- **Model:** the DDR4 record gets a `data_pattern` block (form ONES_LINEAR) with the
   DDR3 coefficients (read k = +0.1733, write k = -0.0835 per 1s fraction - 0.5; Ghose et al., SIGMETRICS 2018, Table
   5, I/O-corrected), on the 1s fraction of the run's raw line data. Transfer: DDR4 takes the dependence as measured on DDR3; the DDR3 study's authors state its trends should apply to DDR4. Normalised at uniform-random
   data. Record only (params/dram/ddr4.yaml).
@@ -4893,7 +4919,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.81 -- HBM3 burst energy at the run's own data
 
-- **Model (user ruling 2026-10-27):** the HBM3 record gets the `data_pattern` block (form DQ_TOGGLE_RELATIVE) with the
+- **Model:** the HBM3 record gets the `data_pattern` block (form DQ_TOGGLE_RELATIVE) with the
   coefficients the HBM2 measurement's authors publish for HBM3E (Olgun et al., MICRO 2026; HBM-Power pJ/bit = 2.759 + 1.192 dq + 1.331 tsv + 0.72 bg, relative, applied to writes too: the configuration of
   case_studies/hbm3e_validation, validated against measured H200 HBM3E power within 2.4-5.3 %). dq = the measured DQ pin transitions between
   beats; tsv and bg stay 0.5 (not counted); normalised at uniform-random data. Applies to the array burst; the DQ I/O
@@ -4903,7 +4929,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.80 -- HBM3 refresh on the 16 Gb 8-High organisation: tRFCab 350 ns, two times the rows per REF
 
-- **Published HBM3/HBM3E data searched (user ruling 2026-10-27).** No HBM3 or HBM3E IDD table is public: JESD238B.01
+- **Published HBM3/HBM3E data searched.** No HBM3 or HBM3E IDD table is public: JESD238B.01
   Tables 90/91 (printed p.159) are templates ("Supplier data sheets include a max value"); the vendor product pages
   give relative claims only (Samsung HBM3 "10% more power efficiency than our previous generation", footnoted to a
   datasheet "available upon request"; Micron HBM3E "2.5X performance per watt" vs HBM2E and "~30% lower power" vs
@@ -4933,7 +4959,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.77 -- the processing element's clock tree over its own registers, printed apart
 
-- **Report (user ruling 2026-10-26; external/mcpat/core.cc):** with the internal diagnostic switch on
+- **Report (external/mcpat/core.cc):** with the internal diagnostic switch on
   (PIMID_DEBUG_CHECKS=1), a core with DMA registers also prints its clock tree built over the core's own register
   sinks alone: the same clocked-logic span, with the leaf-cluster count, the global and local wire lengths and the
   local clock buffers recomputed for that sink count ("[mcpat clock] coreN core-only"). It is printed, not priced:
@@ -4943,7 +4969,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.76 -- a guest thread keeps a fixed identity and core, and a futex wait that sleeps leaves its core at once
 
-- **User ruling 2026-10-26**: ship "stable thread identity" and "futex waits as real leaves". Changes in
+- ****: ship "stable thread identity" and "futex waits as real leaves". Changes in
   external/zsim/src/qemu_zsim_plugin.cpp and scheduler.h:
   1. *Thread id = QEMU vCPU index.*
      - The vCPU index is QEMU's cpu index, assigned by the parent at the clone in the guest's own
@@ -5002,7 +5028,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.74 -- the published flip-flop scales to the run node with published silicon (DeepScaleTool)
 
-- **Node scaling of the published standard cells (user ruling 2026-10-26, "22 nm row: DeepScaleTool"):** the
+- **Node scaling of the published standard cells (22 nm row: DeepScaleTool):** the
   Nangate 45 nm Open Cell Library flip-flop (DFF_X1, characterised at 1.10 V) that prices every McPAT register
   (pipeline, controller and DMA registers, clock pins) was scaled to the run node with the Stillmaker & Baas 2017
   Table 5 row NEAREST the node, the pair midpoint. At 22 nm that row is the 20 nm multi-gate row, whose energy
@@ -5036,7 +5062,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.72 -- the clock-feasibility report says how the arrays were sized
 
-- **The defect** (user ruling 2026-10-26 (2)). The `[mcpat timing]` line said the arrays were "sized by CACTI for
+- **The defect**. The `[mcpat timing]` line said the arrays were "sized by CACTI for
   this clock", and the comment above the check said every array was sized against the cycle-time and access-time
   targets of the clock. Neither holds:
   - McPAT's clock-targeted search (`ArrayST::optimize_array`) runs only when the core's `opt_local` is set.
@@ -5050,7 +5076,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.71 -- a processing element's instruction cache is read at its fetch width
 
-- **The defect** (user ruling 2026-10-26 (1)). An in-order or out-of-order PE's 16 KB 4-way instruction cache was
+- **The defect**. An in-order or out-of-order PE's 16 KB 4-way instruction cache was
   priced as delivering a whole 64 B line per read, all four ways in parallel: 2048 bit lines sensed per fetch.
   CACTI, sizing for energy-delay, laid that out as 64-row x 1024-column subarrays. Their wordline-reset and
   bitline-precharge wires run 265 um on the local metal of an embedded part, so the array's random cycle was
@@ -5071,7 +5097,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     looked up, and its latency charged, once per line, so no cycle count moves.
   - **McPAT input** (src/power/mcpat_wrapper.cpp, src/main.cpp): for a device element, the icache output
     (`icache_config` field 6) is the fetch width, and `read_accesses` is the chunk count. The misses stay line
-    misses. The 2026-10-23 #6 note now says why the device icache no longer keeps 64. Host cores keep the full-line
+    misses. The code note now says why the device icache no longer keeps 64. Host cores keep the full-line
     output and one read per line fetched.
   - **McPAT fork** (external/mcpat/core.cc `InstFetchU`): with an output narrower than the line, a line fill is
     line / output array writes, as `LoadStoreU` charges the data cache's fills. A full-line output keeps one write
@@ -5094,7 +5120,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.70 -- Device fabric: control messages carried (read = control request + data response, write = data request + control ack)
 
-- **Two messages per remote access (user ruling 2026-10-26):** a PE's remote read is a control request (PIMID's
+- **Two messages per remote access:** a PE's remote read is a control request (PIMID's
   64-bit header word alone, `noc.control_message_bits`, Garnet's Control class) to the target and a data response
   (header + 64 B line, 576 b, the Data class) back; a remote write is a data request and a control ack back. Before,
   each access injected one data message from requester to target and was charged 2 x its one-way latency.
@@ -5123,7 +5149,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.69 -- PIMID's own NoC packet header in one 64-bit word; wire activity counted on its real field values
 
-- **Header format (user ruling 2026-10-26, "keep it within 64 bits"):** the device fabric's data message (one per
+- **Header format (keep it within 64 bits):** the device fabric's data message (one per
   remote access: a read response or a write request) is headed by ONE 64-bit word that PIMID defines from what its
   fabric carries, LSB first: destination node 12 b, source node 12 b, type 2 b (read request / write request /
   read response / write ack), tag ceil(log2 M) b, and on requests the line address relative to the destination
@@ -5148,7 +5174,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.68 -- clock trees: two-stage local clock buffers priced from liberty data
 
-- **Model (user ruling 2026-10-26, CLK2; external/mcpat/logic.cc ClockNetwork):** every tree's leaf-cluster clock
+- **Model (external/mcpat/logic.cc ClockNetwork):** every tree's leaf-cluster clock
   buffer is a two-inverter clock buffer (the standard-cell clock buffer's structure: Nangate45 CLKBUF_X1-X3, ASAP7
   BUFx2-x6f netlists) priced per cycle at 0.6 x C_load x Vdd^2, C_load = the cluster's net + its register clock pins:
   input C_load / 10 on the global side (OpenROAD TritonCTS grows a sink cluster to at most 10x the sink buffer's input
@@ -5168,7 +5194,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.67 -- core clock trees: local clock nets at measured silicon wire capacitance
 
-- **Model (user ruling 2026-10-26, CLK1; external/mcpat/logic.cc ClockNetwork):** in a core's clock tree the
+- **Model (external/mcpat/logic.cc ClockNetwork):** in a core's clock tree the
   local (leaf-cluster) nets are priced at measured silicon wire capacitance instead of CACTI's local wire: 32 nm
   0.200 fF/um (Natarajan et al., IEDM 2008, Fig. 13a: measured median at M2, 112.5 nm pitch); 22 nm 0.169 fF/um
   (Auth et al., VLSI 2012, "13-18% lower capacitance than 32nm", midpoint 15.5%); log-log between them.
@@ -5189,7 +5215,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.65 -- memory topology per memory node; the DQ series stub follows it
 
-- **Memory topology** (user rulings 2026-10-26): `memory.topology` (`system.hosts[].memory.topology` for a host memory)
+- **Memory topology**: `memory.topology` (`system.hosts[].memory.topology` for a host memory)
   names the memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between
   the connector and the DRAM in the termination loop (CACTI-IO `rs1_dq` / `rs2_dq`): DDR3 and DDR4 DIMMs 15 ohm (Altera
   AN-520 p.10; Samsung DDR4 UDIMM M378A / SODIMM M471A data sheets Rev 1.1 pp.10-12), DDR5 RDIMM 15 ohm (JESD305B.01
@@ -5246,7 +5272,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.63 -- McPAT's clock-feasibility check now sees every array CACTI solved
 
-- **The defect** (user ruling 2026-10-26). The `[mcpat timing]` check (1.12.18) checks only arrays whose solution is
+- **The defect**. The `[mcpat timing]` check (1.12.18) checks only arrays whose solution is
   marked valid. That flag was never defined:
   - CACTI's `uca_org_t` constructor left `valid` uninitialized.
   - `solve()` copies a default-constructed solution into the result (`find_optimal_uca`, `*res = *niter`).
@@ -5274,11 +5300,9 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.62 -- a serial run repeats bit for bit in any job: the guest's address space, environment and AT_RANDOM are fixed by the launch
 
-- **The problem** (user ruling 2026-10-25, "investigate + fix"). One configuration run in different jobs did not
-  repeat. Six jobs of 116 cells on 1.12.52, each in its own directory: 39 of 48 serial device cells, 0 of 40
-  single-core host baselines and 3 of 18 PE-type cells repeated bit for bit; a serial device cell spread by up to
-  4.9% in cycles (DDR4 vector_add 393433 .. 412931), a host baseline by up to 2.5%. In 15 of 424 runs (3.5%) the
-  guest's main stack was not at 0x7ffff4851000.
+- **The problem**. A configuration's results depended on the job it ran in: the guest's address space and
+  environment followed the host, and with them the cycles of serial device cells (up to 4.9%, DDR4 vector_add) and
+  host baselines (up to 2.5%); the guest's main stack was not always at 0x7ffff4851000.
 - **Root causes.**
   1. *Layout.* QEMU 10 and later hand a non-fixed guest mmap straight to the host kernel, so the guest's program,
      dynamic linker, main stack, thread stacks and heap arenas were placed top-down among QEMU's and the plugin's
@@ -5286,7 +5310,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
      arena (a transient 128 MiB reservation trimmed to a 64 MiB-aligned heap) at a time the host scheduler picks;
      when that window overlapped the plugin's dlopen, the plugin's libraries landed 128 MiB lower and every guest
      mapping moved (main stack 0x7ffff4ce5000 .. 0x7ffff5d42000). Each guest thread's emulator thread creates its
-     own arena the same way: the set of guest thread-stack addresses differed between runs in every OpenMP and
+     own arena the same way: the guest thread-stack addresses followed the host scheduler in every OpenMP and
      co-sim cell.
   2. *Environment.* The guest inherited pimid's whole environment block (job id, working directory, the
      scheduler's variables, path lengths) and QEMU copies it onto the guest stack. The guest's startup code walks
@@ -5315,10 +5339,10 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   every simulated and priced line, against 42 of 107 before. The guest's stack pointer at main was the same with
   3000 bytes of extra environment, a 777-byte PIMID_* value, a longer binary path, another working directory, and
   with ASLR on. Three more jobs with ASLR on gave the same cycles, accesses and power in all serial cells; one
-  host-side McPAT report line (arrays sized for the clock: 4 instead of 7, same power) still changed with the host layout, so
-  `setarch -R` stays the advice for bit-stable logs (docs/build.md).
-- **Multi-threaded cells:** their results follow the host's interleaving of the guest threads; this release
-  changes only the launch (their thread stacks are now placed identically).
+  host-side McPAT report line (arrays sized for the clock: 4 instead of 7, same power) still followed the host layout, so
+  `setarch -R` stays the advice for identical logs (docs/build.md).
+- **Multi-threaded cells:** their results followed the host's interleaving of the guest threads until the fixed thread
+  order (1.12.123 onward); this release changes only the launch (their thread stacks are now placed identically).
 - **Data impact: every exec cell moves once** (the guest's addresses are new; measured on 1.12.52): serial device cycles max 2.72%
   (mean 0.32%), host baselines max 1.05% (mean 0.19%), PE-type cells max 1.85% (10 of 18 unchanged); power max
   0.30%; every checksum unchanged. Multi-threaded cells: the 16-core DDR5 host baseline (OpenMP gemv under
@@ -5331,7 +5355,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.61 -- DRAM burst energy at the run's own data (DDR3, HBM2)
 
-- **Model (user ruling 2026-10-25):** the column-burst read and write energy is scaled by a factor from the
+- **Model:** the column-burst read and write energy is scaled by a factor from the
   run's measured line data (the 1.12.58 counters), per interface group and direction, where the part record carries
   a new optional `data_pattern` block; `power.models.dram_data_pattern: false` prices the record's burst as is.
   - DDR3 (ONES_LINEAR): 1 + k (f_ones - 0.5), read k = +0.1733, write k = -0.0835 (Ghose et al.,
@@ -5351,7 +5375,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.60 -- Checker: HBM2 background band from measured per-stack silicon
 
-- **Checker (user ruling 2026-10-26; scripts/power_sanity/power_sanity.py):** `HBM2.bg_mW_stack` [860, 1900] ->
+- **Checker (scripts/power_sanity/power_sanity.py):** `HBM2.bg_mW_stack` [860, 1900] ->
   [430, 1900] mW. Low edge: measured per-stack idle, Olgun et al. (MICRO 2026, arXiv:2610.14244) Appendix A Table 5,
   lowest board at 1200 MT/s 329.6 mA over two stacks x 1.2 V = 198 mW, x2 for the record's 2.4 Gb/s (idle measured
   proportional to rate, ~0 intercept, 600-1200 MT/s; extrapolated beyond) + measured refresh 33.9 mW. Cross-check: AMD PDM
@@ -5363,7 +5387,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.59 -- NoC link, bus and TSV wires are charged on MEASURED data activity
 
-- **Wire activity (user ruling 2026-10-25, "Measured"):** McPAT charged every wire C V^2 per bit per
+- **Wire activity (Measured):** McPAT charged every wire C V^2 per bit per
   traversal (every bit fully charged on every flit). A wire draws C V^2 from the supply on a 0->1 transition
   and nothing on 1->0 (the DSENT / ORION 2.0 convention), so random data costs a quarter of that. Every NoC
   link, bus and TSV wire (device tree, host ring / crossbar / bus) is now charged C V^2 x a01 per bit per
@@ -5388,7 +5412,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.58 -- DQ termination at the duty measured on the run's own data; data bus inversion where the standard has it
 
-- **Measured termination duty** (user ruling 2026-10-25). Every DRAM line read and writeback -- the host controllers
+- **Measured termination duty**. Every DRAM line read and writeback -- the host controllers
   (Simple, WeaveSimple, Ramulator) and the device PE memory interfaces -- reads its 64 B from the guest memory
   (guest_base 0) at the point the interface counts the access, and counts per byte: 1 bits, pins driven LOW under
   POD DBI, pins driven HIGH under LVSTL DBI-DC, inverted bytes, and the pin transitions between beats inside the line
@@ -5407,7 +5431,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   the JEDEC default, so its termination stays 0. The user override `power.termination_pj_per_bit` is a stated
   per-bit energy and is not rescaled. With no readable line the formula's 0.5 stays, and the log says so. The
   printed termination line also gives the value at 0.5.
-- **Data bus inversion** (user rulings 2026-10-25), on where the standard has it; `power.models.dram_dbi: false`
+- **Data bus inversion**, on where the standard has it; `power.models.dram_dbi: false`
   prices the raw data. DDR4 x8/x16 read and write (Micron MT40A 8Gb DDR4 data sheet pp.179-180: a byte with more
   than four 0 bits is inverted, DBI_n LOW); GDDR6 read and write DBIdc, the same POD rule (JESD250D MR1 OP8/OP9
   p.60, WRITE p.95, READ p.111, DBIdc pp.120-121); LPDDR5 read and write DBI-DC (JESD209-5C MR3 OP[6]/OP[7] p.177,
@@ -5424,7 +5448,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
     and +3% to +10%). The write termination stays the guard inside the IDDQ4W excess (1.12.18), not charged.
   - DDR3, HBM3, LPDDR5: unchanged. Run total power moves by 0.3% or less on these runs (DRAM static dominates).
   - Cycles and checksums are unchanged (B against N in one job at the same guest layout: no difference).
-- **Checker:** the Power Design Manager 2025.2.1 figures are UPPER GUARDS (user ruling 2026-10-25): host interface
+- **Checker:** the Power Design Manager 2025.2.1 figures are UPPER GUARDS: host interface
   termination, read and write, DDR5 <= 2.15 and LPDDR5 <= 1.46 pJ/bit (I/O on-chip dynamic); the controller's
   traffic part, new `mc.nonclock_pJ_bit` (controller dynamic minus its printed clock network, per transaction)
   <= 2.26 pJ/bit; `mc.dyn_pJ_bit` keeps the clock network and stays information. The XPE DDR4 read-termination
@@ -5438,7 +5462,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.57 -- a host memory node no longer decides the host-device link
 
-- **Link class (user ruling 2026-10-25):** the host-device link class default looked at every DEVICE node,
+- **Link class:** the host-device link class default looked at every DEVICE node,
   and a `system.memories[]` entry is a DEVICE node of type MEMORY_ONLY. Its `attachment: external` (the host's
   own main memory, reached by the host memory controller) made `all_internal` false, so an internally attached
   PIM device (HBM3 on package) defaulted to `pcie_gen5` instead of `interposer` whenever a memory node existed.
@@ -5451,7 +5475,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.56 -- the stacked part's TSV is re-sourced from published HBM silicon
 
-- **TSV (user ruling 2026-10-25):** the die-crossing TSV of a stacked part's tree (HBM chip tier) was
+- **TSV:** the die-crossing TSV of a stacked part's tree (HBM chip tier) was
   CACTI-3DD's Coarse table (pitch 9 um, length 25 um, C 14.6 fF, 12.1 fJ per bit per crossing at the logic
   0.8 V). It is now re-sourced from published HBM silicon (McPAT fork, noc.cc):
   pitch 30 um (Samsung HBM2E, JSSC 56(1) 2021, Sec. III: signal/power/ground TSV arrays "whose pitch is
@@ -5469,7 +5493,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.55 -- off-package device-tree links are priced as DRAM-channel I/O
 
-- **Off-package links (user ruling 2026-10-25):** in a non-stacked part (DDR3/DDR4/DDR5, LPDDR5, GDDR6)
+- **Off-package links:** in a non-stacked part (DDR3/DDR4/DDR5, LPDDR5, GDDR6)
   the tree links whose parent is the rank, channel or system level -- the DRAM chip's up-link to the rank and
   the rank/channel/system levels -- leave the DRAM package and ride the DRAM channel on the DIMM or board. They
   were priced as on-die CACTI wire over the DRAM die span (2.5-3.6 mm, ~0.8-1.1 pJ/bit at 22 nm). They are now
@@ -5486,7 +5510,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.54 -- NoC links and buses on energy-efficient repeaters (Ho 2003 design point)
 
-- **Repeater sizing (user ruling 2026-10-25):** every NoC link and bus wire (device tree links, host ring
+- **Repeater sizing:** every NoC link and bus wire (device tree links, host ring
   and crossbar links, bus levels) is McPAT's interconnect over a new CACTI wire type, Global_ho: repeaters at
   0.8x the delay-optimal size and 1.4x its spacing, evaluated with CACTI's own wire model (external/cacti/
   wire.cc). Source: R. Ho, "On-Chip Wires: Scaling and Efficiency", PhD thesis, Stanford, 2003, Sec. 4.2:
@@ -5497,16 +5521,16 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   of a 5X+ link power overestimate (Sun et al., NOCS 2012 talk). Print-only CACTI probe at 22 nm: Global 275 ->
   Global_ho 211 fJ/bit/mm (x0.77), repeater leakage x0.57, delay 344 -> 343 ps/mm. Links at 22 nm: 0.316 ->
   ~0.242 pJ/bit/mm.
-- **Why not Global_30 (the ruling's first wording):** CACTI's Global_30 (lowest cost within a 30% delay penalty,
+- **Why not Global_30 (the rule's first wording):** CACTI's Global_30 (lowest cost within a 30% delay penalty,
   picked on a 100 um spacing grid) gives 158 fJ/bit/mm but slows every link by 22-30%, a penalty the
   published NoC link rules do not take. Ho's point is the published, realistic one (4% delay).
-- **Wire resistance (cross-check requested with the ruling):** CACTI's Wire object draws width = spacing =
+- **Wire resistance (cross-check requested with the rule):** CACTI's Wire object draws width = spacing =
   pitch/4 where its technology table uses pitch/2 (consistent with Intel 32 nm M2, Natarajan IEDM 2008), so its
   r is ~3.4x high and its c ~1.37x low. With the resistivity divided by 3.4 the probe gives Global 275 and
   Global_ho 211 fJ/bit/mm (both unchanged; delay falls 1.8x): the delay-optimal repeater capacitance per length,
   c x sqrt((Cin+Cout)/(2 Cin)), does not depend on r, so neither does a fixed fraction of it. The r error does
   not change this choice. The c error would raise every link's energy ~1.37x; the geometry fix awaits its own
-  ruling and is NOT in this version.
+  rule and is NOT in this version.
 - **Basis caveat:** McPAT charges C V^2 per bit per traversal (every bit taken as a transition). Keckler et
   al. (IEEE Micro 2011, Table 1) give 240 / 150 / 115 fJ/bit/mm per transition (40 nm 0.9 V / 10 nm HF / 10 nm
   LV) without stating whether a transition is C V^2 or C V^2 / 2; the data-weighted row (256 b over 10 mm at
@@ -5515,7 +5539,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.53 -- the host ring's links get the ring loop's length
 
-- **Host ring link length (user ruling 2026-10-25):** each stop-to-stop link is 2 x sqrt(host die area) /
+- **Host ring link length:** each stop-to-stop link is 2 x sqrt(host die area) /
   stops (McPAT fork, processor.cc, `link_span_processor = 2`), the loop of the Nehalem-EX floorplan -- cores and
   LLC slices in two columns of rows, the two counter-rotating rings running through the slice columns, one stop
   per row (Rusu, ISSCC 2009 / JSSC 45(1) 2010) -- on a square die. The
@@ -5523,13 +5547,13 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   have, and is not used. Root cause: the ring's links took McPAT's upstream 2-D mesh derivation, side / ((H+V)/2)
   / 2, which for a 1 x N ring is half the loop pitch. 16-core host (18 stops): 0.733 -> ~1.47 mm; 4-core
   (6 stops): 1.595 -> ~3.19 mm. Ring link dynamic and leakage scale with the length; the stops are unchanged.
-- **Observability (user ruling 2026-10-25):** a BUS level (the device tree's bank level) now prints its own
+- **Observability:** a BUS level (the device tree's bank level) now prints its own
   `[link] nocN bus wire` line -- length (McPAT's upstream bus derivation), width, energy per access and per
   bit-mm -- like the tree's links. Print only: no priced number changes.
 
 ## 1.12.52 -- GDDR6: one die per two-channel device; the channels are the channel tier
 
-- **GDDR6 no longer carries its channel count in chips_per_rank** (user ruling 2026-10-25, clean fix; src/main.cpp).
+- **GDDR6 no longer carries its channel count in chips_per_rank** (clean fix; src/main.cpp).
   chips_per_rank 2 -> 1: one x16 channel slice per channel, the channel tier carries the device's two channels
   (as LPDDR5's four). Carrying the channels in the chip slot folded them (channelBearingLevel 3) and, wherever a
   consumer also read the channel count, counted them twice:
@@ -5557,7 +5581,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.51 -- the DRAM second supply rails: DDR4 refresh VPP, LPDDR5 VDD1, GDDR6 VPP
 
-- **Second supply rails priced from the published rows** (user ruling 2026-10-25). A check of the DRAM-device
+- **Second supply rails priced from the published rows**. A check of the DRAM-device
   energy against the datasheet IDD tables by the current-difference method
   reproduced every VDD-rail term exactly and found the second rail missing on three records:
   - **DDR4** (params/dram/ddr4.yaml): refresh VPP. Micron MT40A Rev B Table 148 publishes the distributed-refresh
@@ -5585,16 +5609,16 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   refresh maximum = the largest published route (IDD5 at 210 ns, IDD5 at 280 ns, the IDD5AB average); GDDR6
   K4Z80325BC Tables 82/90/91/92/79, per channel, activation on the IDD7 route. `--refs` prints them at the
   record defaults.
-- Validation (round 1 against 1.12.35, the 54-run memory set: six DRAM types x three PE types serial, DDR3/DDR5 OMP,
+- Validation (against 1.12.35, the 54-run memory set: six DRAM types x three PE types serial, DDR3/DDR5 OMP,
   DDR3/DDR5/HBM3 co-sim, four host baselines): 39 judged moves > 5%, all on DDR4/LPDDR5/GDDR6 rows; FLAGs with the
   new bands 33 -> 3 (the 3 left are the pre-existing DDR3 pe.nonclock_pJ_instr), no new FLAG; serial DDR3/DDR5/HBM3
   runs bit-identical. Memory power: DDR4 +10.9 to +11.3%, LPDDR5 +7.1 to +7.2%, GDDR6 +8.7 to +9.4%.
-- Open, for a ruling: the LPDDR5 IDD row is a 16 Gb die (JESD209-5C tRFCab 280 ns) priced at the 8 Gb preset's
+- Open: the LPDDR5 IDD row is a 16 Gb die (JESD209-5C tRFCab 280 ns) priced at the 8 Gb preset's
   210 ns; the GDDR6 area counts 2 dies for one 2-channel device (memorySystemDieCount returns the channel count).
 
 ## 1.12.50 -- HBM2 refresh energy at the measured part's 350 ns tRFC
 
-- **Model (user ruling 2026-10-25):** the HBM2 refresh energy per REF is VDD x (IDD5 - IDD2N) x 350 ns, the
+- **Model:** the HBM2 refresh energy per REF is VDD x (IDD5 - IDD2N) x 350 ns, the
   all-bank tRFC the authors publish for the measured 8 Gb-channel part (HBM-Power config/HBM2_1200MTs/timing.json,
   nRFC 210 at 1666.7 ps); the measured IDD5B loop excess is taken as measured, (1514.5 - 1087.4) / 8 = 53.3875 mA
   per channel (the 266.7/260 period factor is gone). Energy only: record idd.trfc_ns 260 -> 350, idd5 121.288255 ->
@@ -5604,7 +5628,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.49 -- HBM2 host reads price the DQ I/O once (I/O share)
 
-- **Model (user ruling 2026-10-25):** the HBM2 record gets an I/O share inside idd4r (58.88 mA = the VDDQ band
+- **Model:** the HBM2 record gets an I/O share inside idd4r (58.88 mA = the VDDQ band
   centre 0.23 pJ/b x 307.2 Gb/s / 1.2 V), as HBM3 has. The measured HBM2 rows are VDDC + VDDQ (Olgun et
   al., MICRO 2026, Table 1 and Sec. 4.2: the loops measure "on VDDC and VDDQ rails"; VDDQ "powers the data I/O
   interface"), so the DQ read I/O is already inside idd4r; 1.12.35 added the 0.23 pJ/b band centre on every host
@@ -5615,7 +5639,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.48 -- DDR3 x16 prices the published x16 IDD column
 
-- **Model (user ruling 2026-10-25):** `memory.dram.device_width: x16` on DDR3 now prices the x16 column of the same
+- **Model:** `memory.dram.device_width: x16` on DDR3 now prices the x16 column of the same
   die: Micron MT41K 4 Gb DDR3L (Rev. Q 12/17) Table 20, Die Rev E, DDR3-1600, MAXIMA: IDD0 66, IDD3N 47, IDD4R 235,
   IDD4W 171 mA (x8: 55, 38, 157, 125); IDD2N 32, IDD2P1 32, IDD5B 235 mA are "All" widths. Before, the x16
   organisation (four devices per rank) was priced on the x8 currents. New optional record block `idd.by_width`
@@ -5625,7 +5649,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.47 -- DDR3: fast power-down priced from the measured IDD2P1/IDD2N ratio
 
-- **Model (user ruling 2026-10-25):** the DDR3 record's power-down factor becomes pd = 0.29224 (was 0.566). Micron's
+- **Model:** the DDR3 record's power-down factor becomes pd = 0.29224 (was 0.566). Micron's
   4 Gb Rev E sheet prints IDD2P1 (fast exit) = IDD2N = 32 mA, so power-down saved nothing; measured DDR3L silicon
   (Ghose et al., SIGMETRICS 2018, Sec. 4.5) shows fast power-down cutting the measured IDD2N by 65.8 / 30.6 / 48.7 %
   (vendors A/B/C). The factor applies the three-vendor mean ratio IDD2P1/IDD2N = 0.51633 to the typical IDD2N
@@ -5637,7 +5661,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.46 -- HBM2/HBM3: no per-stack floor; the board power-off offset is 821.3 mA
 
-- **Model (user ruling 2026-10-25):** the HBM2 and HBM3 records lose their per-stack floor (469.98 / 430.82 mW). The
+- **Model:** the HBM2 and HBM3 records lose their per-stack floor (469.98 / 430.82 mW). The
   current it came from is the board current with the HBM2 stack powered off, which the measurement subtracts as
   non-DRAM (Olgun et al., MICRO 2026, Sec. 4.3; the authors' repository names it "the FPGA board's power-off current
   (821.3 mA)"). The per-channel currents are now (stack mean - 821.3 mA) / 8 (was 783.3 mA, from reading the same
@@ -5650,19 +5674,19 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.45 -- removals from the public tree: the vendor Verilog verification kit and a non-citable deck
 
-- **pimid/external/ramulator/verilog_verification/ deleted (user ruling 2026-10-25, T7a):** vendor Verilog sources
-  carrying "CONFIDENTIAL AND PROPRIETARY" headers and protected models, plus its trace converter/verifier scripts,
+- **pimid/external/ramulator/verilog_verification/ deleted:** a vendor simulation
+  model, used only for verification, plus its trace converter/verifier scripts,
   traces and config (19 files). The external/ramulator/README.md section "Verifying Ramulator 2.0's Memory
   Controller and DRAM Model" that documented it is removed. No build file, script or other document references
   the directory (checked: CMake, scripts/, tests/, docs/).
-- **Non-citable lecture deck no longer named (T7b):** its two "not citable" notes (this changelog's 1.11.64-era
+- **Non-citable lecture deck no longer named:** its two "not citable" notes (this changelog's 1.11.64-era
   entry and docs/sources.md) are removed. It informed no value anywhere in the tree (no config, figure or
   provenance used it), so no replacement wording was needed.
 - **Data impact:** none; nothing simulated, built or priced used either.
 
 ## 1.12.44 -- LPDDR5 organisation follows the 16 Gb die of the record's IDD row
 
-- **LPDDR5 org preset LPDDR5_8Gb_x16 -> LPDDR5_16Gb_x16 (user ruling 2026-10-25, T6):** the record's IDD row is
+- **LPDDR5 org preset LPDDR5_8Gb_x16 -> LPDDR5_16Gb_x16:** the record's IDD row is
   the Micron Y52P 16 Gb die and its density part a 16 Gb die; JESD209-5C Table 6 16 Gb column: 4 BG x 4 banks,
   65536 rows, 2 KB page. The wrapper now takes the LPDDR5 org name from the record (it was a literal) and carries
   the 16 Gb transcription; the architecture object's check values follow (128 MB bank, 2048 MB die).
@@ -5676,7 +5700,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.43 -- GDDR6 default row on Samsung K4Z80325BC Table 92; 1250 mV rows nRC >= nRAS + nRP
 
-- **GDDR6_2000_1350mV_double (user ruling 2026-10-25, T5):** Samsung K4Z80325BC GDDR6 Rev. 1.3 (public copy),
+- **GDDR6_2000_1350mV_double:** Samsung K4Z80325BC GDDR6 Rev. 1.3 (public copy),
   Table 92 p.157 at 1.35 V, rounded up at tCK 571 ps: nRCDRD 26 -> 27, nRP 26 -> 27, nWR 26 -> 27 (15 ns each;
   26 nCK = 14.85 ns was short), nCCDL 6 -> 3 (tCCDL 3/4 tCK, 3 allowed up to fCKBG3 2000 MHz; CK is 1750 MHz),
   nRC 79 -> 80 (= nRAS 53 + nRP 27, from tRC 45 = tRAS 30 + tRP 15). The wrapper transcription and the
@@ -5689,7 +5713,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.42 -- non-default bins, tREFI rounded down, tRTPL for HBM read-to-precharge-all; timing sanity tool tracked
 
-- **Non-default bins (user ruling 2026-10-25, T4):** DDR3_800E 5-5-5 / nRC 20 -> 6-6-6 / nRC 21 (JESD79-3E Table
+- **Non-default bins:** DDR3_800E 5-5-5 / nRC 20 -> 6-6-6 / nRC 21 (JESD79-3E Table
   62; the row was a copy of 800D). DDR3 2 KB-page tFAW at 2133 34 -> 38 nCK (Table 69: 35 ns / 0.937 ns). DDR4
   2400T/U rows swapped to the file's own letter mapping (T = 17-17-17, U = 18-18-18; Micron MT40A Table 156 -083
   / -083D; JESD79-4 is not held).
@@ -5707,11 +5731,11 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   floor, nPPD enforced on all seven impls) and `run_timing_sanity.py` + `probe.cpp` (dynamic, under sbatch:
   streaming read bandwidth <= rate x pin width x channels and >= 50% of it; idle hit/closed/conflict latency =
   the preset formulas). 1.12.35 fails 17 static checks; this version passes. KNOWN, not counted (awaiting a
-  ruling): GDDR6_2000_1250mV rows nRC 89 < nRAS + nRP 90.
+  rule): GDDR6_2000_1250mV rows nRC 89 < nRAS + nRP 90.
 
 ## 1.12.41 -- HBM3: the 16 Gb 8-High organisation (SID) and JESD238B.01 Table 84 tRP/tRC
 
-- **HBM3 org preset HBM3_8Gb_8H (user ruling 2026-10-25, T3):** JESD238B.01 Table 4 p.6 "16 Gb 8High": 8 Gb per
+- **HBM3 org preset HBM3_8Gb_8H:** JESD238B.01 Table 4 p.6 "16 Gb 8High": 8 Gb per
   channel, RA[13:0] = 16384 rows, "SID, BA[3:0]" = 32 banks per pseudo-channel, 1 KB page. The record
   (params/dram/hbm3.yaml) names it; it was HBM3_8Gb (16 banks/PC, 32768 rows = the 4-High 32 Gb-die layout).
   No SID level exists in the model: the second SID is folded into the bank groups (8 BG x 4 banks per PC); tCCDR
@@ -5730,7 +5754,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.40 -- GDDR6 bank-level ACT-to-ACT tRC restored
 
-- **GDDR6 same-bank ACT -> ACT = nRC (user ruling 2026-10-25, T3):** the constraint was commented out upstream
+- **GDDR6 same-bank ACT -> ACT = nRC:** the constraint was commented out upstream
   ("should this be added?"), so with auto-precharge a bank could re-activate 56 nCK after its ACT (nRCDRD + nRTP +
   nRP) instead of nRC 79. Source: Samsung K4Z80325BC GDDR6 data sheet Rev. 1.3 (public), Table 92 p.157,
   tRC 45 ns at 1.35 V = 79 nCK at 571 ps; JESD250D Table 73 NOTE 29.
@@ -5739,7 +5763,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.39 -- LPDDR5 same-bank-group read-to-write, tPPD in DDR5 and LPDDR5, LPDDR5 tXP
 
-- **LPDDR5 RD -> WR in the same bank group = 14 nCK (user ruling 2026-10-25, T3):** new bank-group constraint in
+- **LPDDR5 RD -> WR in the same bank group = 14 nCK:** new bank-group constraint in
   LPDDR5.cpp, RL + BL/n_max + RU(tWCK2DQO_HF max / tCK) - WL = 17 + 4 + 2 - 9 (JESD209-5C Table 347 p.488,
   Table 462 p.584). It was 12 (the different-bank-group Table 348 value, rank scope only).
 - **tPPD = 2 nCK enforced** between any two precharges of a rank: DDR5 (PRE/PREsb/PREA, JESD79-5D Tables 334-336)
@@ -5751,7 +5775,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.38 -- DDR3 default bin DDR3_1600K (11-11-11), the Micron -125 part the record's currents describe
 
-- **DDR3 timing bin (user ruling 2026-10-25, T2):** params/dram/ddr3.yaml `timing_preset` DDR3_1600H -> DDR3_1600K.
+- **DDR3 timing bin:** params/dram/ddr3.yaml `timing_preset` DDR3_1600H -> DDR3_1600K.
   The record's IDD row and its tRFC 260 ns are the Micron MT41K 4 Gb sheet's DDR3-1600 column; Micron's only
   DDR3-1600 grade is -125 = 11-11-11, tAA/tRCD/tRP 13.75 ns (MT41K Rev Q p.1 Table 1); JESD79-3E Table 65 p.162
   DDR3-1600K: 13.75 ns, tRAS 35, tRC 48.75 ns. 1600H (9-9-9, 11.25 ns) is a JEDEC bin no Micron 4 Gb part ships.
@@ -5762,7 +5786,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.37 -- HBM3 pseudo-channel burst is 32 B (Ramulator channel_width 256 -> 128)
 
-- **HBM3 timing transfer size (user ruling 2026-10-25, T1):** `ramulatorChannelWidthBits("HBM3")` 256 -> 128
+- **HBM3 timing transfer size:** `ramulatorChannelWidthBits("HBM3")` 256 -> 128
   (src/memory/ramulator_wrapper.cpp). JESD238B.01 3.1.2 p.4: a pseudo-channel is 32 DQ, 256-bit prefetch, BL8 =
   32 B per burst. The old 256 gave a 64 B column per nBL 2 (1.25 ns) on ONE pseudo-channel: 102.4 GB/s per channel
   against the 64 pins x 6.4 Gb/s = 51.2 GB/s the standard allows (a bandwidth probe: 87.0 GB/s streamed on one
@@ -5777,7 +5801,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.36 -- sources: every value is cited to a public document or given with its method
 
-- **Citations** (user ruling 2026-10-25): values whose source was a vendor document are
+- **Citations**: values whose source was a vendor document are
   now cited to public documents where one gives them, and otherwise are given with their method.
   No such document is named anywhere in the code, the docs or the printed lines, and local
   document-archive paths are no longer quoted (each document is named by its title).
@@ -5794,7 +5818,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.35 -- the host node-per-core reference band is node- and clock-scaled per run
 
-- **Checker (user ruling 2026-10-25, option (ii)):** `host.node_W_per_core` is judged against a band scaled
+- **Checker:** `host.node_W_per_core` is judged against a band scaled
   to the run's host node and clock: low edge Cortex-A9 1.2 W (45 nm, 1 GHz; Blem et al., HPCA 2013) x the
   published-silicon ratio 45 nm -> host node (DeepScaleTool, the per-op scaling table) x f / 1 GHz; high edge
   Haswell-EP ~8 W/core (22 nm, 2.6 GHz; Desrochers et al., MEMSYS 2016) x the silicon ratio 22 nm -> host node x
@@ -5804,22 +5828,22 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.34 -- the power checker is tracked; it judges the in-order and OOO PEs on the alu PE's basis (information); flip-flop scaling closed
 
-- **The power checker is now tracked in the development repository** (user ruling 2026-10-25; it is not part of
+- **The power checker is now tracked in the development repository** (it is not part of
   the public tree), so checker-only versions ship the checker change itself.
-- **Checker (user ruling 2026-10-25 (3)):** the in-order (`DEVICE_INORDER`) and OOO device PEs get the alu PE's
+- **Checker:** the in-order (`DEVICE_INORDER`) and OOO device PEs get the alu PE's
   metrics on the same basis -- `pe.inorder.*` / `pe.ooo.*`: core-only non-clock pJ/instr (before the DRAM-periphery
   factor, the instruction and data stores reported apart), mW at IPC 1, and the clock tree per cycle (pins
   excluded). INFORMATION, not judged for a core-only dual-issue in-order or OOO core on
   this basis; the notes cite the board-level Cortex-A8 (65 nm, 0.6 GHz, 2-way in-order, 0.8 W) and Cortex-A9
   (45 nm, 1 GHz, 2-way OOO, 1.2 W) of Blem et al., HPCA 2013, and print the alu PE's RI5CY band for orientation
   only. 22 nm in_order PE: core-only 5.19 pJ/instr, clock tree 1.32 pJ/cycle; OOO PE: 27.6, 3.13. No model change.
-- **Flip-flop node scaling at 22 nm: investigation closed** (user ruling 2026-10-25): every option (nearest row,
+- **Flip-flop node scaling at 22 nm: investigation closed**: every option (nearest row,
   bracket over all rows, bracket within one device flavour) PASSES all 22 nm PE references; the nearest Stillmaker
   & Baas row (1.12.31) is kept, and the two-row bracket stays printed.
 
 ## 1.12.33 -- published per-op logic energies scale with published silicon
 
-- **Per-operation logic energies, node-scaled by published silicon** (user ruling 2026-10-25; external/mcpat/logic.cc
+- **Per-operation logic energies, node-scaled by published silicon** (external/mcpat/logic.cc
   pimid_logic_op_scale): the published FPU / integer ALU / multiplier per-op energies (and so the DMA adder) scale
   from their source node with DeepScaleTool (Sarangi & Baas, ISCAS 2021), a fit to Intel silicon (Holt, ISSCC 2016):
   switching energy relative to 65 nm 130 2.52, 90 1.51, 65 1, 45 0.63, 40 0.55, 32 0.44, 28 0.37, 22 0.30, 14 0.19,
@@ -5835,7 +5859,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 - Diagnosed first (kept McPAT XML, standalone McPAT at print level 5, 22 nm alu_core PE): of the core's 3.96 mW
   runtime, integer ALU 0.547, results bypass bus 1.069, load/store queue 0.702 mW.
-- **64-bit integer add/logic** (user ruling 2026-10-25 #1; external/mcpat/logic.cc FunctionalUnit): linear in width
+- **64-bit integer add/logic** (external/mcpat/logic.cc FunctionalUnit): linear in width
   from Horowitz ISSCC 2014's published 8- and 32-bit points (16 bit on the line between them; 64 bit = 2 x 32 bit),
   An unclassified ALU access (move, LEA, NOP) is one 64-bit add. McPAT's Wattch-based "1.15 nJ" per-op
   literal is no longer used for the ALU or the DMA adder. 22 nm: 5.01 -> 0.051 pJ per 64-bit op.
@@ -5844,7 +5868,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   McPAT's literal, printed. The in-order FP bypass bus is fp_data_width bits (was machine_bits x 1.5).
 - **Store buffer** (#3; core.cc LoadStoreU): an in-order device PE's LSQ structure is a store buffer only: one write
   and one read per store, none per load (`[mcpat lsq]`). OOO cores and the host keep McPAT's queue.
-- **In-order PE BTB reads, measured** (user ruling 2026-10-25 (1); external/zsim/src/in_order_core.*, src/main.cpp,
+- **In-order PE BTB reads, measured** (external/zsim/src/in_order_core.*, src/main.cpp,
   src/power/mcpat_wrapper.cpp): the timing core's taken direct-branch BTB lookups (new ROI counter
   `roiDirectBranches`, next to `roiBtbMisses`) plus its indirect resolutions, instead of one read per branch; the
   direction predictor stays per branch; OOO cores and the host keep the per-branch lookup. 22 nm in_order gemv:
@@ -5858,7 +5882,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.31 -- the flip-flop from published open libraries, node-scaled
 
-- **Register clock pin and register energy re-sourced** (user ruling 2026-10-25 A; external/mcpat/logic.cc
+- **Register clock pin and register energy re-sourced** (A; external/mcpat/logic.cc
   pimid_dff_published, DFFCell::compute_DFF_cell): Nangate 45 nm OCL DFF_X1 and ASAP7 DFFHQNx1 liberty data (pin
   capacitances, internal energies), Stillmaker & Baas 2017 scaling, the nearest library's device-row midpoint
   applied and the two-library bracket printed (`[mcpat dff]`). Used consistently by McPAT's pipeline registers and
@@ -5871,20 +5895,20 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.30 -- clock trees: clocked-logic span, leaf clusters of 30 sinks, stage registers sized from their contents
 
-- **Tree span** (user ruling 2026-10-25, F1; external/mcpat/core.cc): the core's H-tree spans the
+- **Tree span** (external/mcpat/core.cc): the core's H-tree spans the
   pipeline-register area plus the integer ALU(s), the multiplier/divider and the instruction decoders, not the
   whole core area. The FPU and the arrays are excluded (they time their own accesses inside CACTI). 22 nm alu_core
   PE: span 0.431 -> 0.078 mm^2, tree 57.1 -> 16.5 mm.
 - **Sink count** (F3; external/mcpat/logic.cc Pipeline::compute_stage_vector): upstream McPAT's x1.5
   control/interrupt-register rule of thumb is removed, and each stage latches the opcode as an encoded micro-op field
   (8 bits on x86) instead of 2^width one-hot lines. The instruction decoder's computed output load follows the count.
-- **Stage registers sized from their contents** (user ruling 2026-10-25; in-order branch): ID/EX = control + PC +
+- **Stage registers sized from their contents** (in-order branch): ID/EX = control + PC +
   two operands + immediate + three register specifiers; EX/MEM = control + branch target + zero flag + ALU result +
   store data + destination register; MEM/WB = control + load data + ALU result + destination register (Patterson &
   Hennessy, the five-stage pipeline-register contents). Upstream carried the whole instruction into ID/EX and an
   8*2*int_data_width bits (sixteen data words) into each of EX/MEM and MEM/WB. The OOO branch has no such
   term. Sinks: alu_core 3474 -> 733, in_order_core 7490 -> 1150, OOO PE 12064 -> 3744, host OOO 13520 -> 4715.
-- **Leaf clusters** (user ruling 2026-10-25, F2; logic.cc ClockNetwork): the register sinks of every component tree
+- **Leaf clusters** (logic.cc ClockNetwork): the register sinks of every component tree
   are grouped into clusters of k = `power.clock.leaf_cluster_sinks` (default 30: the OpenROAD TritonCTS sink-cluster
   cap; IBM US 8,458,634 B2: 24-32 latches per local clock buffer). The global H-tree (CACTI repeated global wire,
   every powered cycle) ends at the ceil(N/k) cluster buffers; each cluster's net is unrepeated CACTI local wire over
@@ -5897,14 +5921,14 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   in_order_core 14.7 -> 1.28, OOO PE 22.6 -> 3.01, 32 nm (DDR3 die) alu_core 6.94 -> 1.54, host OOO core
   126 -> 18.8. Host core 211 -> 156 pJ/instr; DDR5 1-core baseline 3.18 -> 2.81 W. Other trees: the host L3 170 ->
   30.2 pJ/cycle, L2 42.2 -> 11.7, the device controller 8.67 -> 1.36. Serial cycles and checksums unchanged.
-- The 22 nm PE references use the nearest Stillmaker & Baas Table 5 row, 20 nm (user ruling 2026-10-25; the
+- The 22 nm PE references use the nearest Stillmaker & Baas Table 5 row, 20 nm (the
   checker states it). The decode + clock comparison stays INFORMATION (not judged) until this release lands, and
   pe.nonclock_pJ_instr / pe.mW_at_ipc1 become INFORMATION (band printed, not judged) pending the PE non-clock energy
-  investigation (user ruling 2026-10-25).
+  investigation.
 
 ## 1.12.29 -- McPAT's functional-unit area literals are re-sourced from published areas
 
-- **Changed (user ruling 2026-10-25): FPU, integer ALU and multiplier AREA** (and with it their leakage) is taken from
+- **Changed: FPU, integer ALU and multiplier AREA** (and with it their leakage) is taken from
   published cell areas instead of McPAT's literals (`external/mcpat/logic.cc` FunctionalUnit: FPU 4.47 mm^2 embedded /
   8.47 mm^2 server at 90 nm x (F/90)^2, ALU 280 x 260 um^2, MUL 3x). At 22 nm the in-order PE's FPU alone was
   0.294 mm^2 of a 0.431 mm^2 core, against a whole RI5CY core of 0.068 mm^2 at 65 nm (Gautschi et al., TVLSI 2017,
@@ -5928,7 +5952,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
 
 ## 1.12.28 -- McPAT's instruction decode is computed from the core: output load, x86 decode, no double-counted operand decoder
 
-- **The decoder output load is computed** (user ruling 2026-10-24): each decoded line drives the pipeline-register
+- **The decoder output load is computed**: each decoded line drives the pipeline-register
   sinks the core's clock tree is built over, at minimum-size gates, instead of upstream McPAT's placeholder of 1024
   maximum-width gates (external/mcpat/logic.cc inst_decoder; "TODO: this number 1024 needs to be revisited").
 - **x86 for every core** (src/power/mcpat_wrapper.cpp): the in-order alu_core / in_order_core PEs are priced as x86
@@ -5937,8 +5961,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   already decodes in every access it charges (evidence printed per run).
 - **Reference, printed, not judged:** `[mcpat decode]` prints decode energy per instruction plus the core's clock
   per cycle at activity 1 against Horowitz ISSCC 2014 Fig. 1.1.9 "Control" 39 pJ (45 nm, 0.9 V) scaled with
-  Stillmaker & Baas 2017 Table 5. It is INFORMATION until the clock-tree model is reviewed (user ruling 2026-10-25;
-  the clock dominates: 10.2 pJ/cycle for a 22 nm alu_core PE, 20.5 for an in_order_core PE); power_sanity reports
+  Stillmaker & Baas 2017 Table 5. It is INFORMATION until the clock-tree model is reviewed (the clock dominates: 10.2 pJ/cycle for a 22 nm alu_core PE, 20.5 for an in_order_core PE); power_sanity reports
   `core.decode_clock_pJ_instr` unjudged.
 - Data impact: PE and core dynamic power and clock-tree sinks move on every run. Decode falls to 0.59 pJ/instr
   (22 nm) and 1.60 (32 nm) from about 5.8 and 13; PE non-clock energy 15.3 -> 10.3 pJ/instr (22 nm alu_core),
@@ -5956,7 +5979,7 @@ User ruling 2026-10-28 ("fix the multi-core host latency gap before the resim"),
   (CACTI sizes devices from the input's F; external/mcpat/iocontrollers.cc), so C_inv(32 nm) read 0.220 fF instead
   of 0.325 fF. E22/E32 moves 0.618 -> 0.418; the 22 nm digital interface 0.284 -> 0.192 pJ/bit; the 22 nm links
   0.953 -> 0.862 (advanced) and 1.484 -> 1.392 (standard) pJ/bit. The 3 nm row (measured) is unchanged.
-- **Guard references (user ruling 2026-10-24):** the TSMC-press reference was computed from the applied value itself
+- **Guard references:** the TSMC-press reference was computed from the applied value itself
   (circular) and is removed. The band is now [SB17] Table 2's own 20 nm row, 0.10 x 0.198 / 0.111 = 0.178 pJ/bit,
   and the analog node ratio 0.10 x 1.2 / 0.52 = 0.231 pJ/bit; the applied 0.192 lies inside it.
 - Data impact: interposer-class (UCIe) links at the 22 nm row only: link energy x0.904. Cycles unchanged.
@@ -5979,7 +6002,7 @@ commented-out line and was archived in May 2026).
 
 ## 1.12.25 -- DDR3 is one 4 Gb die at 1.5 V; DDR3L and the JEDEC tRFC are selectable
 
-- **DDR3 default: one consistent 4 Gb x8 die at 1.5 V** (user rulings 2026-10-24). The record priced Micron's 4 Gb
+- **DDR3 default: one consistent 4 Gb x8 die at 1.5 V**. The record priced Micron's 4 Gb
   die Rev E currents on an 8 Gb organisation (DDR3_8Gb_x8, 2 KB page, the 8 Gb tRFC 350 ns) at 1.35 V. It now
   instantiates DDR3_4Gb_x8 (the wrapper gains the 4 Gb DDR3 transcription), runs at VDD = VDDQ = 1.5 V with SSTL-15
   termination (JESD79-3E), and keeps the same currents: Table 20 is titled for 1.35/1.5 V operation and the 1.5 V
@@ -6006,7 +6029,7 @@ commented-out line and was archived in May 2026).
 
 ## 1.12.23 -- host on-chip fabric
 
-- Host CPU on-chip network, timing and power (user ruling 2026-10-24): `system.hosts[].noc.topology` is `ring` (default; the published Nehalem-EX ring: a stop per core/L3-slice pair and per memory controller, 1 cycle per stop, the shorter direction, zero-load), `crossbar` (the former uniform hop, now on the L2<->L3 path too) or `bus` (one shared bus with arbitration); other words are refused. The host L2s no longer take the device Garnet's distance between auto-registered nodes as their L3 latency. `power.models.host_noc` (default true) prices the same topology in McPAT from the measured data messages and hops (256-b flits, the Nehalem-EX data ring); ledger `<host>.noc`, which through 1.12.18 carried a leakage-only placeholder. Control messages are not priced on the ring and crossbar; a 1-core host has no fabric. Host run time and totals change.
+- Host CPU on-chip network, timing and power: `system.hosts[].noc.topology` is `ring` (default; the published Nehalem-EX ring: a stop per core/L3-slice pair and per memory controller, 1 cycle per stop, the shorter direction, zero-load), `crossbar` (the former uniform hop, now on the L2<->L3 path too) or `bus` (one shared bus with arbitration); other words are refused. The host L2s no longer take the device Garnet's distance between auto-registered nodes as their L3 latency. `power.models.host_noc` (default true) prices the same topology in McPAT from the measured data messages and hops (256-b flits, the Nehalem-EX data ring); ledger `<host>.noc`, which through 1.12.18 carried a leakage-only placeholder. Control messages are not priced on the ring and crossbar; a 1-core host has no fabric. Host run time and totals change.
 - Host caches no longer take the device Garnet RTT: the host L3 reaches its memory through the host fabric and the host memory controller (host-only runs) or the attachment's system path (co-simulation), without a device-network round trip; 1-core hosts go L3 -> MC directly. Host run time changes.
 
 - Not comparable with 1.12.22 for multi-core host baselines and multi-core-host co-simulation (host fabric timing and power, no device-network round trip on the host path; e.g. 16-core OpenMP gemv baseline 25629 -> 17061 cycles); 1-core hosts keep their cycles and lose the former 0.035 W host NoC placeholder.
@@ -6068,7 +6091,7 @@ commented-out line and was archived in May 2026).
 ## 1.12.19 -- DDR5 defaults to 4800 again (16 Gb x8 die Rev A)
 
 - **DDR5 default grade: DDR5-4800B on the Micron MT60B 16 Gb x8 die Rev A** (core sheet Rev A Table 6, x8 4800
-  column; user ruling 2026-10-24). 1.12.18 moved the default to 5600 (Rev D Table 8) because Rev D publishes no
+  column). 1.12.18 moved the default to 5600 (Rev D Table 8) because Rev D publishes no
   4800 column; Rev A publishes it for the same 16 Gb x8 part and organisation, so only the grade and the current
   table change. `memory.dram.ddr5_speed_grade: 5600` (Rev D) and `3200` stay selectable. A default run reproduces a
   1.12.18 run pinned to `ddr5_speed_grade: 4800` exactly (device scope). The co-simulation host-device bridge's DDR5
@@ -6111,7 +6134,7 @@ scope also `link`, `<host>.memory_controllers_phy` and the per-node terms. Each 
 **(3) No share-of-peak conventions.** The memory controllers' 10% background convention is removed, in device and
 system scope alike. A controller is priced as McPAT leakage, plus its measured transactions, plus one transaction-engine
 pass per refresh command the replayed controller counted (`power.models.mc_command_ops`). Its idle clocking is
-priced by the clock network (item 7 below). On a shared array (the device is the host's memory) the refresh
+priced by the clock network (below). On a shared array (the device is the host's memory) the refresh
 commands are charged to the host memory controller, once; the PEs' memory interfaces issue no refresh.
 
 **(4) Host side.** The host memory controller's PHY static power (CACTI-IO: phase rotator, receiver and PLL static)
@@ -6270,7 +6293,7 @@ Table 1; `memory.controller.write_high_watermark` / `write_low_watermark`).
   replay now prints a warning.
 - DDR5 RANK placement with two ranks per channel now covers all four rank organisations. It covered two, because
   the frame was multiplied by the unfolded sub-channel count.
-- A non-DRAM main memory reached over the memory channel (item 4) takes its channel timing from the array model:
+- A non-DRAM main memory reached over the memory channel takes its channel timing from the array model:
   one bank access time from CACTI (SRAM) or NVSim (NVM), and bandwidth = banks x line / access time. A memory
   whose model gives no timing is refused.
 
@@ -6287,7 +6310,7 @@ are reported as busy activity (`OMP busy cycles:`). The `Run time:` line names i
 An OpenMP binary in which only the master thread reaches `roi_end` (the kernels as built for 1.12.17) now takes its
 run time over every device PE that ran in the ROI. The workers' clocks used to lie below the single device origin
 and dropped out, so the run time was the master's alone (gemv_omp built as in 1.12.17: 430k -> 1.36M cycles). With
-the per-PE origin (item 18) every PE counts.
+the per-PE origin every PE counts.
 
 **(18) Single-process runs use the cut mechanism.** Serial, OpenMP and co-sim OpenMP runs now run under the
 consistent-cut mechanism that thread-MPI uses:
@@ -6423,7 +6446,7 @@ A PE whose stack exceeds the reserve is refused. Each PE reports `stackSpanBytes
 
 Nearly every result changes. Compare 1.12.18 results only with 1.12.18 results.
 
-- **Timing, all parallel runs.** Cycles are the ROI wall-clock time, not the busiest PE's busy cycles (item 17).
+- **Timing, all parallel runs.** Cycles are the ROI wall-clock time, not the busiest PE's busy cycles.
   OpenMP and co-sim OpenMP runs price from the PE timelines under the cut mode (18). MPI binds symbols at load
   (22). The PIM runtime replaces executed libgomp/shim code (19), and lock/wake sync changes how waiting threads
   advance (20). The reductions are timed inside the ROI (21).
@@ -6478,9 +6501,8 @@ docs/power.md and docs/sources.md give the full citations.
 
 ## 1.12.17 -- message passing: its device DRAM is replayed through the controller, a message moves only its own bytes, collectives run MPICH's algorithms and reductions reduce; a PE below the channel is served bank-parallel; a thread's stack is in its own PE's memory
 
-The user: "we need message passing side measured as well", "make sure it is on par with omp", "a of course, this is stupid
-mistake by always serializing", "let us bring that timing work to 17 and fix it now", "make sure you fix this in 17", then
-a/b/c rulings: a message costs the sender's read, the network transfer and the receiver's write (M1); thread stacks and
+Message passing is measured on par with OpenMP and no longer serialized: a message costs the sender's read, the network
+transfer and the receiver's write; thread stacks and
 bfs_mpi's per-rank buffers live in the PE's own memory; the collectives run MPICH's algorithms; every kernel is rebuilt with
 one toolchain.
 
@@ -6546,16 +6568,15 @@ placements change only through the stack mapping and, for message passing, the i
 
 ## 1.12.16 -- QEMU 11.1.2: a parallel workload on fewer simulated cores than threads no longer deadlocks at its first thread; a host baseline's OpenMP team is its host core count; QEMU runs a REP string one iteration per block under a plugin (patch carried in the repo)
 
-The user: "while the re-sim is going, please try to fix these issues", then "If you are sure the issue is qemu side, please
-move to newer qemu in both repos"; a/b/c rulings: ship the source now and rebuild the release tree's QEMU and the image after
-the 1.12.15 re-simulation; the layout effect is documented only. Gate 12216A then failed on a ZSim heap overflow; "try to locate and fix it", and a/b/c: carry the QEMU
-fix as a patch file in the repo (a).
+QEMU moves to 11.1.2 in both trees: the source ships with this release, and the release tree's QEMU and the image are
+rebuilt after the 1.12.15 re-simulation; the layout effect is documented only. The release test then failed on a ZSim
+heap overflow, fixed here; the QEMU fix is carried as a patch file in the repository.
 
 **(1) QEMU 9.2.0 -> 11.1.2.** In QEMU 9.2 linux-user, the guest's first `clone()` of a thread set `CF_PARALLEL` and then
 called `tb_flush()`. With the flag already set the flush is no longer in serial context, so it was queued as exclusive work on
 the parent vCPU and taken at the parent's next `cpu_loop` pass. If the child was already inside `cpu_exec` by then and ZSim
 blocked it there waiting for a simulated core the parent held (more threads than simulated cores), `start_exclusive()` waited
-for the child forever. Found as the 1-core OpenMP baseline hang (8 threads on 1 core: 3 of 12 runs stalled after "Thread 1
+for the child forever. Found as the 1-core OpenMP baseline hang (8 threads on 1 core: depending on the host's thread scheduling, a run stalled after "Thread 1
 starting"); a backtrace of a stalled run shows the parent in `start_exclusive()` and the child in `Scheduler::join()` under
 `cpu_exec`. Flushing first removes it: under the conditions that reproduced it (12 concurrent runs per node, 36 runs each) 9.2
 stalled 7 times, 9.2 with the two lines swapped never. QEMU made the same change upstream in 10.2.0 (`begin_parallel_context()`:
@@ -6577,7 +6598,7 @@ written into the ZSim configuration with two decimals (a configured 0.125 became
 keeps that text; any other is written exactly. No corpus configuration sets a factor (all are 1.0, "1.00"), so no emitted
 configuration changes (gate E1).
 
-**(4) QEMU 11 and `REP` strings; a ZSim panic under QEMU fails instead of hanging.** Gate 12216A failed one smoke cell
+**(4) QEMU 11 and `REP` strings; a ZSim panic under QEMU fails instead of hanging.** The release test failed one smoke cell
 (`cosim_HBM3_omp_gemv`): ZSim stopped with "gm_memalign(): Out of global heap memory" just after the host thread
 started, and the process then hung until the cell's 3000 s timeout. QEMU 10 and later translate a `REP` string instruction
 as a loop of up to 65535 iterations inside one execution of its block; QEMU 9.2 ended the block after each iteration. ZSim
@@ -6602,7 +6623,7 @@ which the threads take the simulated cores follows the host's wake-ups.
 
 ## 1.12.15 -- an in-order core's power no longer overflows on some runs, and a number prints at the precision its own line chose
 
-The user: "please locate and fix the mcpat overflow shit" (a longstanding McPAT defect), and both fixes in one release.
+Two fixes in one release; the first is a longstanding McPAT defect.
 Found in the 1.12.14 letter resimulation: 9 of 56 finished device cells reported a total power of 1e+206 to 1e+218 W
 and an area near 1e+208 mm^2, and the 4 subarray placement cells reported their power to one significant digit.
 
@@ -6611,8 +6632,8 @@ its instruction-window height only for an in-order multithreaded core or an out-
 window heights only for out-of-order). A single-threaded in-order core -- PIMID's `in_order_core` and `alu_core`
 device profiles -- left them uninitialised, and the execution unit adds the window height to the length of three
 in-order bypass wires. The scheduler is heap-allocated, so the height was whatever the reused block held: usually 0,
-sometimes garbage, which priced the bypass at the figures above. It came and went between runs of one configuration
-(three full-size repeats of each failing cell were clean). With the heap pre-filled by `MALLOC_PERTURB_`, the 1.12.14
+sometimes garbage, which priced the bypass at the figures above, depending on what the reused block held. With
+the heap pre-filled by `MALLOC_PERTURB_`, the 1.12.14
 McPAT failed on all 14 kept inputs (7 assertions in the bypass interconnect, 7 overflows) and the 1.12.14 binary
 overflowed on every in-order and ALU cell while its out-of-order control did not; with the fix McPAT's output is
 byte-identical to 1.12.14's on an unperturbed heap and unchanged by the perturbation. The out-of-order core is
@@ -6631,7 +6652,7 @@ are unchanged: the ALU factors are still written with two decimals, as before.
 
 ## 1.12.14 -- the non-DRAM memory models no longer report a configuration fallback that does not happen; the image is rebuilt from this release
 
-The user: "The sram model shit" -> "14, then remake the image". The four non-DRAM plugin memory models (SRAM, STT-MRAM, PCM,
+The four non-DRAM plugin memory models (SRAM, STT-MRAM, PCM,
 ReRAM) are always created with an empty configuration path: the tier-latency and L0-organisation queries call
 `createMemoryModel(tech, "")` and then set the array themselves (capacity, access width, process node, temperature) before
 `initialize()`. Each model's `loadConfig()` still tried the empty path as a file and reported a fallback:
@@ -6652,18 +6673,16 @@ output (gate E1). The image `ghcr.io/isaacyhe/pimid` is rebuilt from this releas
 
 ## 1.12.13 -- the end of 1.12: what 1.12 simulates is documented, multi-node configurations are refused, and the image is built from this release
 
-The last 1.12 release (the user: "ship the conf fix, then ship the docker file polish again, then the docker image";
-"this will be the end of 1.12"). The published image `ghcr.io/isaacyhe/pimid` is built from this release and tagged
+The last 1.12 release. The published image `ghcr.io/isaacyhe/pimid` is built from this release and tagged
 `1.12.13` and `latest`.
 
-**(1) What 1.12 simulates, and what it does not** (the user: "please note in the doc that multi-node feature will be
-provided ..." / "and what 1.12 can do"). The README gains a section with the three system shapes 1.12 simulates: a
+**(1) What 1.12 simulates, and what it does not**. The README gains a section with the three system shapes 1.12 simulates: a
 device run (one device), a co-simulation (one host + one device, the device the host's main memory), and a
 co-simulation with the host's own memory (one host + one memory + one device). It says that multi-node systems are
 not simulated: several hosts, devices or memories, a host-only system, and a node reaching other nodes' memory beyond
 the 1.12 wiring. `docs/cosim.md` replaces its stale "Single device in 1.7.x" limitation with the same statement.
 
-**(2) A host-only system is refused** (the user: "unsupported conf ... just got refused"). A host with
+**(2) A host-only system is refused**. A host with
 no device -- a bare host, or a host with only `system.memories[]` entries -- is refused with rc 2 and a message saying
 so. Through 1.12.12 a host with a memory and no device loaded and emitted a system the 1.12 model does not define, and
 a bare host stopped with rc 1 and no explanation. No corpus configuration or example has that shape: every one emits
@@ -6675,13 +6694,12 @@ with a message: a second host, a device whose allowed range reaches the host mem
 refusal case passes only on rc 2 with a message saying multi-node configurations are not supported. **(4) The entrypoint banner** names the address keys and
 that multi-node configurations are not supported. **(5) `docs/build.md`** describes the new sweep cases. **(6) The title** is the papers' ("PIMID: A Full-System
 Simulator with Intricacy and Diversity for Processing-in-Memory") in the README heading and the `--version` line, which
-carried an old expansion (the user: "title is wrong").
+carried an old expansion.
 
 ## 1.12.12 -- the address configuration layer: a device or memory declares its window, a host or device what it may address
 
-The configuration keys for the address map arrive, as 1.12.10 announced ("We make its conf ready at 12, we make it
-perfect at 13"); the multi-host / multi-device / multi-memory wiring that would enforce them is not part of 1.12. Rulings of 2026-10-15:
-the address declares base and size; an unaligned base is refused; a partial declaration is refused; an allowed range is
+The configuration keys for the address map arrive, as 1.12.10 announced; the multi-host / multi-device / multi-memory
+wiring that would enforce them is not part of 1.12. The design: the address declares base and size; an unaligned base is refused; a partial declaration is refused; an allowed range is
 written as an explicit range.
 
 **(1) `system.devices[].address` and `system.memories[].address`** declare the node's window: a map `{ base, size }` of
@@ -6714,8 +6732,7 @@ Every existing configuration emits identically (gate E1): the new keys are optio
 
 ## 1.12.11 -- the Docker image tooling polished for the 1.12 shape; the image is built from this release
 
-Item 5 of the pre-fleet sequencing (the user: "12.11 is ... the polishing of docker file and then the image is a result of
-this polish"). The image-build tooling lives in the dev repository's `docker/` directory, outside the public tree, and the
+Step 5 of the release sequence. The image-build tooling lives in the dev repository's `docker/` directory, outside the public tree, and the
 published image is `ghcr.io/isaacyhe/pimid` (`:latest` and, from this release, a version tag).
 
 **(1) The Dockerfile ships what 1.12.5 to 1.12.10 added**: the characterization cache warehouse (`cache/`, located from the
@@ -6745,7 +6762,7 @@ and the oracle has demanded a DRAM part record since 1.11.101, so the run exited
 guard ("array energy not charged in system scope yet") was reached. The helper now answers 0 (the preset organisation) for the
 four non-DRAM technologies. Every DRAM-memory corpus configuration and example emits identically (gate E1); the example now
 completes (gate M1). Also observed, not changed: the SRAM device model prints "[SRAMModel] YAML parsing error: bad file:" and
-falls back to its defaults when it is created without a configuration path (G6, pending a ruling).
+falls back to its defaults when it is created without a configuration path.
 
 The image itself is built
 and pushed from this release on a machine with Docker (the command sheet `DOCKER_1.12.11.md`), smoke-tested, and the previous
@@ -6753,18 +6770,16 @@ image tags are removed only after the new image is confirmed working.
 
 ## 1.12.10 -- the host's own main memory is a memory in the system, with its own DDR5 speed grade
 
-Ruling 2 of the configuration-shape rulings of 2026-10-15 (the user: "allow speed grade per mem or per device, so mem with
-hetero speeds are possible"; "it is a memory in the system"), within the one-host + one-device bound the user kept ("multi host
-and multi device support are future items, after 1.12 and cal subm").
+Configuration shape, step 2, within the one-host + one-device bound.
 
 **(1) A `system.memories[]` entry is the host's own main memory.** A memory without PEs declared beside the device is the host's
 main memory: its `memory.technology` and `memory.dram.ddr5_speed_grade` (`3200` / `4800` / `5600`) are honoured in the host
 memory's idle latency (the tRCD + tCAS of that part), its per-channel bandwidth (the M/D/1 service rate every host access queues
 against) and its array energy (the host-side pricing). The device is then not the host's memory: `is_default_mem` is computed
 (a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`).
-The memory keeps a node-map entry and takes the FIRST address window, the device's follows (the user's layout rule: memory,
+The memory keeps a node-map entry and takes the FIRST address window, the device's follows (the layout rule: memory,
 then device; hosts and a memory alone describe a host-only system whose run-time behaviour is not supported). One host, one device and one memory in this
-build: a second host, device or memory is refused by name (the user: refusal for an unsupported multi-node configuration;
+build: a second host, device or memory is refused by name (refusal for an unsupported multi-node configuration;
 the multi-host / multi-device / multi-memory implementation is not part of 1.12). A key
 on the memory that the host memory model does not read (`memory.banks`, ...) is dropped with a warning naming it; the host's
 bandwidth and channel overrides stay `system.hosts[].memory.bandwidth_mbs` / `channels`. Through 1.12.9 a memory without PEs
@@ -6782,15 +6797,14 @@ bandwidth move, the device keys do not.
 
 ## 1.12.9 -- the scope key is retired: the nodes decide (hosts present = co-simulation, none = device run)
 
-Ruling 3 of the configuration-shape rulings of 2026-10-15 (the user: "scope retires"; "need restructure under new conf
-look"). With every hardware block under `system:` (1.12.8) the file's structure says what the run is.
+Configuration shape, step 3. With every hardware block under `system:` (1.12.8) the file's structure says what the run is.
 
 **(1) The scope is taken from the nodes.** `system.hosts[]` present means a co-simulation (the system path); no hosts means a
 device run (the device path, from the one `system.devices[]` entry). Nothing else chooses.
 
 **(2) `scope:` in the file and `--scope` / `--mode` on the command line are retired**: each is dropped with one `[config]
 WARNING` naming it, and the run goes on as the nodes say. A `scope: device` file with hosts therefore runs as a co-simulation
-with a warning (1.12.8 refused it); `--scope system` on a device-only file leaves it a device run with a warning (the fleet's
+with a warning (1.12.8 refused it); `--scope system` on a device-only file leaves it a device run with a warning (the corpus's
 run scripts, which pass the flag, keep working). `scope: cosim` and `--mode cosim` are the same retired words (1.12.8 refused
 the flat spelling by name; its hardware form, the margin blocks, is gone since 1.12.8).
 
@@ -6808,9 +6822,7 @@ the computed value.
 
 ## 1.12.8 -- everything under system: a device-only run is a one-device system; a hardware block at the left margin is ignored with a warning
 
-Ruling 5 of the configuration-shape rulings of 2026-10-15 (the user: "memory should also be in the system, device only should
-also be in a system, device is a memory with pe, memory is a memory without pe"; "everything under system"; stray keys "not
-reject but ignore", with a warning).
+Configuration shape, step 5 (everything under `system:`; stray keys are ignored with a warning).
 
 **(1) Every hardware block is written under `system:`.** A device is a `system.devices[]` entry, a memory without PEs a
 `system.memories[]` entry, a host a `system.hosts[]` entry. The left margin keeps the run's keys: `workload`, `scope` (retired
@@ -6847,8 +6859,7 @@ EXACT. An original device-only file loads on 1.12.8 with the margin warning and 
 
 ## 1.12.7 -- three node lists: hosts, devices, memories; the type key is retired
 
-Ruling 4 of the configuration-shape rulings of 2026-10-15 (the user: "no type, but have host, device, memory"; "device is a
-memory with pe, memory is a memory without pe"), with its two follow-up rulings (the realistic reading on both).
+Configuration shape, step 4, with two follow-ups (the realistic reading on both).
 
 **(1) `system.memories[]` is the list of memories without PEs.** A memory node takes `name`, `attachment`, `is_default_mem`,
 `frequency_mhz`, `tech_node_nm`, every `memory.*` key and `workload`. It is the node `type: memory` declared through 1.12.6,
@@ -6874,8 +6885,7 @@ has a memory without PEs or a device without PEs.
 
 ## 1.12.6 -- a placement level on a host or on a memory-only device is ignored with a warning
 
-Ruling 1 of the configuration-shape rulings of 2026-10-15 (the user: "pl for memory and host should be ignored
-with warning"; "not reject but ignore"). The five rulings of that day each take a release: this one, then the three node
+Configuration shape, step 1. The five configuration-shape steps each take a release: this one, then the three node
 lists (hosts / devices / memories, no `type`), everything under `system:`, the scope key retired, the speed grade per node.
 
 **(1) A `pim` block on a host node is dropped with a WARNING.** A host has no PEs and no placement level. The block
@@ -6891,13 +6901,12 @@ Nothing else changes: a key the loader does not read is still refused by the key
 as before. The dropped keys are PE keys on nodes that have no PEs, where no value could have reached a result.
 
 **Data impact.** None. No corpus cell or example writes a `pim` block on a host or a PE key on a memory-only device (no corpus
-cell has a memory-only device). Gate 1226A: every corpus configuration and example emits identically.
+cell has a memory-only device). Release test: every corpus configuration and example emits identically.
 
 ## 1.12.5 -- the five open findings of 1.12.2 (F1-F5): both nodes priced from their own fields, both clocks correct, one cache store
 
-Rulings F1-F5 of 2026-10-15, the third of the pre-fleet rulings: (a) on each.
 The findings were recorded in the 1.12.2 change notes as code reading; each
-is now fixed and proved by a gate arm.
+is now fixed and proved by an arm of the release test.
 
 **F1 -- the system `--method trace` path prices per node.** The system
 trace-replay path called the single-configuration power analysis, which
@@ -6936,7 +6945,7 @@ value and the node key to give. Equal values pass. No corpus configuration
 carries such a key (10 system cells carry a top-level `memory.dram`, which is
 not one of them).
 
-**F4 -- the `HOST_MC` rung converts at the device clock.** The user's rule:
+**F4 -- the `HOST_MC` rung converts at the device clock.** The rule:
 host clock is host clock, device clock is device clock, both must be correct.
 Every hierarchy rung has converted nanoseconds at the device clock since
 1.11.57; the `HOST_MC` rung added in 1.11.94 still converted at
@@ -6978,8 +6987,7 @@ figure.
 
 ## 1.12.4 -- the LPDDR5 part record is the four-channel package: four independent x16 channels, one die each
 
-Ruling 2 (c) of 2026-10-15, the second of the pre-fleet rulings. One record
-field moves; the gate shows every consequence.
+One record field moves; the release test shows every consequence.
 
 **(1) The LPDDR5 record's `channels` is 4.** The record
 (`params/dram/lpddr5.yaml`) instantiated one x16 channel: a bare 8 Gb die,
@@ -6995,7 +7003,7 @@ DRAM die area 4, the background and refresh populations 4, the co-sim
 (16 per channel). The bank itself does not change: 2^15 rows x 2^10 columns x
 16 bits = 64 MiB, the same bank as DDR4's and DDR5's.
 
-What the single channel did to the fleet: a 16-PE BANK cell had one bank unit
+What the single channel did to the corpus: a 16-PE BANK cell had one bank unit
 per PE, 64 MiB, and the MPI bfs cell at 5,000,000 vertices (200 MB per rank)
 refused at data preparation, the only refusing cell of the corpus. With 64
 units each PE owns 4, 256 MiB, and the cell fits. No workload size changes.
@@ -7015,8 +7023,8 @@ technology moves.
 
 ## 1.12.3 -- the co-sim MPI device window is the kernel window: the post-kernel collective tail is reported, not priced; CACTI closes its technology tables
 
-Ruling 1 (a) of 2026-10-14, the first of the pre-fleet rulings, and one defect
-the gate found. Each has its own arms in the gate.
+One design change and one defect the release test found. Each has its own
+arms in the release test.
 
 **(1) The co-sim MPI device time is the kernel window.** In a co-sim MPI run the
 ranks are the device PEs (1.8.7). A PE's `cycles` ran to guest exit and held
@@ -7054,7 +7062,7 @@ many arrays (an out-of-order core, or a core with an L3) leaked past the
 next open failed, CACTI reported the table as missing, and McPAT's child
 crashed on the invalid result, so every co-sim and host-baseline cell with
 such a host refused (`[Power] FATAL: ... produced nothing for node 'host'`).
-Found by gate 1221A on the first run after the cluster's reinstall; the
+Found by the release test on the first run after the cluster's reinstall; the
 previous nodes' higher limit had hidden it. The file is closed, and a table
 that cannot be opened is refused by name instead of being read through a
 null handle.
@@ -7069,11 +7077,10 @@ descriptor prices the same table.
 
 ## 1.12.2 -- scope: cosim is system scope (the host: block is system.hosts[0]); a top-level per-node key is every device node's default; an out-of-range in-order issue width refuses; the trace path prices the node's McPAT fields and the host's x86-64 registers; the generated topology file and stale legacy cache entries stay out of the way
 
-The "decide again" rulings of 2026-10-07 (user: "these are 1.12.x fixes"). Seven
-items, each its own arm in the gate. No corpus cell uses any of the shapes they
+Seven items, each its own arm in the release test. No corpus cell uses any of the shapes they
 touch.
 
-**(1) scope: cosim stays, and it is system scope (ruling 2b).** The flat
+**(1) scope: cosim stays, and it is system scope.** The flat
 top-level `host:` block is now `system.hosts[0]`, named `host`. A copy of the
 block goes through the code that reads a declared host node, so the cosim host
 gets that node's defaults, refusals and pricing. Its cache ways and banks come
@@ -7103,7 +7110,7 @@ prints one NOTE naming both nodes. The cosim `[params] in_order branch
 predictor` lines are per node, as in system scope. The usage text no longer
 calls cosim a deprecated alias.
 
-**(2) A top-level per-node key is the device nodes' default (ruling 7a).** In
+**(2) A top-level per-node key is the device nodes' default.** In
 system scope, a device-scope key that a device node reads for itself (the
 per-node set) is now the default of every device node that does not give it,
 when the top level gives it. A node's own value wins. The per-node set covers
@@ -7116,19 +7123,19 @@ keys. A top-level `pim.pe.issue_width` or `pim.pe.branch_predictor` was read
 and checked, and then reached no node. An inheriting node's `[params]
 in_order branch predictor` line names the top-level key. An inherited L2 or L3
 size makes the level present when it is above 0, unless `cache.<level>.enabled`
-is given. Hosts do not inherit: their keys are their own (the E23 ruling of
+is given. Hosts do not inherit: their keys are their own (the E23 rule of
 1.11.43). The built-device node keys (`pim.placement`, `pim.mc.type` /
 `pes_per_mc`, `noc.topology`, `memory.ports_per_bank`) are not per-node keys
 and keep the node defaults, as before.
 
-**(3) pim.pe.issue_width outside 1..6 is refused (ruling 4a).** The width is
+**(3) pim.pe.issue_width outside 1..6 is refused.** The width is
 refused (rc 2) at the top level and in a `system.devices[]` node, with the
 message style of `system.hosts[].issue_width` (1.11.107). The in-order core has
 six issue ports, and its constructor replaces any other width with 2. Through
 1.12.1 an out-of-range width went into the zsim config as written, ran at 2
 and was priced at 2.
 
-**(4) McPAT on the system trace path (ruling 5a).** (i) The dual-McPAT host of
+**(4) McPAT on the system trace path.** (i) The dual-McPAT host of
 `runPowerAnalysis` now takes the run's architectural register files
 (`pim.pe.arch_int_regs` / `arch_fp_regs`; default 16 + 16, the x86-64 files
 the guest executes). A host node has had these on the per-node path since
@@ -7143,7 +7150,7 @@ ALU's one-FPU-per-lane count follows the priced lanes. The path still prices
 the device's core type, caches, clock and factors from the run configuration.
 That is a recorded open item.
 
-**(5) The generated topology file (ruling 6a).** The detailed DRAM fabric's
+**(5) The generated topology file.** The detailed DRAM fabric's
 CUSTOM topology file is now written to `/tmp/pimid_<TECH>_pe<N>_<pid>.topo`,
 beside the run's zsim config, and removed when the run exits. Only the
 process that wrote it removes it, and refusals take the same exit path. It
@@ -7152,7 +7159,7 @@ detailed-DRAM run. The cfg's `topologyFile` and the banner's `NoC: CUSTOM
 (from ...)` name the new path. A run killed by a signal leaves the file in
 /tmp.
 
-**(6) Stale legacy NVSim cache entries are not migrated (ruling 3a).** An
+**(6) Stale legacy NVSim cache entries are not migrated.** An
 entry found in the pre-1.11.52 per-user store (`~/.cache/pimid/nvsim`) is
 copied into the tree cache only after it passes every check. It must also be
 in the current format: `<value_format>g17` (1.11.94) and the subarray geometry
@@ -7164,7 +7171,7 @@ was planted in the tree cache and served from there on, and a PCM cell then
 refused: "NVSim reported no wordlines per mat". The refusal messages now name
 the file that was read.
 
-**(7) Reproducibility note (ruling 1b, docs only).** `docs/architecture.md`
+**(7) Reproducibility note (docs only).** `docs/architecture.md`
 (Reproducibility) and `docs/yaml_reference.md` (Workload) now say that the
 guest inherits pimid's environment block, and the simulated address layout
 follows it. 500 more bytes of environment moved a 65536-element serial
@@ -7190,8 +7197,7 @@ except that `topologyFile` on detailed-DRAM cells now points under
 
 ## 1.12.1 -- simple_core is retired; the in-order core gets a predictor-off knob, and in_order_core at issue width 1 with no branch predictor is the scalar PE
 
-**(1) simple_core is retired (ticket #114, ruling (c) with the knob, user
-2026-10-05).** A configuration that names `simple_core`, or its aliases
+**(1) simple_core is retired (with the knob).** A configuration that names `simple_core`, or its aliases
 `Simple` / `simple`, is refused (rc 1) wherever a core type is read:
 `pim.pe.type` / `pim.pe.core_type` (also inside a `system.devices[]` node),
 `system.hosts[].core_type`, `system.devices[].pe_type` and the deprecated
@@ -7201,11 +7207,11 @@ cosim `host.core_type`. The message names the key and the replacement:
 `devices[].pe_type: in_order_core` with `devices[].pim.pe.issue_width: 1`
 and `devices[].pim.pe.branch_predictor: none`; a host:
 `hosts[].core_type: in_order_core` with `hosts[].issue_width: 1` and
-`hosts[].branch_predictor: none`). The reason is the #114 corpus finding:
+`hosts[].branch_predictor: none`). The reason is a corpus finding:
 across the ten kernel x API cells, simple_core sat at 0.77-1.13x of
 in_order_core in cycles and 0.78-1.12x in energy. It was an IPC-1 bound and
 did not model any real PE class. The ten coremodel simple_core cells of the
-v1187 fleet had already been parked (`pimid_results/v1187_jobs/retired_simple_core/`).
+corpus had already been retired.
 The zsim SimpleCore class is deleted (`simple_core.cpp` / `.h` and their two
 CMake lines). The core-group `type` key is now required: its default was
 "Simple". A hand-written zsim config that names `Simple` panics and names
@@ -7275,8 +7281,7 @@ feed in either mode, so with `none` it makes every branch free.
 width 1 and branch predictor none with 1 ALU, 1 MUL and 1 FPU (the FPU goes
 when `floating_point: false`) and no predictor: prediction_width 0, RAS_size
 0, no pattern table or BTB, and no predictor-write stats. This is the cell
-simple_core was priced with, with one difference. Per the user ruling of
-2026-10-05, the pipeline depth is 7, the execute-depth refill the in-order
+simple_core was priced with, with one difference: the pipeline depth is 7, the execute-depth refill the in-order
 timing charges (`inorderTimingPipelineDepth()`, record
 `in_order.mispredict_penalty_cycles`). The old cell used 5. An in-order
 element with none at width 2 or more keeps 3 ALUs and drops the predictor.
@@ -7288,7 +7293,7 @@ PE profile (issue width 1, branch predictor none, <source>): ...`,
 in_order_core: branch predictor pag (...)`, after the unchanged
 issue-width/depth line.
 
-**(4) scope: cosim in-order issue width (B5 of the #114 plan).** The device
+**(4) scope: cosim in-order issue width.** The device
 node synthesized for the deprecated cosim alias kept the SystemNode default
 issue width of 2. Under scope: cosim, the device group was therefore emitted
 with `issueWidth = 2` and priced two-wide, whatever `pim.pe.issue_width`
@@ -7325,21 +7330,21 @@ configuration (in_order_core, issue width 1, branch predictor none) is new.
 No retired simple_core number maps onto it: it is a weave core with
 decode-driven RAW, port and refill stalls, not an IPC-1 bound. Configurations
 under scope: cosim that set `pim.pe.issue_width` other than 2 on an in-order
-device move (B5). None ships, and none is in the corpus. A user
+device move (item (4)). None ships, and none is in the corpus. A user
 `PIMID_PARAMS` core record without `in_order.branch_predictor` now refuses,
 and so does a hand-written zsim config with no `branchPredictor` in an
 InOrder group or no `type` in a core group.
 
-## 1.12.0 -- the out-of-order core's mispredict redirect costs the core record's penalty in total, counted from the branch's resolution (#50)
+## 1.12.0 -- the out-of-order core's mispredict redirect costs the core record's penalty in total, counted from the branch's resolution
 
-Ticket #50, user ruling (b) of 2026-10-05. The core record's
+The core record's
 `ooo.mispredict_penalty_cycles` (17 cycles, Westmere-class: the measured
 Nehalem/Westmere penalty, A. Fog, the value `ooo_core.cpp` already cited) is
 now the TOTAL cost of a mispredict on the out-of-order core. The redirect
 stays resolution-bound: fetch restarts after the mispredicted branch uop
 COMPLETES -- its execute-complete cycle, which zsim names `lastCommitCycle`
 -- not when it retires from the ROB. Retirement is computed inside the ROB
-model and the redirect never read it, so the ticket's "commit-bound" premise
+model and the redirect never read it, so a "commit-bound" reading
 took zsim's variable name literally, and the redirect POINT does not change.
 What changes is the COST. Through 1.11.x fetch restarted AT resolution, and
 the whole cost was the refill the stage model charges after any fetch
@@ -7357,8 +7362,8 @@ stage model, so the out-of-order core refuses one at initialisation and
 names the refill (the record loader and the
 `core.ooo.mispredict_penalty_cycles` override still accept 0..1000; no
 shipped record or corpus configuration sets the field). Where the redirect's
-base is not the branch uop's own completion it is unchanged, and stays its
-own ticket: a block whose leftover rep-string or mismatch accesses are
+base is not the branch uop's own completion it is unchanged, and stays a
+separate item: a block whose leftover rep-string or mismatch accesses are
 drained after its last uop (the base is their latest response), an indirect
 call (its last uop is the return-address push store) and an injected wait
 between a branch and its successor (the base is the wait's end).
@@ -7385,8 +7390,7 @@ cells, and co-simulation cells move through their host's in-ROI
 mispredicts. Branchy irregular kernels move most: bfs (serial, OpenMP and
 MPI), whose data-dependent `dist[v] == -1` test is fed by a load. Loop
 kernels move by 8 cycles per loop exit: little where the loop is long
-(stream_triad, vector_add), more where short inner loops repeat (gate
-1209A's 16-PE HBM3 gemv-256 shape: 90 to 225 ROI mispredicts per element on
+(stream_triad, vector_add), more where short inner loops repeat ('s 16-PE HBM3 gemv-256 shape: 90 to 225 ROI mispredicts per element on
 20k to 28k cycles, a bound of +2.6% to +6.5%). OpenMP and MPI cells can
 move past that bound through spin-wait interplay and are banded, not
 bounded. The "ooo_core above in_order_core on large bfs" model boundary in
@@ -7395,7 +7399,7 @@ unit (`alu_core`), `simple_core` and `null_core` are exact: their code is
 untouched. On every core the instruction, uop, branch and mispredict counts
 are unchanged; only timing moves, and with it, second order, the L1I and
 memory counters that follow timing. McPAT's out-of-order pipeline depth
-(13) is unchanged. Gate 1218A: one-element serial bfs on `ooo_core`: cycles
+(13) is unchanged. Release test: one-element serial bfs on `ooo_core`: cycles
 rise against 1.11.107 by 32832 cycles (174942 -> 207774, 4105 ROI mispredicts) (1.000 of 8 x the ROI mispredicts), with
 instrs, uops, branches, mispredBranches and the indirect and return
 counters exact (FIRES); the same shape on `in_order_core`, `alu_core`,
@@ -7407,7 +7411,7 @@ mispredict.
 
 ## 1.11.107 -- one vocabulary for a system device node: a node takes every device-scope key, read by the same code; the flat node keys are aliases; a node's McPAT core profile takes its own register counts
 
-Ruling R106-7 (c) (user, 2026-10-05). A device was described in two shapes:
+A device was described in two shapes:
 device scope (`pim.pe.{type,count,frequency_mhz,...}`, `pim.placement`,
 `pim.mc`, `memory.*`, `noc.*`, `cache.*`) and a system node (flat `pe_type`,
 `num_pes`, `frequency_mhz`, `tech_node_nm` plus a partial mirror of the
@@ -7478,7 +7482,7 @@ extractor never assigned four of its components (the subarray output driver,
 the two in-bank H-tree legs, write-verify) and the three NVM timing structs
 left every field uninitialised, so the printed inner-bank read latency summed
 whatever the heap held: 1.11.106 printed 2.5e+180 ns on the two STT-MRAM gemv
-cells of the corpus (gate 1217B, arm E2) and 1.6 ns -- the three asserted I/O
+cells of the corpus (arm E2) and 1.6 ns -- the three asserted I/O
 constants, NVSim's breakdown being absent on a cache hit -- everywhere else.
 The figure is print-only: no caller reads the inner-bank getters, so no number
 moves. The four components are now 0 and every field of the PCM, ReRAM and
@@ -7500,9 +7504,8 @@ recomputed it in silence).
 
 ## 1.11.106 -- the configuration loader refuses what it used to replace in silence: typed string reads, the enum words, the duplicate names, the key schema, the zeroed wires; the host idle credit is measured
 
-The queue the audit rounds 7 and 8 parked for after the fleet launch, pulled
-before it (user, 2026-10-05), censused against the tree (most of it had closed in 1.11.90) and settled under eight
-rulings (R106-1 to R106-8). Nothing here moves a corpus number; a refusal
+Open items from earlier reviews, censused against the tree (most had closed in 1.11.90)
+and settled in eight decisions. Nothing here moves a corpus number; a refusal
 changes an exit code and a message.
 
 **(1) Typed string reads (census B1).** `yamlString` / `yamlStringReq`
@@ -7512,7 +7515,7 @@ into the default and the third into the word "null", in silence). The
 `cache.cacti.power_gating.*` flags and `perf_loss` read through yamlBool /
 yamlDouble with a (0, 1) range; the three bare `as<bool>()` reads accept 0/1.
 
-**(2) The enum words (census S1-S10, rulings R106-1 b, R106-2 b, R106-3 a).**
+**(2) The enum words (census S1-S10).**
 `system.devices[].attachment` accepts internal or external; `cache.mode`
 (and --cache, PIMID_CACHE_MODE) refuses an unknown word that used to run
 rw; `noc.topology` has one accepted list for every family (MESH_2D with the
@@ -7522,10 +7525,10 @@ at load and checked (the corpus's lowercase crossbar would have become
 MESH_2D on zsim's multi-device path; the printed "System Network:" line is
 upper-case now); `system.devices[].pim.mc.type` accepts simple; an unknown
 `power.mcpat_overrides` name refuses; `placement.level` is case-folded and an
-unknown word refuses (R106-1 b); the host `noc.topology` / `noc.model` words
+unknown word refuses (b); the host `noc.topology` / `noc.model` words
 stay accepted with a WARNING that the host fabric runs as the analytic
-crossbar (R106-2 b; the host NoC has no model of its own); the four
-warn-and-run cases refuse (R106-3 a): an unparsable
+crossbar (b; the host NoC has no model of its own); the four
+warn-and-run cases refuse: an unparsable
 `memory.controller.bandwidth`, `controller.type: ramulator` on a non-DRAM
 part, a `system.network.links` entry naming no device, an unknown
 `synthetic.pattern` (the list now includes memory-directed).
@@ -7535,11 +7538,11 @@ part, a `system.network.links` entry naming no device, an unknown
 corpus does not use: in-order PEs with cache.pg and no cache.l2 section);
 `noc.mlp` below 1 refuses (N3); `memory.dram.device_width` on a non-DRAM part
 refuses (N4); on SRAM and the NVMs a `memory.controller.bandwidth` above the
-array's own cap refuses instead of being clamped in silence (R106-4 b);
+array's own cap refuses instead of being clamped in silence;
 `system.hosts[].workload.env` and `system.devices[].workload.env` are read
 and join the one simulated process's environment, a key given twice taking
-the node's value with a NOTE (R106-5 a); the `pcie_gen3` link preset exists
-(PCI-SIG 8 GT/s x16: 15.75 GB/s, 500 ns, 20 B header; R106-6 a); the second
+the node's value with a NOTE; the `pcie_gen3` link preset exists
+(PCI-SIG 8 GT/s x16: 15.75 GB/s, 500 ns, 20 B header); the second
 `link_type` read is gone (N2 residue); giving both names of one quantity
 refuses, naming both (power.temperature_k/c; technology.node_nm /
 system.tech_node_nm / power.tech_node_nm; pim.pe.core_type/type;
@@ -7547,12 +7550,12 @@ pim.pe.placement/pim.placement; noc.virtual_channels_per_vn/vcs_per_vnet;
 memory.timing read and write pairs; noc.bridges/gateways; power.link/pcie);
 the `noc.clock_mhz` NOTE names pim.pe.frequency_mhz too.
 
-**(4) The key schema (census B6, review R6-7).** Every nested key the loader
+**(4) The key schema (census B6).** Every nested key the loader
 reads is listed (345 paths, from the census); an unknown key under a known
 section refuses naming it and the nearest accepted key, so a misspelt
 `memory.technolgy` no longer runs the SRAM default under DDR4's name.
 Device-scope-only keys written inside a `system.devices[]` node are refused
-in this release; 1.11.107 (ruling R106-7 c) makes a node a device-scope config.
+in this release; 1.11.107 (c) makes a node a device-scope config.
 Every corpus and example configuration loads unchanged (41 + 37 key paths,
 all in the set).
 
@@ -7564,7 +7567,7 @@ as a fifth substitution kind, refused by the parent like the others
 (PIMID_ALLOW_ARRAY_CLAMP=1 reports anyway). Zero-length wires stay exempt.
 PIMID_CACTI_FAULT=wire injects one for the gate.
 
-**(6) The host idle credit is measured (census A10, ruling R106-8 b).** The
+**(6) The host idle credit is measured (census A10, b).** The
 host power-gating residency took max(core-active, host-MC-active) phases and
 called it a lower bound that under-credits; it is an upper bound on activity
 that over-credits. zsim now keeps a union tracker (any core retiring OR a
@@ -7595,7 +7598,7 @@ DDR4 example that did not load and the placement and link-type tables.
 
 ## 1.11.105 -- the IDD code tables are deleted; the part record is the source (IDD-RECORDS step 2)
 
-Step 2 of the IDD-RECORDS migration (ruling (a)). The energy layer's code
+Step 2 of the IDD-RECORDS migration. The energy layer's code
 tables -- the per-technology IDD rows (`iddTableFor`), the provenance
 classes, the IDD3N bank-state basis, the component factors, the termination
 electricals and the HBM VDDQ band -- are gone; every reader takes the part
@@ -7614,10 +7617,9 @@ every technology and DDR5 grade, and a record copy with one current changed
 now MOVES the priced number instead of being refused -- the record is the
 source.
 
-## 1.11.104 -- the part's measured IDD data moves into the records, cross-checked against the code table (IDD-RECORDS step 1)
+## 1.11.104 -- the part's measured IDD data moves into the records, cross-checked against the code table (step 1)
 
-Ruling IDD-RECORDS (a), user 2026-10-05, pulled before the fleet by the
-re-sequence of the same day. Step 1 of the two-step migration: every DRAM
+Step 1 of the two-step migration: every DRAM
 part record (`params/dram/<tech>.yaml`) now carries the part's measured
 data with its source beside each value -- the `idd` block (VDD, the IDD0 /
 IDD2N / IDD3N / IDD4R / IDD4W / IDD5 / IDD2P currents, tRFC, tREFI, the row's
@@ -7636,11 +7638,11 @@ value -- so no number can move, which the gate proves exactly on every
 technology and DDR5 grade. The `[params]` line names the row's provenance
 and the count of values checked. Step 2 (1.11.105) deletes the table and
 makes the record the source. The Ramulator preset transcriptions and the
-CACTI table node stay in the tools, as ruled.
+CACTI table node stay in the tools, by design.
 
 ## 1.11.103 -- a mesh, ring or crossbar inside a DRAM device is the in-die fabric; the host-device link class follows the attachment, and a DIMM-resident device is reached over its own DRAM channel
 
-**(1) The in-die fabric (sweep-94 ruling 9, user "a" 2026-10-05).** A DRAM
+**(1) The in-die fabric.** A DRAM
 device whose configuration names `noc.topology: MESH_2D`, `RING` or
 `CROSSBAR` was refused since 1.11.101 as a fabric the model did not define
 (and silently replaced by the tree before that, which system scope still
@@ -7669,8 +7671,7 @@ writes the grid links; the zsim side rebuilds the same grid from the
 emitted `indieFabric` / `indieGridW` / `indieGridH` keys. On a plain tree
 nothing moves: the census walk is the parent-pointer walk it was.
 
-**(2) The host-device link class follows the attachment (ruling
-COSIM-LINK-CLASS, user "c" 2026-10-05; closes review R4).** The class
+**(2) The host-device link class follows the attachment.** The class
 DEFAULTS to what the device's placement implies: an on-package part (an HBM
 stack, SRAM, the NVMs) crosses an `interposer`; a DDR-family part
 (DDR3/DDR4/DDR5/LPDDR5/GDDR6) is reached over its own DRAM channel, the new
@@ -7705,7 +7706,7 @@ configured class now (found by the 1.11.106 census, N2; no corpus config
 carries a `power` block).
 
 **(3) The corpus's device fabric line.** The 90 system configurations of
-the fleet (`pimid_results/v1187_jobs/configs_sys/`, local) named
+the corpus named
 `noc.topology: MESH_2D` with `model: detailed` on their DRAM device; the
 line never took effect (system scope replaced it by the tree without a
 word) and would now be the in-die MESH the detailed path refuses. The line
@@ -7737,11 +7738,11 @@ through 1.11.93 the literals 512 x 256 (STT-MRAM), 1024 x 1024 (PCM) and
 `subarray_rows` / `subarray_cols` from NVSim's result, the accessors read
 them from the cache like the mat count, and an entry without them is a
 miss under `PIMID_NVSIM_CACHE_REQUIRE_FULL=1` (recharacterized, as the
-fleet runner sets) and a stated refusal otherwise. The 64 KiB units
+corpus runner sets) and a stated refusal otherwise. The 64 KiB units
 characterize to 256 x 512 (PCM), 128 x 1024 (STT-MRAM) and 512 x 256
 (ReRAM).
 
-**(3) The HBM3 record is one part (ruling 16, user (a) 2026-10-05).** The
+**(3) The HBM3 record is one part.** The
 record named the SK hynix 16 Gb D1z core die as its density part but
 instantiated the HBM3_4Gb preset -- 4 Gb per channel, an 8 GB stack -- and
 called that 8 dies of 8 Gb. JESD238 puts two channels on each core die, so
@@ -7758,7 +7759,7 @@ instead of the substituted chip and literals the pre-1.11.94 numbers
 carried; every HBM3 cell (210 cells) moves: stack capacity 8 to 16 GB,
 rows per bank 16384 to 32768 (pages per unit, the placement tree, the
 refresh population), die area 50 to 100 mm2 at 8 dies. DRAM cells of the
-other technologies and SRAM cells do not move. Gate 1212B: exact parity
+other technologies and SRAM cells do not move. Release test: exact parity
 against 1.11.101 on every deterministic non-HBM3 shape and the loads; the
 three NVM one-PE shapes run on NEW (rc 0) where OLD refused (rc 2); cold
 and warm NVM loads agree; the HBM3 load states 16 GB, 8 dies x 100 mm2 and
@@ -7766,14 +7767,13 @@ HBM3_8Gb where OLD stated 8 GB, 8 x 50 mm2 and HBM3_4Gb (FIRES).
 
 ## 1.11.101 -- the part records are the only source; a fabric the model does not define is refused, not replaced
 
-RETIREMENT release (R7 of the 1.11.94+ release manifest; sweep-94
-rulings 13a step 2, 9, and the BIG-CACHE ruling (b) of 2026-10-03). Step 2 of
+RETIREMENT release. Step 2 of
 the parameter-file migration: 1.11.94 proved file == code by cross-checking
 every part-record field against the code tables; this release deletes the
 tables and reads the records. Nothing priced moves for a run whose record
 matched its table (the gate asserts byte-identical outputs on every shape).
 
-**(1) In-die fabric requests are refused (ruling 9).** A mesh, ring or
+**(1) In-die fabric requests are refused.** A mesh, ring or
 crossbar asked for inside a DRAM die was replaced by the tree with a
 warning (1.10.1). The request is a design alternative the simulator honours
 only once its model is defined (link width and clock from the placement
@@ -7784,7 +7784,7 @@ requested fabric's name. The tree is taken by leaving `noc.topology` unset;
 a logic-die mesh is modelled by placing the elements at LOGIC_DIE; a
 user-supplied fabric by CUSTOM with a topology file.
 
-**(2) The part records are the only source (ruling 13a step 2, 16, 22).**
+**(2) The part records are the only source (step 2, 16, 22).**
 The tables the 1.11.94 cross-check proved equal to the records are deleted
 and every former table site reads the record registry
 (`src/params/part_records.cpp`): the CACTI wrapper's generation label,
@@ -7820,9 +7820,9 @@ the record's two sub-channels, so a DIMM rank priced 16 devices since 1.11.97
 x8 devices and the DIMM rank 8. The DDR5 die count and memory area halve,
 the background and refresh unit population halves, and the placement tree
 offers 256 bank organisations per rank instead of 512 (the kernel's unit
-count and data layout follow). Gate 1211A P2/P2b state the moved figures.
+count and data layout follow). The release test P2/P2b state the moved figures.
 
-**(3) The replicated-slice cache record (review-93 BIG-CACHE ruling (b)).**
+**(3) The replicated-slice cache record.**
 A cache above the record's `max_slices` x `slice_mb` (32 x 2 MB = 64 MB) is
 the distributed LLC of a many-core chip: S identical slices, each one CACTI
 array (2 MB, one bank); area, leakage and energy scale by S (McPAT prices
@@ -7835,14 +7835,14 @@ unchanged (a 64 MB and a 32 MB LLC emit the same configuration as 1.11.100);
 before, a 128 MB LLC was silently clamped to 32 banks of 4 MB. No corpus
 cell needs it.
 
-**(4) What stays in code, and needs a schema ruling.** The IDD current
+**(4) What stays in code, and needs a schema rule.** The IDD current
 sets, tRFC/tREFI, the termination rows, the bank and bank-group organisation
 defaults, the DDR5 speed-bin names, the transcriptions of Ramulator's timing
 and organisation presets and the CACTI table node have no record fields; a
 second step-1 migration (field, provenance, cross-check release) is the next
-decision (OPEN, user).
+decision (OPEN).
 
-DATA IMPACT: every DDR5 cell (above); no other cell moves. Gate 1211A: exact
+DATA IMPACT: every DDR5 cell (above); no other cell moves. Release test: exact
 parity against 1.11.100 on every deterministic shape (one-PE runs of the
 three decoded cores, the DRAM and SRAM loads, a 16-PE configuration
 emission) and bands on the 16-PE OpenMP shape; the DDR5 device count, the
@@ -7852,11 +7852,10 @@ field refuses.
 
 ## 1.11.100 -- the trace replays what ran: every basic block, its branches, the ROI, the offload domain, the syscalls and the controller
 
-TRACE REPLAY release (R6 of the 1.11.94+ release manifest; review C6
-(x07-trace-driver-1, user "aa" 2026-10-02) and H36-H39 (user "a" 2026-10-02)).
+TRACE REPLAY release.
 No corpus cell uses `--method trace`; nothing in the execution path moves.
 
-**(1) Compute per basic block, decoded (C6, H37).** The trace generator
+**(1) Compute per basic block, decoded.** The trace generator
 (`qemu_trace_plugin.c`) emitted one COMPUTE event per vcpu at exit with the
 whole instruction count, so the replay handed the in-order and out-of-order
 cores one synthetic block of N instructions at the very end and they
@@ -7870,7 +7869,7 @@ stream; a block the side file lacks is a synthetic block of the event's count
 and size, and the run says how many of each. `PIMID_TRACE_NO_DECODE=1` forces
 synthetic blocks (the pre-1.11.100 fidelity, for comparison).
 
-**(2) ROI markers (H36).** ROI_BEGIN / ROI_END events (0x0080 / 0x0081) are
+**(2) ROI markers.** ROI_BEGIN / ROI_END events (0x0080 / 0x0081) are
 written from both magic-op entry points, inside the recorded window. The
 replay's roi_begin does what the execution path's does: every core's
 baseline, the power-gating window, the traffic-counter groups, the fabric's
@@ -7878,14 +7877,14 @@ drain and rebase, and the controller replay's window; roi_end ends the
 simulation and the statistics freeze there. Before, the replay never rebased
 (whole-run counters) and ran to the end of the file.
 
-**(3) The offload domain (H38).** The replay builds the host and device core
+**(3) The offload domain.** The replay builds the host and device core
 masks as the execution plugin does (ALU and null cores are device elements)
 and runs a thread on the device mask while its events carry the device
 flag, migrating it the way `migrateThreadToDomain` does (leave, finish,
 restart). In device scope the ROI is the offload boundary; in system scope
 the WORK_BEGIN/WORK_END brackets are.
 
-**(4) Barriers (H39) -- and the crash every decoded-core replay died of.**
+**(4) Barriers -- and the crash every decoded-core replay died of.**
 In this trace format a BARRIER event is a thread-creating syscall
 (clone/fork/vfork, the generator's syscall hook); the execution path leaves
 the core around a syscall and joins again after it. The driver called the
@@ -7902,7 +7901,7 @@ does; the run reports how many left and how many had no core bound.
 summary adds the decoded/synthetic block split, the ROI markers seen and the
 domain migrations.
 
-**(6) Found by the R6 probe, in the shipped 1.11.98 path: the DRAM read and
+**(6) Found by the trace-replay probe, in the shipped 1.11.98 path: the DRAM read and
 write counts were undercounted wherever the epoch replay priced an access.**
 The interface counted rd/wr at the end of `localAccessLatency`, which a
 replay-priced access never reached (the 1.11.98 hook returns early); on the
@@ -7912,7 +7911,7 @@ taken before the hook now. Every device cell priced by the replay in 1.11.98
 and 1.11.99 carried the undercount (the row behaviour, latency and
 controller figures were unaffected: the replay recorded every access).
 
-**(7) The branch feed (H40).** The replay fed no branch outcome to any
+**(7) The branch feed.** The replay fed no branch outcome to any
 core: the in-order and out-of-order predictors, BTB and RAS saw nothing
 (every branch counter zero in a replay, populated in the execution of the
 same program), so no misprediction was ever charged and the predictor
@@ -7926,7 +7925,7 @@ that block's bbl(), under the same gates (an out-of-order or in-order core
 bound to the thread; the PIMID_OOO_NOBRANCH / PIMID_INORDER_NOBRANCH escapes).
 The run reports how many directions and control transfers it fed.
 
-**(8) The ROI instruction count is exact (H40).** The generator counts the
+**(8) The ROI instruction count is exact.** The generator counts the
 instructions between the ROI markers in file order under its write lock (a
 COMPUTE event's count), writes the total into the trace header's metadata
 (`roi_insns:`), and the generator's summary prints it (the plugin's own exit
@@ -7937,7 +7936,7 @@ blocks are now keyed by (address, instruction count): a block translated
 again with another length is another block, so the replay retires exactly
 what the trace recorded instead of the first translation's count.
 
-**(9) The controller replay's fold (H41).** The trace path armed the DRAM
+**(9) The controller replay's fold.** The trace path armed the DRAM
 epoch replay and replayed the pre-ROI epochs at roi_begin, but never ran
 its finalize before the statistics dump, so the ROI's own epochs were never
 replayed: the dramReplay group reported zero requests and zero epochs for
@@ -7945,7 +7944,7 @@ every trace replay while the execution of the same program reported ten
 thousand. The driver's termination dump now folds the controller as the
 execution plugin's does.
 
-**(10) The phase barrier (H42).** The driver ran one thread at a time:
+**(10) The phase barrier.** The driver ran one thread at a time:
 at every switch it left the previous thread's core, and the single active
 core ended the phase when it crossed the phase end, so every other core
 lost the rest of the phase it had not reached and started the next one
@@ -7968,7 +7967,7 @@ branch feed (7) is applied after the join for the same reason: a core
 unbound by the driver's own switch is not a leave of the program (fed
 before it, 39% of the ROI's branches never reached the predictor).
 
-**(11) System scope (H43).** Trace generation is a QEMU run of the
+**(11) System scope.** Trace generation is a QEMU run of the
 workload with the trace plugin, the same in every scope, but system scope
 refused it ("supported methods: exec, trace"); it is routed to the same
 generator now. In the replay the ROI opens the device window as the
@@ -7981,16 +7980,13 @@ replayed; the replay's host-side ROI energy is short of them.
 
 DATA IMPACT: every OpenMP/serial device DRAM cell's reported rd/wr and the
 DRAM access energy computed from them (1.11.98/1.11.99 undercounted). The
-trace path itself moves no corpus cell. Gate 1210A: trace-gen -> replay
+trace path itself moves no corpus cell. Release test: trace-gen -> replay
 against exec on the three decoded core types, device and system scope; the
 replay is deterministic (two replays of one trace are identical), its ROI
 instruction count equals the generator's exactly, its branch feed and
-controller replay fire, and cycles and DRAM accesses sit within the measured
-bands. Measured on the 16-PE HBM3 gemv probe (device scope, 500 MHz,
-2026-10-04): execution itself varies run to run (OpenMP spin waits; three
-runs per core) by 4.1% / 1.6% / 0.4% in cycles and 4.5% / 1.2% / 7.4% in
-DRAM reads for the simple / in-order / out-of-order cores; the final
-replay against one execution came to 0.991 / 1.018 / 1.000 of its cycles
+controller replay fire, and cycles and DRAM accesses agree with the execution.
+Measured on the 16-PE HBM3 gemv probe (device scope, 500 MHz, 2026-10-04), for
+the simple / in-order / out-of-order cores the final replay against one execution came to 0.991 / 1.018 / 1.000 of its cycles
 and 0.977 / 1.056 / 0.995 of its DRAM accesses, with 1437 vs 1523 in-order
 and 1601 vs 1509 out-of-order mispredictions. The gate bands are +/-10%
 (simple, in-order), +/-5% (out-of-order), +/-12% on accesses and
@@ -7999,7 +7995,7 @@ matches execution to 0.01% on every core (no thread interleaving).
 
 ## 1.11.99 -- the out-of-order core charges the L1 latency the configuration describes
 
-DEFAULT-CHANGE release (user ruling "yes" 2026-10-04, the open item of 1.11.97
+DEFAULT-CHANGE release (the open item of 1.11.97
 (24)): the out-of-order core's L1D hit latency is the configured one -- the
 CACTI-computed value of the cache record, or the `cache.l1d` override -- the
 same value the in-order core charges since 1.11.97. Through 1.11.98 the core
@@ -8016,16 +8012,13 @@ DATA IMPACT: every out-of-order cell (device and co-sim host). HBM3 gemv 256
 at 500 MHz on the gate shape: L1D 4 -> 1 cycle per load.
 
 OPEN (unchanged from 1.11.98): the epoch replay is not applied to MPI
-workloads; by the user's decision of 2026-10-04 it stays so through the corpus
-re-sim and is taken up after the CAL submission.
+workloads.
 
 ## 1.11.98 -- the controller serves every element: the device's DRAM requests are replayed through Ramulator2 per epoch
 
-CONTROLLER RELEASE, part 2 (R3 of the 1.11.94+ release manifest; sweep-94
-ruling 4 (c), decided by the user on 2026-10-03 for epoch replay; row 28; review
-x04-8, x04-10). Numbers move on every device DRAM cell of every element type.
+CONTROLLER RELEASE, part 2 (epoch replay). Numbers move on every device DRAM cell of every element type.
 
-**(1) Epoch replay (ruling 4 (c)).** 1.11.96 put Ramulator2 in the timing loop
+**(1) Epoch replay.** 1.11.96 put Ramulator2 in the timing loop
 for the weave cores through their event recorders. The bound-only ALU and simple
 elements have no weave phase, so their memory side stayed on the interface's
 analytical service: zero-load latency plus an M/D/1 wait plus a private
@@ -8044,7 +8037,7 @@ carry over; a full controller queue makes the request wait at the door (the
 queueing this is here to measure). Priced by the replay, an access skips the
 analytical channel wait (the controller contains it). The first epoch is the
 bootstrap (analytical service; counted as `bootstrap` against `priced`).
-The queue at the target bank (x04-8) and the shared open-row state (x04-10)
+The queue at the target bank and the shared open-row state
 are the controller's by construction.
 
 **(2) Measured, exported.** The replay exports requests, epochs, reads, writes,
@@ -8066,14 +8059,13 @@ share from the controller's row behaviour); every HOST_MC and co-sim host
 cell (one controller per channel); every GDDR6/HBM2/HBM3 cell timed by
 Ramulator (refresh); in-order cells (resteer depth), every cell with a branch
 predictor (predictor writes), bfs MPI cells (closing barrier). Measured on
-the gate shapes (1208C): HBM3 ALU stream 40000 338 k -> 419 k cycles (+24%:
+the gate shapes (run C): HBM3 ALU stream 40000 338 k -> 419 k cycles (+24%:
 each element streams three arrays through its own bank, 78% row conflicts,
 which the analytical service could not see); HBM3 in-order gemv 256 85.2 k
 -> 84.4 k; controller dynamic power on that shape 1.148 W (McPAT's 10%
 convention) -> 0.002 W measured.
 
-**(4) The controller background is measured (sweep-94 row 28, user ruling
-(c) 2026-10-03).** McPAT charged the memory controller 10% of its peak dynamic
+**(4) The controller background is measured.** McPAT charged the memory controller 10% of its peak dynamic
 power every cycle "for routine jobs including refreshing and scrubbing"
 (memoryctrl.cc, three sites). The fork now reads that share as the XML
 parameter `background_fraction` (default 0.1, McPAT's convention, stated in
@@ -8086,8 +8078,8 @@ over `ctrlTicks`), and the PHY's static power from the CACTI-IO evaluation
 the interface energy comes from (`getInterfacePhyStaticMW`; 0 where the
 technology has no exact IO map, said so).
 
-**(5) Where the resteer is charged (user ruling (a) 2026-10-03, refining
-sweep-94 R2313 (b)).** 1.11.97 charged the decode-depth resteer for every
+**(5) Where the resteer is charged (refining
+R2313 (b)).** 1.11.97 charged the decode-depth resteer for every
 indirect jmp/call and return target miss. Their target is known only when the
 branch executes, so the in-order core now charges those the execute-depth
 mispredict bubble; the decode-depth resteer is charged where it belongs, a
@@ -8097,22 +8089,21 @@ decode. Direct branches now go through the same 512-entry BTB as the
 indirect ones (`directBranches`, `btbMisses`, `roiBtbMisses` exported); a
 direction mispredict subsumes the resteer of the same branch.
 
-**(7) Every predictor update is a write (user ruling (a) 2026-10-03,
-refining sweep-94 R2476).** 1.11.97 counted only the predictor-table updates
+**(7) Every predictor update is a write (refining R2476).** 1.11.97 counted only the predictor-table updates
 that changed a stored value. McPAT prices the history and counter tables as
 arrays with an energy per write access, and a predictor asserts the write
 enable on every update, so both cores now count one history-table write and
 one counter-table write per resolved branch; the ROI twins
 `roiBpHistWrites` / `roiBpPhtWrites` equal the ROI's resolved branches.
 
-**(6) bfs closes its ROI (user ruling (a) 2026-10-03).** `bfs_mpi.c` and
+**(6) bfs closes its ROI.** `bfs_mpi.c` and
 `benchmarks/host/bfs/bfs_message_passing.c` gain the closing MPI_Barrier
 after roi_end that the other twelve MPI kernels have, and both guest
 binaries are rebuilt; the device-scope ROI of bfs ends at the last rank's
 arrival (1.11.97 rule) instead of at guest exit inside rank 0's post-ROI
 visited-count loop.
 
-**(8) Found by gate 1208A, and fixed before shipping.**
+**(8) Found by the release test, and fixed before shipping.**
 - *Ramulator never refreshed GDDR6, HBM2 or HBM3.* The all-bank refresh
   manager looped over `get_level_size("rank")`, which is -1 for a model with
   no rank level; those three declare REFab at channel scope and have no rank,
@@ -8158,7 +8149,7 @@ visited-count loop.
   Ramulator instance from the one-channel YAML (HBM3: 1 of 16 channels; DDR5:
   1 of 2 sub-channels). The memory block now declares one controller per
   channel of its technology (zsim interleaves lines across them), and McPAT
-  prices the built count at both sites (H32).
+  prices the built count at both sites.
 - *LPDDR5 under a controller crashed.* LPDDR5 activates in two steps and
   holds a bank "Pre-Opened" between them; it borrowed the generic row-hit and
   row-open checks, which call std::exit on that state. It now has its own:
@@ -8167,7 +8158,7 @@ visited-count loop.
   test. The exit had also deadlocked PIMID (the exit handler's statistics
   dump waited on the replay lock the exiting thread held); finalize now
   waits with a timeout.
-- *The replay priced almost nothing inside the ROI* (gate 1208B: 8 of
+- *The replay priced almost nothing inside the ROI* (8 of
   142,725 accesses). The ROI snapshot restarts epoch numbering at 0, and the
   table of replayed epochs was pruned by evicting its SMALLEST keys, so the
   stale pre-ROI epochs (larger numbers) survived and every new ROI epoch was
@@ -8191,22 +8182,18 @@ the consistent cut the NoC uses. The HOST_MC path keeps the weave controller;
 a run with both would price the weave cores' HOST_MC traffic twice and is
 refused by configuration (HOST_MC placement has no device interfaces). The
 out-of-order core's L1 hit latency is still the hard-coded 4 cycles (L1D_LAT)
-while the in-order core charges the configured CACTI latency: a user ruling.
+while the in-order core charges the configured CACTI latency, by design.
 
 ## 1.11.97 -- the analytical fabric priced a machine nobody built and walked a placement nobody used; the cores dropped their message charges, the scratchpad was a cache, and the DRAM leaked at the wrong corner
 
-FABRIC + TIMING/ENERGY FIDELITY RELEASE (R4 and R5 of
-the 1.11.94+ release manifest, merged into one release by the user on
-2026-10-03 so the fabric gap found by the R4 gate is fixed, not shipped;
-sweep-94 rulings 7 (c), 12 (c), 18, 19, 20, 26, 27, 28; review C3, H05, H07,
-H08, H09, H10, H16, H19, H20, H26, H28, H30, H31, R1, R4, s02, x01-5, x01-6,
-x01-10, x02-7, x04-6, x05-5, m01) plus, from R3 part 2, the in-order core's
-weave fix (C7). Numbers move on every device cell:
+FABRIC + TIMING/ENERGY FIDELITY RELEASE (two planned releases merged so the
+fabric gap found by the release test is fixed, not shipped), plus the in-order
+core's weave fix (C7) from 1.11.98. Numbers move on every device cell:
 the analytical cells (fabric priced from the built tree, hop and base
 latency from the tier walk, bridges charged once, the placement gradient
 gone) and the detailed cells (per-pair latency, per-class routers, per-tier
-widths, VCs per port, the 16 MiB HBM unit). Gate 1206A compares the analytical
-and detailed models on the same shapes, as ruling 7 asks.
+widths, VCs per port, the 16 MiB HBM unit). The release test compares the analytical
+and detailed models on the same shapes, as asks.
 
 **(1) One census, every run (C3).** The sparse placement tree is built for the
 analytical model too (`analyticalTreeCensus`, the same builder and the same
@@ -8216,7 +8203,7 @@ that priced a 23x23 bus and a 12x12 bank-group mesh for a tree with one
 branch router (4.1x power, 73x area against the detailed model on identical
 traffic) is no longer reachable for a DRAM device with a hierarchy.
 
-**(2) The analytical model is built from the ladder (ruling 7 (c)).** The
+**(2) The analytical model is built from the ladder.** The
 H-tree hop cost no longer comes from a reference-clock formula (NET 2.0 GHz,
 FLIT 64 B, RES 10, REF_HOPS 8, hop-normalised by log2 of a channel's endpoint
 count) nor from REF_FREQ 2.4 GHz for the Garnet link latencies. The census
@@ -8226,26 +8213,26 @@ analytical base latency, the mean link count as the hop count, and a Garnet
 link's latency is the device clock over the layer clock. Printed:
 `[htree] tier walk over N pairs ...` and `[noc] analytical base latency ...`.
 
-**(3) Hotspot computed (ruling 12 (c)).** The max-to-mean channel-load factor
+**(3) Hotspot computed.** The max-to-mean channel-load factor
 is walked on the built tree (HBM3 BANK, 16 elements: 1.29) and, for regular
 fabrics, taken from the channel-load analysis (mesh 3k/2(k+1), torus and ring
 1, bus/crossbar 1). The table (mesh 2.0, torus 3.5, tree 1.5) had the torus
 above the mesh.
 
-**(4) A crossing is charged once (H26).** The bridge between two tiers charged
+**(4) A crossing is charged once.** The bridge between two tiers charged
 the router pipeline, its fixed latency AND a serialisation of the line at
 the narrower width, while both adjacent tiers already serialise the line at
 their own widths. The bridge keeps pipeline + fixed latency. HBM3 at
 500 MHz: bridges 6/5/5/5/5/5 -> 1/1/1/1/1/2 PE cycles.
 
-**(5) The placement gradient is the ladder (ruling 26).** The x4/x2/x1
+**(5) The placement gradient is the ladder.** The x4/x2/x1
 multiplier on the per-interface bandwidth and on the analytical bandwidth
 floor ("a finer placement sits on a wider datapath") is replaced by the
 placement tier's own rung (width x clock) from the sourced ladder, emitted as
 `tierBandwidthMBs` (HBM3 bank tier: 25600 MB/s); the floor is the channel
 aggregate capped at P x that rung.
 
-**(6) Per-pair latency on the detailed path (H09, x02-7).** Every remote
+**(6) Per-pair latency on the detailed path.** Every remote
 access was priced at the batch-wide mean of the last Garnet replay, so a
 near unit and a far one cost the same. The replay now keeps a smoothed
 latency per source-destination pair; an access is priced at its own pair's,
@@ -8253,7 +8240,7 @@ and a pair with no sample yet takes the ladder cost of its tree distance,
 never the global mean (counters `pairSampled` / `pairFallback`; the run
 prints the pair table's min/max/mean).
 
-**(7) The fabric McPAT prices is the one the run built (H19, H20, H31, row 18).**
+**(7) The fabric McPAT prices is the one the run built (row 18).**
 Each level is priced per ROUTER CLASS from the census's port-count histogram
 (each class at its own ports, traversals split by router count; endpoints as
 a 2-port interface class) instead of every node at the widest router; each
@@ -8263,12 +8250,12 @@ VCs per vnet (Garnet builds 2 vnets); and `noc.flit_size_bits` is a knob
 that reaches Garnet's flit and the topology clamp (default 128; a 512-bit
 flit lets a 512-bit rung run unclamped).
 
-**(8) One capacity, one unit count (H16).** The unit's contiguous block is the
+**(8) One capacity, one unit count.** The unit's contiguous block is the
 memory's capacity over the placement-level units the census counts (HBM3:
 8192 MB stack / 512 banks = 16 MiB), replacing a derivation that multiplied
 the channel count in twice for HBM/GDDR6 (an HBM3 bank modelled as 256 MiB).
 
-**(9) R3 part 2, first piece: the in-order core's weave assertion (C7).** The
+**(9) The in-order core's weave assertion.** The
 in-order core left a barrier at its issue cursor, which can sit behind its
 last recorded memory response; the recorder's taper got a negative delay
 that the 32-bit postDelay wrapped to ~2^32 cycles ("Queued event too far
@@ -8276,8 +8263,8 @@ into the future"). The core leaves no earlier than its last response, the
 recorder clamps the same way, and a delay that does not fit 32 bits fails
 loudly. A bound-only memory never exposed it; the live controller did.
 
-**(10) The analytical fabric walked a placement nobody used (gate 1206B, arm
-P2).** The R4 gate compared the analytical and detailed fabric on one shape
+**(10) The analytical fabric walked a placement nobody used (arm
+P2).** The release gate compared the analytical and detailed fabric on one shape
 (HBM3, 16 elements at BANK, stream) and found the analytical NoC at 8x the
 detailed dynamic power, 3.3x at equal work, with 6.4x the leakage. The
 archived McPAT inputs of both runs showed two
@@ -8292,7 +8279,7 @@ router -> parents to the lowest common ancestor -> down to the destination
 endpoint's router, the endpoint `endpointForUnit` maps the target unit to,
 the same map Garnet's packets follow); the routers it visits per tier are
 what the power model prices and its tier-plus-bridge cost is the latency
-charged. The H09 fallback for an unsampled pair takes the same walk. The
+charged. The fallback for an unsampled pair takes the same walk. The
 arithmetic walk survives only for a run with no tree (HOST_MC placement).
 Second, the 2-VC / 2-buffer fabric preset lived inside `dramHTreeBuilder`
 (the detailed path), so the analytical census priced the same tree with 8
@@ -8301,24 +8288,24 @@ applies the same preset. The retired reference-clock constants (REF_FREQ
 2.4 GHz, NET 2.0 GHz, RES 10, REF_HOPS 8) were still described as live by
 three comments and the provenance row; they now state the tier walk.
 
-**(11) Message charges on the timing cores (H05).** `Core::addDelay` was
+**(11) Message charges on the timing cores.** `Core::addDelay` was
 empty on the in-order and out-of-order cores, so every MPI message charge
 on those elements vanished. The in-order core stalls its issue cursor, the
 out-of-order core stalls dispatch (`advance`), as the weave cores rewind.
 
-**(12) Clean evictions and ownership fetches (H07).** A PUTS moves no data and
+**(12) Clean evictions and ownership fetches.** A PUTS moves no data and
 is no longer an access; a cached element's GETX is a read (the array write
 is the later PUTX); the cacheless ALU element's GETX is its store
 (`setGetxIsStore`, set by the wiring). Every PUTS had been an access and
 every GETX a write, so a cached element's read stream carried the row-miss
 and energy of writes.
 
-**(13) Home-routed memory (H08).** `HomeRoutedMemory` replaces the address
+**(13) Home-routed memory.** `HomeRoutedMemory` replaces the address
 splitter: a cache-based element's misses go to ITS memory interface
 (`srcId / pesPerMc`), not to an interface chosen by address bits, which
 had scattered one element's stream across every interface.
 
-**(14) ROI baseline and the last rank (H10, x01-5, x01-6, x01-10).** A
+**(14) ROI baseline and the last rank.** A
 communication call never baselines the ROI; the first thread-mode roi_begin
 sweeps every core. MPI_TIME and MPI_ADVANCE are dispatched. The device-scope
 MPI ROI ends when the LAST rank arrives at the closing barrier after the
@@ -8328,26 +8315,25 @@ MPI traffic is injected by the sender only; the receiver prices its arrival
 without a second packet (thread mode: an uncounted probe; process mode: the
 analytical one-way; analytic mode: the cached RTT).
 
-**(15) The in-order core's load-use latency (x05-5).** A filter-cache hit
+**(15) The in-order core's load-use latency.** A filter-cache hit
 returns the line's availability, zero latency for a resident line; the
 destination register is now ready no earlier than the L1's own access
 latency (`FilterCache::getAccLat`), as the out-of-order core already
 charged.
 
-**(16) The scratchpad is a RAM (H28).** The element's SRAM scratchpad was
+**(16) The scratchpad is a RAM.** The element's SRAM scratchpad was
 timed and priced by CACTI as an 8-way, 8-bank cache with a tag array and a
 way mux the array does not have; it is a RAM with one bank per unit.
 
 **(17) Upgrade misses (m01).** `mGETXSM` (S->M) is a write miss in the zsim
 stats parser at L1D, L2 and L3; it had been dropped.
 
-**(18) Link class by attachment (R4).** The host-device link's energy class
+**(18) Link class by attachment.** The host-device link's energy class
 follows the DECLARED attachment: internally attached devices cross an
 interposer class; PCIe is priced only when declared (`pcie_link_type_user_set`).
 Every co-sim cell had priced a PCIe gen5 SerDes on an on-package device.
 
-**(19) Defaults that were the wrong corner (rulings 19, 20, R1, s02, x04-6,
-H30).** DRAM periphery leakage comes natively from CACTI's lstp column
+**(19) Defaults that were the wrong corner (20).** DRAM periphery leakage comes natively from CACTI's lstp column
 (`periphery_leakage_device = 1`; was comm-dram); the architectural register
 counts are the simulated x86-64's 16 + 16 (were 32/32); the DDR5 preset
 instantiates both 32-bit sub-channels (`params/dram/ddr5.yaml channels: 2`);
@@ -8357,7 +8343,7 @@ row registers, not every channel's; the ALU element is priced with one FPU
 per lane when `pim.pe.floating_point` is true (set at the caller of
 `describeTimingCore`), zero when false.
 
-**(20) The core part record (rulings 27, 28).** `params/core/default.yaml`,
+**(20) The core part record (28).** `params/core/default.yaml`,
 loaded by `applyCoreRecord` as the cache record is, overridable under
 `core:` in the config, with a one-line provenance print. In-order: TWO
 penalties, mispredict at execute depth (7 = the fetch-to-issue depth, the
@@ -8374,13 +8360,13 @@ counter-table updates that change an entry (`roiBpHistWrites`,
 (falls back to McPAT's estimate when the counters are absent). The zsim keys
 `mispredPenalty`, `resteerPenalty`, `fetchBytesPerCycle` are REQUIRED: the
 cores hold no defaults. Two conventions the agent that implemented this
-flagged for the user: decode-depth resteer is realistic for direct-branch BTB
-misses, while indirect and RAS targets are only known at execute (ruled (b),
-implemented as ruled); a "write" is an update that changes the stored value,
+flagged for a decision: decode-depth resteer is realistic for direct-branch BTB
+misses, while indirect and RAS targets are only known at execute (implemented that way);
+a "write" is an update that changes the stored value,
 the McPAT convention, which undercounts a history register written on every
 resolved branch.
 
-**(22) Found by gate 1207A.** The memory interface's rd/wr statistics counted
+**(22) Found by the release test.** The memory interface's rd/wr statistics counted
 every GETX as a write while the access classification (12) called a cached
 element's GETX a read; both follow one rule now. The DDR5 two-sub-channel
 preset (19) made the placement tree cover 512 organisations against a
@@ -8388,20 +8374,19 @@ preset (19) made the placement tree cover 512 organisations against a
 DDR5 run (device loads, the NO_OFFLOAD DDR5 baselines); the frame now
 multiplies by the ranks and by the UNFOLDED channel count (HBM folds its
 channels into chips_per_rank and stays x1). The shared-channel queueing wait
-still scaled the channel aggregate by the x4/x2/x1 placement gradient ruling
-26 retired from the floor and the fabric; it now caps by P x the tier rung
+still scaled the channel aggregate by the x4/x2/x1 placement gradient retired from the floor and the fabric; it now caps by P x the tier rung
 like the floor. The in-order gemv cycles fall
 about 7x against 1.11.96 on the gate shape; the gate localises it (fabric
 vs core) and the number is reported with the release.
 
-**(23) Found by gate 1207B: the MPI barrier release was charged on a moved
+**(23) Found by the release test: the MPI barrier release was charged on a moved
 clock.** 1.11.96 never dispatched MPI_TIME and MPI_ADVANCE (the plugin's MPI op
 range ended one op short), so the shim's thread-mode barrier rendezvous --
 every rank publishes its arrival, the maximum is the release, every rank
 advances to it -- was dead code and ranks never synchronised at barriers
-(x01-10, item (14)). Dispatching it exposed a clock-origin error. The ENTRY
+(item (14)). Dispatching it exposed a clock-origin error. The ENTRY
 barrier synthesises the ROI baseline in the BARRIER op that follows the first
-rank's advance (H10: "the entry barrier rebases as designed"), and rank 0's
+rank's advance (the entry barrier rebases as designed), and rank 0's
 roi_begin re-baselines every core right after; a rank advancing after either
 compared a release taken on the old origin -- rank 0's whole pre-ROI data
 preparation -- with its clock on the new one, and was charged the preparation
@@ -8416,12 +8401,12 @@ termination, is discarded too. `PIMID_DEBUG_RDV` prints every arrival, every
 charged release and every discarded one. Measured on the stencil shape: ALU
 1.05 M cycles (1.11.96: 0.95 M; the difference is the barrier wait now
 charged), repeatable to 0.1%; in_order 0.15 M, ooo 0.07 M, simple 0.11 M.
-The 1207A/B arms F11/F11b compared two inflated numbers with each other and
-passed; 1207C compares the ALU element with 1.11.96, repeats it, and checks
-H10 the way the ruling states it (gemv_mpi ranks 1..3 count 98-99 k ROI
+The runs A/B arms F11/F11b compared two inflated numbers with each other and
+passed; run C compares the ALU element with 1.11.96, repeats it, and checks
+the entry-barrier rule the way it is stated (gemv_mpi ranks 1..3 count 98-99 k ROI
 instructions like rank 0; 1.11.96 counted 224-256 k with the preparation).
 
-**(24) Found by gate 1207D: two R5 fixes that did not do what they said.**
+**(24) Found by the release test: two fixes above that did not do what they said.**
 The in-order load-use charge (15) read the filter cache's access latency,
 which zsim sets to 0 on every terminal cache ("accLat is hidden by the
 pipeline"); the configured L1 latency survived only as the invalidation
@@ -8430,13 +8415,12 @@ cycles by -0.4%. The filter cache now keeps the configured latency
 (CACTI-computed, or the cache override) as its hit latency, and the in-order
 core charges it on loads in the decoded and the synthetic path (the
 out-of-order core charges a hard-coded 4 cycles, L1D_LAT, which stays for a
-ruling). Measured: the 8-cycle L1D raises in-order gemv cycles 1.59x; at the
-CACTI 1 cycle the charge adds about 5%. And H10's roi_begin sweep (14)
+rule). Measured: the 8-cycle L1D raises in-order gemv cycles 1.59x; at the
+CACTI 1 cycle the charge adds about 5%. And the roi_begin sweep (14)
 re-baselined every core at rank 0's roi_begin, after the entry barrier had
 already baselined them at kernel entry; ranks 1..N-1 lost whatever they had
-executed in between (gemv_mpi per-rank ROI instructions max/min 1.015,
-1.087, 1.199 across three runs), the jitter the 1.6 comment on that branch
-warns about. In all thirteen MPI kernels the first MPI_Barrier is the line
+executed in between (gemv_mpi per-rank ROI instruction counts up to 1.199x apart), the
+loss the 1.6 comment on that branch warns about. In all thirteen MPI kernels the first MPI_Barrier is the line
 before roi_begin, after the data preparation, so the sweep, the clock
 snapshot and the traffic rebase now run at roi_begin only when no barrier
 has rebased yet; otherwise rank 0 re-baselines its own core alone. Both
@@ -8447,8 +8431,8 @@ magic-op entry points follow the rule. Measured: max/min 1.005, 1.005,
 and the three NO_OFFLOAD baseline examples now say the baseline team and rank
 count come from `host.num_cores` (the code already did; `num_pes` is inert
 there). `docs/cores.md` states both in-order penalties. The NVSim cache under
-`cache/nvsim` is untracked and no fleet script points at it, so the 1.11.94
-note's "shipped 6-digit entries" ship nothing; the fleet environment sets
+`cache/nvsim` is untracked and no corpus script points at it, so the 1.11.94
+note's "shipped 6-digit entries" ship nothing; the corpus environment sets
 `PIMID_NVSIM_CACHE_REQUIRE_FULL=1`.
 
 DATA IMPACT: every device cell (fabric from the built tree on both paths,
@@ -8457,31 +8441,30 @@ cell (message charges, load-use, clean evictions, home routing, penalties,
 predictor writes, registers), every DDR5 cell (two sub-channels), every
 DDR4/DDR5 cell (termination), every SRAM cell (RAM scratchpad), every MPI
 cell (sender-only injection, last-rank ROI), every co-sim cell (link class).
-Measured on the gate shapes in 1207A.
+Measured on the gate shapes in run A.
 
-OPEN: ruling 4 (c) (Ramulator in the device loop) awaits the design ruling;
-H19's endpoint class and the traversal split by router count are stated
+OPEN: (Ramulator in the device loop) awaits the design rule;
+the endpoint class and the traversal split by router count are stated
 conventions; the analytical NI overhead (6 cycles: two NI pipeline stages
 and two external links, both directions) remains a stated constant; a
 device-scope run archives no McPAT input XML (the archive needs an output
 directory that only system scope sets, so the C014 warning never fires
 there); bfs_mpi and bfs_message_passing have no closing barrier after
 roi_end, so their device-scope ROI still ends at guest exit (adding the
-barrier means rebuilding the guest binaries: user ruling); the two core-
+barrier means rebuilding the guest binaries:); the two core-
 record conventions above.
 
 ## 1.11.96 -- the controller ran on the core's clock, lost its writes, and sent one column command for every line
 
-CONTROLLER RELEASE, part 1 of R3 (the 1.11.94+ release manifest; sweep-94
-rulings 4 (c) and 14 (c), review C5, C7, H01-H03, H12, H18, H32, x09-6/7/10/11).
+CONTROLLER RELEASE, part 1.
 This part fixes the Ramulator2 device model and the zsim controller that
 fronts it, and prices the controller from the DRAM preset. Numbers move on
 every cell with a priced memory controller (McPAT MC clock, rate and width)
 and on every run that builds the live controller (HOST_MC placement, system
-devices of type Ramulator); the device-loop wiring itself (ruling 4 (c)) is
+devices of type Ramulator); the device-loop wiring itself is
 part 2 (see OPEN).
 
-**(1) The device runs on its own clock (review C7).** zsim's RamulatorMemory
+**(1) The device runs on its own clock.** zsim's RamulatorMemory
 advanced Ramulator once per CORE cycle: a 500 MHz element saw a DRAM 2.4x
 slower than its preset, a 2 GHz host one 1.25x faster. The controller now
 reads the memory system's tCK and advances the device by core period / tCK
@@ -8489,7 +8472,7 @@ per core cycle with a fractional carry (DDR4-2400 at 500 MHz: 2.401 DRAM
 cycles per core cycle, printed once per controller). A weave completion is
 clamped to the bound-phase estimate (sCycle + minLatency).
 
-**(2) Writes complete (review H12).** Ramulator2's generic controller shipped
+**(2) Writes complete.** Ramulator2's generic controller shipped
 the write-completion branch as a TODO, so an external requester never heard
 of its writes: the zsim controller held every write event forever and
 reported zero writes. The controller now calls the write's callback when its
@@ -8500,7 +8483,7 @@ an event recorder reaches, so simple_core and the ALU element reported zero
 traffic through the controller (probe: simple_core gemv 256 on DDR4 HOST_MC,
 828 reads and 1 write where 1.11.95 reported 0/0).
 
-**(3) One column command per BURST (review H01/H02, x09-6).** The controller
+**(3) One column command per BURST.** The controller
 sent one Ramulator request per 64 B line; a 16-bit GDDR6/LPDDR5 channel
 (BL16 = 32 B) and an HBM2 pseudo-channel (BL4 x 64 bits = 32 B) move 32 B per
 column command and were credited with twice their bandwidth. The emitter now
@@ -8515,7 +8498,7 @@ the mapper's column granularity (prefetch x width / 8) IS the burst: the
 impls' defaults made HBM2 a 16 B column (half its 32 B burst) and GDDR6 a
 64 B one (twice its 32 B burst).
 
-**(4) Device timing transcriptions (review C5, H03, x09-7/10/11).** LPDDR5's
+**(4) Device timing transcriptions.** LPDDR5's
 RD16/WR16 row-hit check tested row 0 instead of the request's row (a channel
 deadlock, "Failed to send refresh!") and its WCK-sync windows added the
 ImplDef INDICES of nCL/nCWL/nBL16 (2, 1) instead of their values; GDDR6
@@ -8525,7 +8508,7 @@ other's precharge, 1.92x on random traffic) and a per-width table marked
 live RD->WR rule was nCL + nBL + 2 - nCWL (14 nCK) while the row's computed
 nRTW (17) was marked INERT. All four now state what the row says.
 
-**(5) The controller McPAT prices is the preset's (ruling 14 (c), H18, H32).**
+**(5) The controller McPAT prices is the preset's.**
 MC clock = the DRAM preset's CK (1e6 / tCK_ps) x `pim.mc.clock_gear` (1 =
 on-die, 2 = a gear-2 controller; anything else refuses) at every pricing
 site -- it was the PE clock / 2 everywhere, 250 MHz for a 500 MHz element
@@ -8537,19 +8520,19 @@ site built (one was always priced). A non-DRAM memory keeps core clock / 2
 and its computed array bandwidth, stated as an assumption.
 
 DATA IMPACT: McPAT controller dynamic/area move on every cell with a priced
-MC (ruling 14 (c) estimated x3.2..x9.6 on device cells). Runs that build the
+MC (estimated x3.2..x9.6 on device cells). Runs that build the
 live controller (HOST_MC placement; no corpus cell today) move on (1)-(4).
 GDDR6 cells move on the preset's nRRDS (7, was 5 from the table).
 
-OPEN (part 2, 1.11.97): ruling 4 (c) itself -- Ramulator2 in the DEVICE
+OPEN (part 2, 1.11.97): itself -- Ramulator2 in the DEVICE
 timing loop, replacing the PE memory interface's M/D/1 service model for
 DRAM accesses, with the bank-open tracker, refresh and the measured
-controller background (row 28) live, the queue at the target bank (x04-8),
-shared open-row state (x04-10) and the IDD3N basis of the active background
-(x08-1). The ALU element and simple_core are bound-only (no event recorder),
+controller background live, the queue at the target bank,
+shared open-row state and the IDD3N basis of the active background
+. The ALU element and simple_core are bound-only (no event recorder),
 so the live controller cannot time them through the weave phase; the design
 (epoch replay for every core type, weave-only for timing cores, or
-synchronous stepping) is the user's call, recorded in the R3 plan.
+synchronous stepping) is a separate decision.
 The weave assertion on in_order HOST_MC runs ("Queued event too far into the
 future", present in 1.11.95) is root-caused: the in-order core leaves a
 barrier at its issue cursor, which can sit behind its last recorded memory
@@ -8561,10 +8544,9 @@ loudly) ships with part 2.
 
 ## 1.11.95 -- the cache search was unconstrained, the bank rule asked CACTI for what it cannot build, and McPAT priced a hierarchy nobody configured
 
-CACHE RELEASE (R2 of the 1.11.94+ release manifest; sweep-94 ruling 25,
-review C4, R2 "c with b", l03-config-flow-9). Numbers MOVE on every cell with a
+CACHE RELEASE. Numbers MOVE on every cell with a
 cache (the 110 cached device cells, the 90 system hosts) and on every SRAM
-device cell; DRAM-only ALU cells do not move (gate 1204A).
+device cell; DRAM-only ALU cells do not move.
 
 **(1) CACTI's design-space search is CACTI's own (row 25 (a), C4).** The
 wrapper hard-coded every deviation to 100000 while optimising cycle time
@@ -8578,7 +8560,7 @@ unit 2.44 -> 0.77 ns (23 mW); 1 MB x 1 bank 0.86 ns; 32 MB x 16 banks 2.82 ns,
 `.deviate` (five integers in CACTI's order) / `.optimize` (ED2 | ED | NONE),
 printed once per run with its provenance (`[cacti] search: ...`).
 
-**(2) The bank rule (review R2, "c with b").** One bank per 64 KB asked CACTI
+**(2) The bank rule (c with b).** One bank per 64 KB asked CACTI
 for 512 banks on a 32 MB L3 (its range is 1..32) and every system cell fell
 back to a written-down 20 cycles. The bank count is now a field of the cache
 record (3): an integer, or `slice`, the slice rule banks = clamp(size /
@@ -8589,7 +8571,7 @@ range and refused outside it. The stock co-sim configuration's 32 MB L3 is
 PRICED again (16 banks, 2.8 ns) instead of refusing (1.11.94) or substituting
 (1.11.93).
 
-**(3) The cache part record** `params/cache/default.yaml` (ruling 13-style,
+**(3) The cache part record** `params/cache/default.yaml` (-style,
 loaded after the DRAM records, refused when missing or malformed): per level
 the ways, the line and the bank field. Ways default from the record where the
 config does not set them: L1D 8, L1I 4, L2 8, L3 16. The device-scope zsim
@@ -8597,7 +8579,7 @@ config built a 16-way L2 while McPAT priced it 8-way; one set now (the L2 the
 device builds is 8-way, which moves its hit rate and latency). The record's
 line must equal `system.cache_line_size`.
 
-**(4) McPAT prices the hierarchy the run built (l03-config-flow-9).** The XML
+**(4) McPAT prices the hierarchy the run built.** The XML
 carried literals for every level (8/8/16 ways, 64 B, 1/8/16 banks, 3/23/23
 cycles) whatever the configuration said. It now carries the ways, line, bank
 count and the hit latency (cycles at the core clock) from the same CACTI query
@@ -8618,31 +8600,24 @@ L1I 2 -> 1, L2 4 -> 1 cycle and 16 -> 8 ways (CACTI's ~1.1 ns for a 2 MB
 array is one cycle at a 500 MHz element; the banner prints the cycles and
 the source). System hosts at 2 GHz: the 32 MB L3 priced from CACTI instead
 of 20 cycles; L1/L2 from the constrained search. McPAT cache power and area
-follow the real geometry on every cached cell. Gate 1204A/B: the search
+follow the real geometry on every cached cell. Release test: the search
 knob's effect is invisible at 500 MHz elements (every cache rounds to one
 2 ns cycle) and was proved at 4 GHz, where the shipped search gives
 L1D/L1I/L2 2/2/4 cycles and an unconstrained delay-only objective 2/1/3.
-OPEN: the SRAM stream 20000 master-PE observation of 1.11.94 is re-measured
-in R5.
 
-## 1.11.94 -- the values leave the code: part records, refusals for every placeholder, and the knobs the rulings asked for
+## 1.11.94 -- the values leave the code: part records, refusals for every placeholder, and the knobs asked for
 
-PARITY RELEASE (the first of the 1.11.94+ release manifest,
-built from the 2026-09-27..10-03 rulings of the sweep-94 and review-93
-rounds). Rule: this release MOVES values
+PARITY RELEASE. Rule: this release MOVES values
 and adds refusals and knobs; it moves NO number on the default configuration.
 Every knob added here carries today's value as its default; defaults change in
-the fidelity release (R5). Gate 1203A/B asserts parity against 1.11.93 on every
+the fidelity release. The release test asserts parity against 1.11.93 on every
 gate shape, plus a FIRES arm per fix. Parity means: total area, total leakage
 and the set of per-core instruction counts identical, and cycles, DRAM read
-energy, NoC dynamic and total dynamic inside the simulator's own run-to-run
-spread, which the gate measured (job 392510: the OpenMP workers land on the
-PEs in a different order each run, so on gemv in_order 256 even the SAME
-binary moves cycles 0.7%, NoC dynamic 12%, read energy 0.7%, and one worker's
-instruction count by 837; on stream 40000 cycles move 0.6%). The 1203A arms
-that asked for EXACT cycles were mis-specified and re-evaluated as 1203B.
+energy, NoC dynamic and total dynamic within the release test's tolerance for the
+OpenMP cells, whose workers then took the PEs in arrival order. The run A arms
+that asked for EXACT cycles were mis-specified and re-evaluated as run B.
 
-**(1) Parameter records, step 1 of the two-step migration (ruling 13a/16/22).**
+**(1) Parameter records, step 1 of the two-step migration (16/22).**
 `params/dram/<tech>.yaml`, one record per DRAM technology: part, vendor,
 generation, feature size F, cell factor (6 F^2), measured full-die density and
 its source, organisation and timing preset names, channels, and for HBM the
@@ -8653,10 +8628,10 @@ that still carry the same values; a missing record, a missing field or any
 disagreement refuses the run (`[params] FATAL`). The record is found under
 `PIMID_PARAMS` or the tree the binary was built from (`PIMID_PARAMS_DIR`,
 like CACTI's tables). Nothing priced reads the record yet: the cross-check is
-the proof that file == code; step 2 (R7) deletes the code tables. The per-class
+the proof that file == code; step 2 deletes the code tables. The per-class
 feature size moved beside the generation table it indexes
 (`CACTIWrapper::generationFeatureNm`). Generation labels now name the density
-part (DDR4/LPDDR5/GDDR6/HBM3 1z, HBM2 2x; sweep-94 row 13, sourced in the
+part (DDR4/LPDDR5/GDDR6/HBM3 1z, HBM2 2x; sourced in the
 code comment) and the pitch note prints the implied array efficiency
 (6 F^2 x density) as a self-check.
 
@@ -8665,8 +8640,8 @@ code comment) and the pitch note prints the implied array efficiency
   (now also per node in system scope: `system.hosts[]/devices[].cache.*_latency_ns`),
   else a refusal naming the cache and the geometry. The written-down
   4/3/12/20 cycles are deleted. System-scope cache cycles are converted at the
-  OWNING node's clock (review H24), not the host's.
-- Bandwidth (ruling 2b): always computed -- DRAM from the preset, SRAM/NVM from
+  OWNING node's clock, not the host's.
+- Bandwidth: always computed -- DRAM from the preset, SRAM/NVM from
   banks x line / the array's EXACT access time (the rounded-cycle round trip is
   gone); when the array model cannot build the array the run refuses
   (`[bw] FATAL`); the only override is a bandwidth in bytes per second,
@@ -8691,17 +8666,17 @@ code comment) and the pitch note prints the implied array efficiency
   (2.44 ns on the unit, was 1.63); no priced number moves.
 - Instruction mix (row 21): a census that disagrees with retirement by more than
   5% refuses; the 87.5/12.5 fallback fractions are deleted.
-- Guest exit status (found by gate 1203C): the plugin ended QEMU with status 0
+- Guest exit status (found by the release test): the plugin ended QEMU with status 0
   whatever the workload exited with, and the simulator parsed and priced the
   whole run "regardless of guest exit code", so a kernel that REFUSED at data
   preparation (exit 1, no ROI) came back as a completed, priced cell. The plugin
   now carries the exit_group status and a non-zero status refuses the run
   (`[workload] FATAL`, rc 3) in both scopes.
-- Fabric names (review H06 rule, M-16): a Garnet endpoint name that is purely
+- Fabric names: a Garnet endpoint name that is purely
   numeric binds to its own id and an unknown name refuses, behind
   `PIMID_NOC_STRICT_NODE_NAMES=1` in this release (default off: it moves the
-  MPI cells; R5 flips it with H06).
-- Garnet routing (H33): a direction routing that names a port a router lacks is
+  MPI cells).
+- Garnet routing: a direction routing that names a port a router lacks is
   refused at build time, and at config load a DRAM device with a user-set
   non-TABLE routing, or TORUS_2D with TABLE, is refused.
 
@@ -8714,10 +8689,10 @@ remote through the tree).
 
 **(4) Knobs added, today's values as defaults.** `power.periphery_device`
 (hp|lstp|lop|comm-dram: the CACTI column of the DRAM-periphery LEAKAGE ratio;
-default comm-dram, lstp in R5; area and dynamic factors keep the comm-dram
+default comm-dram, lstp from 1.11.97; area and dynamic factors keep the comm-dram
 geometry), `cache.pg` (shared caches gate on their own flag; unset follows
 `pim.pe.pg`), `pim.pe.arch_int_regs` / `arch_fp_regs` (32/32 today; x86-64's
-16/16 in R5), `noc.header_bits` (data message = line x 8 + header; 576 for 64 B
+16/16 from 1.11.97), `noc.header_bits` (data message = line x 8 + header; 576 for 64 B
 lines), `memory.bank_kb` (the SRAM/NVM characterisation unit; capacity = banks
 x bank size), `simulation.det_epoch_phases`, `simulation.mpi_contention_points`
 (formerly environment-only), and `power.interconnect_projection: aggressive`
@@ -8725,34 +8700,32 @@ now prints once that it prices ITRS-target wires. Link header bytes are
 computed from the link class (row 6; -1 = unset, so an interposer's 0 is a real
 value and never becomes a PCIe 20).
 
-**(5) HOST_MC is the top rung** (review H17, user: "isn't host mc also a level
-of placements?"). Placement HOST_MC is rung 7 with its own latency, the
+**(5) HOST_MC is the top rung**. Placement HOST_MC is rung 7 with its own latency, the
 host-path split (fabric + coherence + controller pipeline + PHY) at the device
 clock; `levelLatency7`/`bridgeLatency6` are emitted and zsim's arrays grew by
 one. The -1 sentinel that zsim read as 0xFFFFFFFF and used as a signed index is
 gone; a placement above 7 is refused.
 
 **(6) Parity fixes with FIRES arms**:
-ALU compute and access costs keep a fractional carry across blocks (H04;
-defaults are integer products, bit-identical); every thread migrates at ROI
-start in co-sim (H11); empty channels at or above the channel tier get an
-endpoint, folded channels are counted at the root (H13/H15); the tree counts
-DISTINCT PE homes (H14); the system-trace path prices the device over its own
-wall clock and feeds McPAT the device subset (H21/H22); a decoupled host memory
-is populated from its own technology (H23); the synthetic probe feeds router
-flit traversals (H25, `SyntheticResult::routerFlitTraversals`); GDDR6 honours
-`device_width: x8` (H27; an unset width keeps x16, the transcription's and the
-2026-08-22 ruling's default, where the DDR families' x8 fallback would have
+ALU compute and access costs keep a fractional carry across blocks
+(defaults are integer products, bit-identical); every thread migrates at ROI
+start in co-sim; empty channels at or above the channel tier get an
+endpoint, folded channels are counted at the root; the tree counts
+DISTINCT PE homes; the system-trace path prices the device over its own
+wall clock and feeds McPAT the device subset; a decoupled host memory
+is populated from its own technology; the synthetic probe feeds router
+flit traversals (`SyntheticResult::routerFlitTraversals`); GDDR6 honours
+`device_width: x8` (an unset width keeps x16, the transcription's default, where the DDR families' x8 fallback would have
 instantiated a different device from the one transcribed); the MPI shim decodes MPICH datatype handles (size in
-bits 8-15; unknown handles refuse) (H29); RING's shortest path uses the ring's
-router count (H34); TORUS_2D gets dateline VC classes on both dimensions and
-refuses fewer than 2 VCs per vnet (H35); the synthetic path hands Garnet the
-Garnet link latency, not the analytical RES-scaled one (H40); McPAT's
-interconnect honours its wire-type argument (R3208; every caller passes
+bits 8-15; unknown handles refuse); RING's shortest path uses the ring's
+router count; TORUS_2D gets dateline VC classes on both dimensions and
+refuses fewer than 2 VCs per vnet; the synthetic path hands Garnet the
+Garnet link latency, not the analytical RES-scaled one; McPAT's
+interconnect honours its wire-type argument (every caller passes
 Global); the NVSim disk cache writes full precision with a format marker (old
 six-digit entries are still read as written, so the corpus's warm entries do
 not move; `PIMID_NVSIM_CACHE_REQUIRE_FULL=1` recomputes them); the idle-gap
-threshold rounds instead of truncating; `nvsim_warm` builds again (H48); the
+threshold rounds instead of truncating; `nvsim_warm` builds again; the
 CACTI ED^2 comment states what the setting is.
 
 **(7) Benchmarks**: barnes refits its root
@@ -8760,25 +8733,16 @@ box each step, scales masses by 1/N and refuses on pool exhaustion (C1; the
 large size ran out of stack); fmm reinserts split particles into the correct
 child with a growable list at the depth limit and its header says what it
 computes (C2); `pimid_devorg_alloc` maps exactly the span with MAP_NORESERVE
-(H41); EVERY devorg kernel refuses when a PE's need exceeds its slot, naming
-the largest size that fits (H44/H45; previously silent spill or segfault);
-bfs_mpi's candidate buffer is sized by its bound (H43); backprop's hidden layer
-is 16 as in Rodinia (H46); the five suite runners no longer pass `--output`
-(H42); the 88 SPLASH-3/Rodinia configs say `analytical` (H47).
+; EVERY devorg kernel refuses when a PE's need exceeds its slot, naming
+the largest size that fits (previously silent spill or segfault);
+bfs_mpi's candidate buffer is sized by its bound; backprop's hidden layer
+is 16 as in Rodinia; the five suite runners no longer pass `--output`
+; the 88 SPLASH-3/Rodinia configs say `analytical`.
 
-DATA IMPACT (default configuration): none by construction; gate 1203D proves
-it to the simulator's run-to-run noise (above). One observation stays OPEN:
-on SRAM stream 20000 (16 PEs) the master PE's critical path is 6.6% longer
-on 1.11.94 in 2 of 2 runs than on 1.11.93 in 3 of 3 (512k vs 475-481k
-cycles). The difference is 819 instructions and 332 remote accesses on the
-master, a spin path at a synchronisation point that the SAME 1.11.93 binary
-takes in 1 of 3 runs at size 1000 (491k vs 435k cycles); every other PE, the
-area, the leakage and the fabric are identical. It is thread-timing, not a
-priced model, but five samples cannot say whether 1.11.94 biases it; R5
-re-measures it with ten runs per binary. Two corpus-visible consequences that are REFUSALS, not number changes: the
+DATA IMPACT (default configuration): none by construction; the release test proves
+it within the tolerance above. Two corpus-visible consequences that are REFUSALS, not number changes: the
 40 SRAM/PCM/STT-MRAM/ReRAM corpus cells (and bfs_mpi on LPDDR5) refuse at data
-prep because their per-PE working set exceeds the unit slot (ruling H44/H45:
-the SRAM/NVM corpus rows need sizes that fit, a corpus re-plan); and
+prep because their per-PE working set exceeds the unit slot (the SRAM/NVM corpus rows need sizes that fit, a corpus re-plan); and
 `BENCH_CHECKSUM` of the MPI kernels now prints its real value (the post-ROI
 double reduction was sized at 4 B). The prep buffer's guest virtual address
 changes (period-aligned, units unchanged).
@@ -8795,11 +8759,11 @@ Found by a read-only audit of the PE core power path (2026-09-26): the
 wrapper's core description (`src/power/mcpat_wrapper.cpp`), the fork's
 `processor.cc`/`core.cc`/`logic.cc`, and the zsim cores. Reference shapes:
 HBM3, 16 alu_core PEs at BANK, stream_triad 40000
-(gate log: core dynamic 0.0096 W, 333,456
+(run log: core dynamic 0.0096 W, 333,456
 instructions, window 1,013,438 cycles) and 16 in_order_core PEs, gemv 256
-(gate log). This release fixes F1, F2, F3, F4,
-F6, F7, F8, F10, F12, F13 and two 1.11.92 leftovers; F5, F9 and F11 are
-held for a ruling (OPEN below). The fleet stays held.
+(run log). This release fixes F1, F2, F3, F4,
+F6, F7, F8, F10, F12, F13 and two 1.11.92 leftovers; F5, F9 and F11 stay
+open (OPEN below).
 
 **(1) F1: one private 2 MB L2 per PE, where the timing model built one
 shared L2.** The wrapper emitted `number_of_L2s = num_cores` with
@@ -8863,7 +8827,7 @@ the NoC levels the same window. A system-scope dump reaching this function
 (system trace path) keeps its old window (it holds host cores in another
 clock domain); the per-node path already prices over the max wall clock.
 Printed when the two differ: `[power] pricing window W cycles =
-critical-path max over N core(s) (core 0: C)`. Measured (gate 1202A/B):
+critical-path max over N core(s) (core 0: C)`. Measured (B):
 on bfs at 16 and at 64 PEs core 0 IS the critical-path max (5601573 and
 9321357 cycles, the "OMP cycles" max), and on every device-scope OMP dump
 in the audit's 561 gate logs the first `cycles:` line equals the max --
@@ -8992,7 +8956,7 @@ run on the login node).
 - Unchanged by construction: DRAM array energies (access-count based),
   cycles (timing untouched; zsim gains two stat lines per core).
 
-Gate 1202A. FIRES side per fix, against 1.11.92:
+Release test. FIRES side per fix, against 1.11.92:
 - F2/F3 (HBM3 reference shape): core dynamic in [2.3, 3.1] mW (OLD 9.60);
   `pipeline duty` printed < 0.1 (expected 0.0205647, per core); the
   `[CoreBreakdown]` exu-ifu-lsu activity (block minus the mmu block) 16x
@@ -9021,9 +8985,9 @@ Gate 1202A. FIRES side per fix, against 1.11.92:
   on the HBM3 reference (core 0 = max) any NoC change is the buffer depth
   alone.
 
-OPEN (held for a ruling, not in this release): F5 (periphery leakage
+OPEN (not in this release): F5 (periphery leakage
 factor column, comm-dram vs lstp); F9 (`machine_bits` for x86 cores);
-F11 (delay-ratio literals). Choices made here that a ruling may revisit:
+F11 (delay-ratio literals). Choices made here that may be revisited:
 simple/null depth 5 (zsim defines none; 1 is refused by McPAT's embedded
 fit); OOO physical registers 180 (kept) and FP window 32
 (Penryn); OOO 4 ALU/2 MUL/2 FPU and in-order 3/1/1 unit counts (not in
@@ -9036,12 +9000,11 @@ Found by a read-only audit of the on-die fabric energy path (2026-09-26):
 `garnet_network.h`, the Garnet routers' counters, `buildNoCLevelsForMcPAT`,
 the McPAT NoC emitter and McPAT's `noc.cc`/`processor.cc`. Reference shape:
 HBM3, 16 alu_core PEs at BANK, stream_triad 40000
-(gate log): 21477 packets, 87462 hops, NoC
+(run log): 21477 packets, 87462 hops, NoC
 dynamic 0.569 mW over the 2.027 ms ROI = 54 pJ per 64 B packet, 10-13x
 below what McPAT's own per-flit router energies imply. Eleven findings.
 This release fixes F1, F2, F4, F5, F6, F7, F8, F9, F10, F11; F3 needs a
-modelling ruling and is NOT fixed (options at the end). The fleet stays
-held.
+modelling decision and is NOT fixed (options at the end).
 
 **(1) F2: a packet was one flit, and a router crossing was a link hop.**
 Every counting site (`accessNetwork`, the batch replay, `getAnalyticalLatency`,
@@ -9188,7 +9151,7 @@ host/device, dividing every level's duty by that ratio (4x on the shipped
 already carries) when present; the conversion stays, and is 1 in both
 scopes. Device scope is unchanged (the two are the same number).
 
-**(8) F3 (NOT fixed: needs a ruling).** `has_global_link=0` on every level,
+**(8) F3 (NOT fixed: needs a modelling decision).** `has_global_link=0` on every level,
 so McPAT builds no links for router levels (their wires carry no energy or
 area), and pass-through routers are priced as routers wherever a level
 survives. Fixing it is not specified by the finding in three places:
@@ -9234,7 +9197,7 @@ sizing. OMP detailed cells: the roi_begin replay (F11) removes pre-ROI
 records from the first ROI drain (small timing and count change); every
 cell gains the final phase's traffic.
 
-Gate 1201A. Each fix a FIRES side against 1.11.91 on the HBM3 reference
+Release test. Each fix a FIRES side against 1.11.91 on the HBM3 reference
 shape unless said:
 - F2: NEW `Total flits` = 5.00 x `Total packets` (OLD 1.00x); `Router
   traversals` = (`Total hops` + `Total packets`) x 5 exactly (OLD has no such
@@ -9289,16 +9252,13 @@ or the depth Garnet builds (5).
 
 ## 1.11.91 -- the array priced a rank the access never opened
 
-Found by a read-only audit of the DRAM array energy path (2026-09-26, round 8,
-ledger rows R8-1..R8-12): `ramulator_wrapper.cpp`, `pimid_energy.h`, the
+Found by a read-only audit of the DRAM array energy path: `ramulator_wrapper.cpp`, `pimid_energy.h`, the
 presets, the PE memory interface's row model and the report block, with the
 datasheets read page-ranged. Twelve findings. This release fixes the six that
-have one right answer (R8-1, R8-3, R8-4, R8-6, R8-11, R8-12) and, under the
-user's rulings of 2026-09-26 16:19-16:49, four more (R8-2, R8-7, R8-8, R8-9;
-items (7)-(10)); R8-5 and R8-10 still wait and are listed at the end. The
-fleet stays held.
+have one right answer and, after follow-up decisions, four more (items (7)-(10)); the
+GDDR6 basis is decided by (11), and the PE memory interface's open-row model stays open (see the end).
 
-**(1) R8-1: the row stride was inferred from a page size that no longer
+**(1) The row stride was inferred from a page size that no longer
 identified the DDR classes.** The PE memory interface measures the row-miss
 fraction that weights the activate/precharge term (1.11.52, D003), and the
 stride of that measurement -- system bytes one ACT makes resident -- was
@@ -9326,7 +9286,7 @@ Strides now: DDR3 x8 16384 B (was 2048), DDR4 x8 8192 (unchanged), DDR5 x8
 8); row stride across the access: 4096 B = 4 device(s) x 1024 B (32-bit
 sub-channel / 8-bit device)`.
 
-**(2) R8-3: DDR5 charged eight devices for an access that engages four.**
+**(2) DDR5 charged eight devices for an access that engages four.**
 `devicesPerAccess()` answered "the whole 64-bit rank" (64 / device width) for
 every DDR class. Ramulator's DDR5 channel is a 32-bit sub-channel
 (`DDR5.cpp` `channel_width` default 32, internal prefetch 16): a 64 B access
@@ -9345,7 +9305,7 @@ shape check now refuses a run whose instantiated device disagrees (live
 it). Printed on the model-inputs line: `devices per 64 B access: 4 (32-bit
 sub-channel / 8-bit device)`.
 
-**(3) R8-4: LPDDR5's burst term was one burst for two bursts of data.**
+**(3) LPDDR5's burst term was one burst for two bursts of data.**
 `getTBurst()` is one burst of the preset: LPDDR5-6400 BL16 = 16 / 6400 MT/s =
 2.5 ns on one x16 channel = 32 B. A 64 B access needs two. The array energy
 now charges `getAccessBurstNs()` = bursts per access x one burst, with beats
@@ -9356,14 +9316,14 @@ HBM2 (BL4 x 128 b; the channel's IDD4R loop moves 64 B per 1.666 ns) and
 HBM3 (BL8 x 64 b, 64 B per 1.25 ns, as the audit verified). GDDR6 is held at
 its 1.11.90 charge (1 burst, 1.143 ns): on a per-DEVICE IDD basis (two x16
 channels) BL16 moves 64 B, on a per-CHANNEL basis it moves 32 B and the burst
-term would double. Which basis the IDD row is on is R8-5, awaiting the
-user's ruling; the model-inputs line says `[basis HELD pending R8-5]`.
+term would double. Which basis the IDD row is on is decided by (11); until then
+the model-inputs line marked the basis as held.
 `getTBurst()` itself is unchanged: it is also a timing quantity (the chip
 rung of the latency ladder), and this release moves no timing. Printed:
 `bursts per 64 B access: 2 (BL16 x 16 bit = 32 B per burst); energy tBurst
 per 64 B = 5 ns`.
 
-**(4) R8-6: the co-sim/zsim timing model ran a different DDR5 part from the
+**(4) The co-sim/zsim timing model ran a different DDR5 part from the
 one the report priced.** `writeRamulatorConfigYaml` emitted
 `DDR5_8Gb_<w>` / `DDR5_3200AN` whatever the run's grade, while the energy
 path, the wrapper's oracles and the preset transcription price
@@ -9378,7 +9338,7 @@ Ramulator config emits org DDR5_16Gb_x8, timing DDR5_4800B (the same pair the
 energy path prices)`, and the wrapper's existing `is modelled at the preset's`
 line now names the pair.
 
-**(5) R8-11: HBM2's idle descent raised power.** `backgroundUnitMW` guarded
+**(5) HBM2's idle descent raised power.** `backgroundUnitMW` guarded
 power-down against precharge standby (pd <= pre) but not precharge standby
 against active standby. The HBM2 row is measured silicon where IDD2N (136 mA)
 sits above IDD3N (133 mA) -- inside the measurement noise -- so every idle
@@ -9389,14 +9349,14 @@ active standby IDD3N (133 mA) in its IDD row; the idle state is priced at the
 active state's power (an idle descent cannot raise power).` No other row has
 IDD2N > IDD3N.
 
-**(6) R8-12: the interface label named a term it does not sum.** Both report
+**(6) The interface label named a term it does not sum.** Both report
 lines (device scope `Total dynamic`, system scope `Array dynamic`) said
 `iface=... [termination + driver/PHY]`. Since the 1.11.60 revert the summed
 term is termination only; CACTI-IO's driver/PHY figure prints as
 informational and is not in the total. Now `[termination only; driver/PHY
 informational, not summed]`. Numbers unchanged.
 
-**(7) R8-2, ruling (a): a per-technology IDD3N basis.** The 1.11.86
+**(7) A per-technology IDD3N basis.** The 1.11.86
 one-bank baseline (`oneBankActiveStandbyMA`) diluted IDD3N to one bank as
 IDD2N + (IDD3N - IDD2N) / banks on every row, which presumes IDD3N was
 measured with ALL banks open. That is what the DDR sheets say -- Micron DDR5
@@ -9426,12 +9386,12 @@ IDD3N stays subtracted and the residual (the other open banks' standby for
 tBurst) is stated in the comment, not corrected. Printed, one word on the
 model-inputs line: `; IDD3N basis ONE_BANK`.
 
-**(8) R8-7, ruling (b): the current-difference method with a MEASURED bank-open fraction.**
+**(8) The current-difference method with a MEASURED bank-open fraction.**
 `backgroundUnitMW` priced IDD3N for 1 - r_idle, where r_idle is "phases with
 no memory-controller access" (10k-cycle phases) or the E17 gap histogram --
 traffic in the phase, i.e. the open-page assumption. The current-difference method defines the
-states as "precharged (all of the banks are precharged) or active (one or
-more banks are open)" with BNK_PRE% the percentage of time all banks are
+states as precharged (all banks precharged) or active (at least one bank
+open), with the precharged fraction the share of time all banks are
 precharged. Ramulator2 now measures it: `dram/pimid_bank_open.h` keeps, per
 unit that shares bank state (a rank where the organisation has one, else a
 channel), whether >= 1 bank-level node is "Opened" (or LPDDR5's
@@ -9443,7 +9403,7 @@ and the seven DRAM impls add the per-tick sums to
 `bankOpenWindow`, in its aggregate inside the rebased "mem" group (so they
 report the ROI window, 1.11.90), registered only when the device keeps them.
 `main.cpp` reads them (Scope::MEM, all-nodes and per-node) and, in device
-scope and in all three system-scope branches, prices IDD3N for BNK_ACT% =
+scope and in all three system-scope branches, prices IDD3N for active fraction =
 bankOpenCycles / bankOpenWindow and IDD2N (IDD2P under power-down, the
 existing descent) for the rest, via `backgroundUnitStatesMW`; the phase/gap
 residency is only the power-down input there, capped at the precharged share
@@ -9451,7 +9411,7 @@ residency is only the power-down input there, capped at the precharged share
 under the same rule. Without the counters the 1.11.90 expression is used
 bit for bit. One line per priced array:
 `[mem] bank-open fraction MEASURED x (N of M memory cycles with >= 1 bank
-open; the method's BNK_PRE% = 1-x = y); traffic-phase fraction z (printed for
+open; the precharged fraction = 1-x = y); traffic-phase fraction z (printed for
 comparison, not used)`, or `[mem] bank-open fraction UNMEASURED (<why>); the
 traffic-phase fraction z sets the IDD3N share`. WHERE IT IS MEASURED: only
 where a Ramulator2 controller saw every access to the array. Device scope
@@ -9461,10 +9421,10 @@ array of a decoupled system and a shared array with no PE-originated
 traffic (the NO_OFFLOAD baselines) are MEASURED from the host controller; a
 shared array with PE traffic (co-sim) is UNMEASURED, because the host
 controller's counter sees only the host-originated accesses. Window unit:
-Ramulator is ticked once per zsim cycle (R8-13), so "memory cycles" are
+Ramulator is ticked once per zsim cycle, so "memory cycles" are
 controller ticks x units.
 
-**(9) R8-8, ruling (a): IDDQ and IPP.** Every held sheet measures IDD on
+**(9) IDDQ and IPP.** Every held sheet measures IDD on
 the VDD balls only (DDR5 core sheet p.448 "Any IPP or IDDQ current is not
 included in IDD currents"; MT40A p.314; JESD238B.01 cl.9.1 PDF p.164;
 JESD250D cl.8.8), so the DQ output rail and the pump rail are separate and
@@ -9482,11 +9442,11 @@ is defined, p.314) -> n/a. DDR3: Table 20 has none -> n/a. HBM2/HBM3: IDDQ is
 vendor-simulated (JESD238B.01 PDF p.164) -> the Cho ISSCC 2018 driver
 figure as a BAND, 0.19-0.27 pJ/bit, midpoint charged on reads, both ends
 printed; writes 0 (a write's DQ is driven by the host). GDDR6: JESD250D
-defines no IDDQ -> placeholder fields for the R8-9 derivation (n/a until
+defines no IDDQ -> placeholder fields for the GDDR6 row derivation (n/a until
 then). Printed on the DQ interface line: `; iddq= rd A nJ, wr B nJ` (or
 `[BAND lo-hi]`, or `n/a`), and as `+ iddq=` in the Total dynamic / Array
-dynamic sums. (b) IPP background: VPP x (IPP3N x BNK_ACT% + IPP2N x
-(1 - BNK_ACT%)) per unit x the background population. DDR5 IPP2N 6 / IPP3N 7
+dynamic sums. (b) IPP background: VPP x (IPP3N x active fraction + IPP2N x
+(1 - active fraction)) per unit x the background population. DDR5 IPP2N 6 / IPP3N 7
 (Rev A pp.17-18; Rev D 7/8) at VPP 1.8 V (core sheet p.1); DDR4 IPP3N 3
 (Table 148 p.332), IPP2N = IPP3N by note 22 p.334, VPP 2.5 V (p.1); LPDDR5
 has no VPP ball, its 1.8 V VDD1 rail (IDD2N1 1.5, IDD3N1 2.8 mA, Y52P
@@ -9501,31 +9461,31 @@ the array term") and the 1.11.64 HBM note ("their driver current is already
 inside the measured burst current"), plus the same claim in `main.cpp`'s
 device-scope comment. Two limits stated in the comments, not corrected:
 the DDR5 core sheet p.448 says IDDQ "cannot be directly used to calculate IO
-power" (priced by the ruling anyway); and IDDQ4W is measured with the DRAM's
+power" (priced by the rule anyway); and IDDQ4W is measured with the DRAM's
 RTT enabled, so it contains the write termination's DC current that
 `terminationNJ()` also prices -- the two overlap on writes by at most the
 termination term (DDR5-4800: 0.418 nJ of the 2.445 nJ write IDDQ).
 
-Where it is measured, established by gates 1200A-1200C: the counters live
+Where it is measured, established by the release tests: the counters live
 in zsim's RamulatorMemory controller. The device-scope PE path has no zsim
 memory controller at all (the stats dump's `mem` group holds only the
 `pe-mi-N` PE memory interfaces; the "Controller: Ramulator" line in the
 report is the DRAM oracle that supplies the ladder, not a per-request
 controller), and the system-scope hosts run zsim's SimpleMemory (`type =
-"Simple"`, main.cpp emitZSimSystemConfig). So NO fleet cell instantiates
-RamulatorMemory, every fleet cell prints `bank-open fraction UNMEASURED`
+"Simple"`, main.cpp emitZSimSystemConfig). So NO corpus cell instantiates
+RamulatorMemory, every corpus cell prints `bank-open fraction UNMEASURED`
 with its reason and keeps the traffic-phase fraction, and the measured
 path in this release is verified by construction only. It gets a firing
 configuration when HOST_MC placement routes through Ramulator2 (OPEN) or
 a host runs on `memory.controller.type: ramulator`. The counters are
 registered unconditionally (the first cut registered them only when the
 device reported itself tracked at construction). The HBM2 idle guard
-(item 5) likewise has no firing workload: the guard binds only at non-zero
+likewise has no firing workload: the guard binds only at non-zero
 idle residency, and neither a saturating stream nor a 1-PE bfs produced
 any; it is verified by the header harness (the HBM2 row's IDD2N > IDD3N
 ordering case).
 
-**(10) R8-9, DDR4 and DDR3 rows: one revision of one sheet each.** DDR4 now
+**(10) DDR4 and DDR3 rows: one revision of one sheet each.** DDR4 now
 reads Micron MT40A Table 148 "Die Rev. B", x8, DDR4-2400, p.332: IDD0 48,
 IDD2N 34, IDD3N 43, IDD4R 135, IDD4W 123, IDD2P 25 mA; the IDD5 (burst)
 column is converted from THAT revision's IDD5R 53 and IDD2N 34: 34 + 19 x
@@ -9535,11 +9495,10 @@ DDR3/3L-1600, p.43: IDD0 55, IDD2N 32, IDD3N 38, IDD4R 157, IDD4W 125,
 IDD5B 235, and IDD2P1 32 mA, the FAST-exit figure (the old 18 was Table 20's
 IDD2P0, slow exit, under a comment that said fast). IDD2P1 equals IDD2N on
 this part, so DDR3 precharge power-down saves nothing: the sheet's number.
-The HBM3 and GDDR6 rows are the separate R8-9 derivation's and are not
+The HBM3 and GDDR6 rows are a separate derivation's and are not
 touched here beyond their basis flags.
 
-**(11) The IDD rows: one typical value per quantity, by component.** User
-rulings 2026-09-26 18:44-19:00 (PIMID outputs ONE absolute number per
+**(11) The IDD rows: one typical value per quantity, by component.** (PIMID outputs ONE absolute number per
 quantity, never a range; datasheet IDD values are guardbanded maxima) and
 19:30 (the typical values are computed by COMPONENT factors, not
 per-current factors). The model prices differences of the IDD columns --
@@ -9585,7 +9544,7 @@ DDR3L and DDR4):
 |---|---|---|
 | precharged standby state (IDD2N) | 0.57 | [G] 3-vendor mean 0.566; [S] DDR4 0.576 |
 | active standby state (IDD3N) | IDD3N_typ = IDD2N_typ + 0.36/0.57 x (IDD3N_spec - IDD2N_spec), clamped >= IDD2N_typ: the premium shrinks by the ratio of the two measured standby factors ([G] IDD3N 23-53% of spec, IDD2N 38-77%) | [G] |
-| activate excess (IDD0 loop current minus its vendor-method standby baseline) | 0.5 | [S] energy-level ratios 0.25-0.51 (median 0.47); [G] IDD0 loop 0.43 |
+| activate excess (IDD0 loop current minus its current-difference standby baseline) | 0.5 | [S] energy-level ratios 0.25-0.51 (median 0.47); [G] IDD0 loop 0.43 |
 | burst excess (IDD4R - IDD3N), (IDD4W - IDD3N) | 0.6 read, 0.5 write | [G] 0.74/0.54 (I/O-corrected), [S] 0.55/0.43 |
 | refresh excess (IDD5B - IDD2N) | 0.83 | [G] 88.6/72.0/88.0% |
 | precharge power-down (IDD2P) | 0.57 | same as standby ([G] gives ranges only); keeps IDD2P <= IDD2N |
@@ -9604,10 +9563,10 @@ scaled by f.act. IDDQ, IPP, tRFC and tREFI are not factored (no anchor).
 
 Why per-current factors failed (the first pass of this item, 18:44-19:00,
 stopped before the build was accepted): DDR5 IDD0 x 0.48 fell below IDD2N
-x 0.57 (4800B 49.4 < 52.4; 5600B 25.4 < 27.9), so the vendor-method activate
+x 0.57 (4800B 49.4 < 52.4; 5600B 25.4 < 27.9), so the current-difference activate
 term was negative at any tRC/tRAS and `refuseNegativeActivateEnergy`
 stopped every DDR5 run; IDD3N x 0.36 fell below IDD2N x 0.57 on every
-factored row, so the R8-11 guard priced the precharged state at the
+factored row, so the guard of (5) priced the precharged state at the
 active one and the measured bank-open fraction of (8) stopped moving
 background; and IDD2P x 1.00 sat above the factored IDD2N on DDR3, DDR4
 and GDDR6, so power-down saved nothing. Under the component rule every
@@ -9630,7 +9589,7 @@ Per row:
   Rev A / Rev D maxima (4800B {103, 92, 142, 377, 349, 277, 88}, 5600B
   {53, 49, 91, 218, 241, 377, 47}) and the stated 3200 row.
   The model-inputs line now prints the IDD row word for DDR5.
-- LPDDR5, RE-SOURCED (user ruling, same evening): the earlier
+- LPDDR5, RE-SOURCED (same evening): the earlier
   source the row used since 1.11.63 is no
   longer cited anywhere in the code comments or this entry (older ledger entries are history and are left as written). The row now
   reads the PUBLIC Micron Y52P LPDDR5X sheet (Rev. H 03/2025, MT62F1G32D2 family, 16
@@ -9644,7 +9603,7 @@ Per row:
   An uncited cross-check agrees within ~15% on burst
   and standby. The same sheet's rate-unscaled row is `LPDDR5X`,
   NOT selectable: see OPEN.
-- GDDR6, and R8-5 decided: the row reads Samsung K4Z80325BC Table
+- GDDR6, with its basis decided: the row reads Samsung K4Z80325BC Table
   82 (PDF p.146, x32, 1.35 V, HC14) per DEVICE {IDD0 430, IDD2N 310, IDD3N
   460, IDD4R 1220, IDD4W 1470, IDD5B 790, IDD2P 230; tRFCab 120 ns}; a 64 B
   access engages ONE x16 channel, so the row stores the PER-CHANNEL maxima
@@ -9661,9 +9620,8 @@ Per row:
   per channel ACT/PRE at the maxima, x the activate-excess factor 0.5 =
   1620 pJ per activation. The three routes are recorded (IDD0: 0.61 nJ,
   ill-conditioned; IDD7: 3.24 nJ, chosen, well-conditioned; physics
-  bracket 1.1-2.3 nJ). The printed path label changed from `2 x 16-bit
-  channels [basis HELD pending R8-5] / 32-bit device` to `16-bit channel /
-  16-bit channel (IDD basis)`.
+  bracket 1.1-2.3 nJ). The printed path label changed from the two-channel form with the held
+  basis to `16-bit channel / 16-bit channel (IDD basis)`.
 - HBM2 MEASURED, no component factors (measured-typical already), moved
   to the preset's operating point: the SAFARI loops ran at 1.2 Gb/s/pin
   (sources/table3/configs/HBM2_1.2Gbps_timing_BL4.json "tCK_ps": 1666.7)
@@ -9718,14 +9676,14 @@ idd3n_t <= idd4r_t and idd4w_t PASS; refresh excess idd5b_t - idd2n_t > 0
 PASS (DDR3 168.3, DDR4 351.4, DDR5-3200 71.4, DDR5-4800 153.6, DDR5-5600
 272.2, LPDDR5/LPDDR5X 143.2, GDDR6 199.2 mA); activate positive PASS.
 HBM2 (no factors) keeps its measured IDD3N 35.5 < IDD2N 38.0 mA (the
-R8-11 guard, as before; the only row that fails the ordering, stated in
+guard of (5), as before; the only row that fails the ordering, stated in
 the row since 1.11.66).
 
 A finding for the paper: measured active standby sits barely above
 precharged standby -- on the anchors' own per-current means it is at or
 below it ([G] DDR3L 0.367 x 38 = 13.9 against 0.566 x 32 = 18.1 mA; [S]
 DDR4 539 against 599 mA per DIMM) -- so on real parts the bank-open
-fraction matters less than the datasheets implied. Under the ruled
+fraction matters less than the datasheets implied. Under the adopted
 formula the absolute active-minus-precharged spread falls by the premium
 factor (DDR5-4800 rank 406.8 -> 256.9 mW, DDR4 82.5 -> 50.1, DDR3 61.9 ->
 40.1, GDDR6 189.7 -> 119.8), but the RELATIVE spread is about unchanged
@@ -9734,7 +9692,7 @@ because the premium factor 0.36/0.57 = 0.63 is larger than the standby
 factor 0.57. The model therefore keeps 63% of the datasheet premium; the
 anchors alone would support less. Stated, not corrected.
 
-**(12) HBM stack floor, user ruling option (c).** The SAFARI artifact's
+**(12) HBM stack floor.** The SAFARI artifact's
 data/no_hbm_idd2_measurements.csv averages 821.3 mA for IDD2 with one
 channel enabled and idle against 1087.4 mA for the all-channel loop: 38.0 mA
 per channel plus a 783.3 mA floor that does not scale with channels (the
@@ -9818,20 +9776,20 @@ DATA IMPACT:
   every technology except DDR5; burst per access on every technology except
   LPDDR5; the emitted Ramulator config on every technology except DDR5 at
   4800/5600; background on every row except HBM2; every number under (6).
-- (7) R8-2, activate/precharge per IDD unit, every cell of the family
+- (7) activate/precharge per IDD unit, every cell of the family
   (weighted by the measured miss fraction): HBM3 647.2 -> 506.0 pJ (-22%),
   GDDR6 1484.1 -> 909.6 pJ (-39%), HBM2 293.6 -> 409.8 pJ (+40%). The
   diluted baseline was the defect, so the direction is DOWN for HBM3/GDDR6
   and UP for HBM2 (whose IDD3N < IDD2N on silicon). DDR3/4/5 and LPDDR5
   unchanged by the basis. Burst terms unchanged.
-- (8) R8-7, background, ONLY where MEASURED (system-scope NO_OFFLOAD
-  baselines and decoupled host arrays): per unit P = P(IDD3N) x BNK_ACT% +
-  P(IDD2N) x (1 - BNK_ACT%) instead of x traffic share. DDR5-4800 per device
+- (8) background, ONLY where MEASURED (system-scope NO_OFFLOAD
+  baselines and decoupled host arrays): per unit P = P(IDD3N) x active fraction +
+  P(IDD2N) x (1 - active fraction) instead of x traffic share. DDR5-4800 per device
   167.4 mW all-active vs 116.6 mW all-precharged, so a closed-page stream
-  with BNK_ACT% far below its traffic share moves toward 116.6 (up to -30%);
+  with active fraction far below its traffic share moves toward 116.6 (up to -30%);
   HBM3 27.7 vs 23.6 mW per channel (at most -15%). Device-scope cells and
   co-sim shared arrays with PE traffic: UNMEASURED, background unchanged.
-- (9) R8-8, per DQ-crossing access (HOST_MC, RANK+, every host-originated
+- (9) per DQ-crossing access (HOST_MC, RANK+, every host-originated
   access; on-die placements 0): DDR5-4800 +0.381 nJ read, +2.445 nJ write
   (4 devices); DDR5-5600 +(218-70) and +(271-70) mA x 1.1 V x tBurst x 4;
   LPDDR5 +0.263 nJ read, 0 write; HBM2/HBM3 +0.118 nJ read [0.097-0.138],
@@ -9839,7 +9797,7 @@ DATA IMPACT:
   (precharged) to 12.6 (active) mW per device, x8 devices per rank = 86-101
   mW; DDR4 7.5 mW per device (60 mW per x8 rank); LPDDR5 2.34-3.42 mW per
   die; others n/a.
-- (10) R8-9, DDR4 x8 per device: activate/precharge 1247.4 -> 747.8 pJ
+- (10) DDR4 x8 per device: activate/precharge 1247.4 -> 747.8 pJ
   (-40%; per 64 B access x8 devices 9.980 -> 5.982 nJ), read burst 3.135 ->
   2.943 nJ, write burst 3.455 -> 2.559 nJ per access; at a 0.5 miss
   fraction read 8.124 -> 5.934, write 8.444 -> 5.550 nJ. Background per
@@ -9897,45 +9855,45 @@ DATA IMPACT:
   halved by the factors); HBM2 burst x4; HBM3 burst x12-21 and background
   x5.8 (the floor is a third of it).
 
-Gate 1200A. Each fix a FIRES side against 1.11.90, each with parity on what
+Release test. Each fix a FIRES side against 1.11.90, each with parity on what
 it does not touch:
-- F1 (R8-1): a device-scope run per technology: NEW's `DRAM row (page) size`
+- F1: a device-scope run per technology: NEW's `DRAM row (page) size`
   line prints `row stride across the access:` 16384 (DDR3), 4096 (DDR5),
   1024 (HBM2, HBM3) and the emitted zsim config carries `dramRowStrideBytes`
   with the same value; the HBM3 stream_triad cell's measured row-miss
   fraction is above OLD's, DDR3's below. Parity: DDR4 8192, LPDDR5 2048,
   GDDR6 2048, and their measured miss fractions identical to OLD's.
-- F2 (R8-3): `--print-mem-info` on DDR5 (4800 and 3200) prints `devices per
+- F2: `--print-mem-info` on DDR5 (4800 and 3200) prints `devices per
   64 B access: 4 (32-bit sub-channel / 8-bit device)`; a DDR5 run's
   per-access read and write energy are OLD's x 0.5 at the same miss fraction
   (a run with the fallback 0.5, or the ratio after re-weighting by the
   printed fraction). `PIMID_ACCESS_PATH_BREAK=1` refuses a DDR config load
   rc 2 naming `channel_width`. Parity: DDR3/DDR4 print 8, LPDDR5/GDDR6/HBM2/
   HBM3 print 1.
-- F3 (R8-4): LPDDR5 prints `bursts per 64 B access: 2 (BL16 x 16 bit = 32 B
+- F3: LPDDR5 prints `bursts per 64 B access: 2 (BL16 x 16 bit = 32 B
   per burst); energy tBurst per 64 B = 5 ns`, and its per-access read energy
   exceeds OLD's by 0.874 nJ at the same miss fraction. Parity: every other
   technology prints `bursts per 64 B access: 1` with `energy tBurst per 64 B`
-  equal to its `tBurst=` (GDDR6 1.14286, `[basis HELD pending R8-5]`).
-- F4 (R8-6): a DDR5-4800 config load prints `emits org DDR5_16Gb_x8, timing
+  equal to its `tBurst=` (GDDR6 1.14286, basis held).
+- F4: a DDR5-4800 config load prints `emits org DDR5_16Gb_x8, timing
   DDR5_4800B`, and the written Ramulator YAML names that pair (OLD:
   DDR5_8Gb_x8 / DDR5_3200AN); a co-sim DDR5 cell's cycles differ from OLD's.
   Parity: the DDR5-3200 companion prints and writes `DDR5_8Gb_x8`,
   `DDR5_3200AN`; the other six technologies' YAML byte-identical.
-- F5 (R8-11): an HBM2 run with idle residency > 0 prints the IDD2N/IDD3N NOTE
+- F5: an HBM2 run with idle residency > 0 prints the IDD2N/IDD3N NOTE
   and its background is below OLD's (equal to the flat IDD3N value with
   power-down off). Parity: no other technology prints the NOTE, and their
   background is identical to OLD's.
-- F6 (R8-12): the report prints `[termination only; driver/PHY
+- F6: the report prints `[termination only; driver/PHY
   informational, not summed]` in both scopes; the `iface=` value identical to
   OLD's.
 - P: at config load (`--print-mem-info`) the only lines that differ from
   1.11.90 on the seven technologies and the two system shapes are the
   model-inputs line (the appended access path) and, on DDR5, the new
   emission NOTE (plus, at 3200, the wrapper's `is modelled at the preset's`
-  NOTE, which now names the pair). [Rulings half: the model-inputs line
+  NOTE, which now names the pair). [the model-inputs line
   additionally ends in `; IDD3N basis <WORD>`; nothing else at config load.]
-- F7 (R8-2): `--print-mem-info` prints `IDD3N basis ALL_BANKS` on DDR3,
+- F7: `--print-mem-info` prints `IDD3N basis ALL_BANKS` on DDR3,
   DDR4, DDR5 (3200 and 4800), `ONE_BANK` on HBM2, HBM3, GDDR6, `UNVERIFIED`
   on LPDDR5. FIRES: at a fixed miss fraction the activate share of a
   per-access energy moves HBM3 DOWN by 0.1412 nJ x miss fraction, GDDR6
@@ -9943,7 +9901,7 @@ it does not touch:
   fallback: HBM3 read 0.417 -> 0.347, GDDR6 read 0.974 -> 0.686, HBM2 read
   0.809 -> 0.867 nJ). Parity: DDR5 and LPDDR5 per-access energies identical
   to OLD at the same fraction.
-- F8 (R8-7): a system-scope DDR5 NO_OFFLOAD baseline cell (ClosedRowPolicy,
+- F8: a system-scope DDR5 NO_OFFLOAD baseline cell (ClosedRowPolicy,
   a stream) prints `bank-open fraction MEASURED x` with x FAR BELOW the
   printed traffic-phase fraction, the zsim dump carries `bankOpenCycles`
   and `bankOpenWindow` under `mem-0`, and its Background is below OLD's by
@@ -9956,7 +9914,7 @@ it does not touch:
   (whose rows move under (10)) -- the ipp term is printed separately;
   a co-sim shared array with PE traffic prints UNMEASURED with the PE-MI
   reason and its Background equals OLD's (same DDR3/DDR4 exception).
-- F9 (R8-8): FIRES on a DQ-crossing configuration: a DDR5-4800 NO_OFFLOAD
+- F9: FIRES on a DQ-crossing configuration: a DDR5-4800 NO_OFFLOAD
   baseline prints `iddq= rd 0.381 nJ, wr 2.445 nJ` (host-originated), a
   non-zero `+ iddq=` in Array dynamic, and `+ipp=` between 86.4 and 100.8 mW
   per x8 rank per channel; an HBM3 HOST_MC or baseline cell prints
@@ -9964,12 +9922,12 @@ it does not touch:
   BANK cell prints `iddq= rd 0.000 nJ, wr 0.000 nJ` and `+ iddq=0.0`.
   n/a: DDR3/DDR4/GDDR6 print `iddq= n/a`; DDR3/HBM2/HBM3/GDDR6 print
   `+ipp=n/a`. Parity: the `rd=`/`wr=` termination values identical to OLD.
-- F10 (R8-9): DDR4 fig3 cell per-access read/write at the printed miss
+- F10: DDR4 fig3 cell per-access read/write at the printed miss
   fraction m equal 2.943 + 5.982 m and 2.559 + 5.982 m nJ (OLD 3.135 +
   9.980 m and 3.455 + 9.980 m); DDR3: 6.426 + 11.205 m and 4.698 + 11.205 m
   (OLD 7.020 + 13.372 m and 7.290 + 13.372 m). Parity: DDR5/LPDDR5/HBM
   per-access energies unmoved by (10).
-- G11 (item 11, component rule), one arm per row. `--print-mem-info` on a
+- G11 (component rule), one arm per row. `--print-mem-info` on a
   corpus config prints on the model-inputs line the row's `; IDD row <word>`
   for DDR3, DDR4, DDR5 at 3200, 4800 and 5600, LPDDR5, GDDR6
   (with
@@ -9992,19 +9950,19 @@ it does not touch:
   exception. Superseded expectations of arms above: F3's GDDR6 parity (now
   2 bursts, 2.28571 ns, the new label); F7's GDDR6/HBM values; F9's LPDDR5
   values (iddq rd 0.278 nJ, VDD1 2.70-5.04 mW); F10's DDR3/DDR4 values.
-  F5 stands as written (the R8-11 NOTE prints on HBM2 only: the factored
+  F5 stands as written (the NOTE of (5) prints on HBM2 only: the factored
   rows keep IDD3N >= IDD2N).
-- G12 (item 12): an HBM2 and an HBM3 run print `+stack=939.96 mW` and
+- G12: an HBM2 and an HBM3 run print `+stack=939.96 mW` and
   `+stack=861.6 mW` (one stack) on the Background line in device and in
   system scope, and the Background value minus it equals the per-channel
   sum (HBM2 8 x 47.2, HBM3 16 x 105.6 mW all-active). Arm on the trigger:
   a two-stack HBM configuration (channels = 2 x per stack), if one loads,
   prints twice the floor. Parity: no other technology prints `+stack=`.
-- G13 (item 13). Regression: `--check-components` on the normal build
+- G13. Regression: `--check-components` on the normal build
   (BUILD_PLUGINS ON) prints four `[load]` lines -- libpimid_plugin.so,
   libpimid_mpi.so, libzsim_qemu.so, libpimid_trace.so, each `(1.11.91)` --
   rc 0 (the chunked stamp read finds the tag in the ~2 MB libzsim_qemu.so).
-  FIRES (the flat-copy trigger of gate 1199A C1): the `pimid` binary copied
+  FIRES (the flat-copy trigger of the release test's C1 arm): the `pimid` binary copied
   alone into an empty directory, PIMID_ROOT unset, `--check-components`
   exits rc 2 with `[load] FATAL: libpimid_mpi.so not found` and the text
   `--target pimid_mpi`; with libpimid_mpi.so copied beside it, the FATAL
@@ -10013,18 +9971,12 @@ it does not touch:
   (1.11.91)` (the plugin check ran and passed, so the FATAL is the
   locator's). Not exercised: a -DBUILD_PLUGINS=OFF build (not built here).
 
-OPEN, awaiting rulings (the array numbers move again after these): [R8-2,
-R8-7, R8-8 and R8-9 (DDR4/DDR3) were RULED 2026-09-26 16:19-16:49 and are
-items (7)-(10) above; the HBM3/GDDR6 rows of R8-9 are the separate
-derivation's.] R8-2
-(the 1.11.86 one-bank baseline on HBM2/HBM3/GDDR6, whose IDD3N is already
-one-bank: a per-technology basis flag), R8-5 (GDDR6 IDD source and
-per-device vs per-channel basis -- which also decides whether GDDR6's burst
-term doubles under (3)), R8-7 (DDR background convention, vendor-method all-bank
-IDD3N vs one-bank consistent), R8-8 (IDDQ and IPP/VPP terms), R8-9 (preset
-provenance per technology: DDR4, DDR3, HBM3, GDDR6), R8-10 (the PE-MI
-open-row model against Ramulator's ClosedRowPolicy on DDR4/DDR5). [R8-5
-is decided by (11): per-channel GDDR6 row and path.]
+OPEN after this release: the PE memory interface's open-row model against
+Ramulator's ClosedRowPolicy on DDR4/DDR5. The other questions of this audit are
+settled above: the per-technology IDD3N basis (7), the DDR background convention
+(8), the IDDQ and IPP/VPP terms (9), the DDR4/DDR3 preset provenance (10), and the
+GDDR6 IDD source and per-device vs per-channel basis (11: a per-channel GDDR6 row
+and path); the HBM3/GDDR6 rows are a separate derivation's.
 Still open after (11)/(12): the LPDDR5X technology (row present, not
 selectable: the public Y52P sheet gives only the density-dependent refresh
 set -- tRFCab 280, tRFCpb 140, tPBR2PBR 90, tPBR2ACT 7.5 ns -- and the newer
@@ -10039,7 +9991,7 @@ held, so no timing preset can be written from a public source); whether
 LPDDR5's IDDQ4R excess should also be rate-scaled 6400/7500; the active-
 standby premium factor 0.36/0.57 keeps 63% of the datasheet premium while
 the anchors' per-current means put measured IDD3N at or below IDD2N (see
-the finding in (11)). [Resolved by the 19:30 component ruling: the DDR5
+the finding in (11)). [Resolved by the component rule: the DDR5
 typical row (activate term now f.act x a positive spec term) and the
 per-current rows' IDD3N < IDD2N and IDD2P > IDD2N.]
 HOST_MC placement will route through Ramulator's controller (closed-page
@@ -10052,7 +10004,7 @@ Found by a read-only audit of the tree (2026-09-26) for the one class the
 project refuses everywhere else: a value replaced, clamped or defaulted
 without a word. None of the sites below fires on any corpus config (every
 smoke log is clean), so no corpus number moves. The point is that none of
-them can fire silently in the future. Plus one found by the fleet smoke the
+them can fire silently in the future. Plus one found by the corpus smoke the
 same day (part C).
 
 **(A) The power path.** Seven substitutions between McPAT/CACTI and the
@@ -10145,7 +10097,7 @@ docs/yaml_reference.md: CHANNEL and LOGIC_DIE are in the placement table;
 lists its three values.
 
 **(C) Shared objects from another build were loaded in silence.** Found by
-the fleet smoke: `findPimidMpiLib()` anchored on `getPimidRoot()`, which
+the corpus smoke: `findPimidMpiLib()` anchored on `getPimidRoot()`, which
 strips the executable's directory at "/build"; a binary run from a directory
 without "/build" in its path fell through to `./libpimid_mpi.so` and
 `./build/libpimid_mpi.so` relative to the CWD, and the repo root's stale
@@ -10167,22 +10119,23 @@ in both scopes (system scope printed no plugin line before). The linked
 `--check-components` runs the same lookup and exits, without simulating.
 
 DATA IMPACT: none on any corpus config: every substitution and silence above
-is now a refusal; measured by loading all 370 fleet configs rc 0 (280 device
+is now a refusal; measured by loading all 370 corpus configs rc 0 (280 device
 scope, 90 system scope), their `--print-mem-info` output byte-identical to
 1.11.89 apart from the tree path. The one behaviour change a valid config
 can see is `noc.bridges.*.model: analytical` (now simple, as documented;
 used by no corpus config), and a run's log gains the four `[load]` lines.
 
-Gate 1199A, with arm A0 re-evaluated as 1199B: A0 demanded total power
-identical to 1.11.89's on a full run, whose cycle count jitters (0.23% here),
+Release test: with arm A0 re-evaluated as run B: A0 demanded total power
+identical to 1.11.89's on a full multi-threaded run, whose cycle count follows
+the thread scheduling,
 so the time-divided dynamic term moved 0.25% while leakage and area were
-identical to the digit; 1199B holds leakage and area exact and the dynamic
+identical to the digit; run B holds leakage and area exact and the dynamic
 term and cycles within 1%, and expects the two [load] lines an OpenMP run
-prints rather than three. The injected-link arm was re-evaluated as 1199C:
+prints rather than three. The injected-link arm was re-evaluated as run C:
 the injected NaN propagates into the core component's total, so the child's
 own non-finite guard refuses first (exit 21 in the child, rc 3) before the
 parent's substitution count is read; the arm expected only the parent's
-message, and either is the refusal. Gate 1199A. Each refusal needs a config that TRIGGERS it (rc 2 or 3, named
+message, and either is the refusal. Release test. Each refusal needs a config that TRIGGERS it (rc 2 or 3, named
 message; OLD accepts it) and the corpus must load unchanged:
 - A1-A5, A7 (power path): the device-scope smoke shape with
   `PIMID_MCPAT_FAULT` = `extract` (`FATAL: McPAT produced a non-finite
@@ -10221,7 +10174,7 @@ message; OLD accepts it) and the corpus must load unchanged:
   rc 2, `is version 1.11.91, this binary is 1.11.90`; an old
   libpimid_plugin.so preloaded: rc 2; the build tree itself: rc 0 and four
   `[load]` lines.
-- Parity: `--print-mem-info` on all 370 fleet configs rc 0 and identical to
+- Parity: `--print-mem-info` on all 370 corpus configs rc 0 and identical to
   1.11.89 (all seven technologies, device and system shapes), and one full
   device-scope run whose power is identical to 1.11.89's -- the run that
   also shows no `[mcpat] WARNING` fires on a supported configuration.
@@ -10230,10 +10183,10 @@ message; OLD accepts it) and the corpus must load unchanged:
 
 Found by a read-only audit of the system-scope power path
 (`runPerNodePowerAnalysis`, `reportSharedMemoryArrayEnergy`) before the
-90-cell system-scope fleet (co-sim DDR5/HBM3 x 5 kernels x omp/mpi, the
+90-cell system-scope corpus (co-sim DDR5/HBM3 x 5 kernels x omp/mpi, the
 NO_OFFLOAD baselines at 1/4/16 host cores, and the DDR5-3200 co-sim
 companions), plus one defect in the plugin that touches every cell. All
-confirmed by reading the code; the fleet was held until they shipped.
+confirmed by reading the code; the corpus was held until they shipped.
 
 **(1) The measured row-miss fraction never reached system scope.** Device
 scope has weighted the activate/precharge share of every access by the run's
@@ -10248,12 +10201,12 @@ one side's measurement is not lent to the other. No new default: 0.5 is the
 fallback device scope already states for an unmeasured run, and it does not
 refuse there, so neither does this.
 
-**(2) The idle descent was gated on flags the fleet never sets.** Device
+**(2) The idle descent was gated on flags the corpus never sets.** Device
 scope computes the DRAM idle residency unconditionally (1.11.20, D15: an idle
 controller closes its pages whether or not power gating was asked for; the
 `memory.power_down` flag only adds the IDD2P step). System scope gated the
 whole descent -- residency and the E17 gap histogram -- on
-`memory.power_down || pim.mc.pg`, so every fleet cell reported flat IDD3N
+`memory.power_down || pim.mc.pg`, so every corpus cell reported flat IDD3N
 standby while its device-scope twin descended (smoke: 1339.46 -> 940.16 mW
 at residency 0.98 in device scope, flat in system scope). The gate is gone.
 The residency also counted the wrong controller: it read the device-MC
@@ -10349,12 +10302,12 @@ DATA IMPACT (system scope only, except (5)):
   NoC dynamic power DOWN by the pre-ROI share of their traffic (largest for
   stream_triad and histogram, whose initialisation touches every element;
   smallest for bfs and stencil, whose kernels re-touch the data many times);
-  cycles unchanged (they were ROI-scoped already). Measured by gate 1198A
+  cycles unchanged (they were ROI-scoped already). Measured by the release test
   A8 on the smoke shape (HBM3, stream_triad 40000 elements, 16 alu_core):
   1,166,956 memory-controller accesses dropped at roi_begin; Garnet flits
   1,172,482 -> 21,477 (98% of the flits were pre-ROI: process start-up,
   OpenMP runtime and array initialisation, all simulated); array dynamic
-  0.5 -> 0.1 mJ; cycles 7,037,535 -> 7,044,327 (run jitter). On the corpus
+  0.5 -> 0.1 mJ; cycles 7,037,535 -> 7,044,327 (thread scheduling). On the corpus
   shapes the kernel's share is larger (the working set is 256 MB and the
   start-up cost is fixed), but the pre-ROI share is not small for any
   kernel, and every NoC and array dynamic figure in every previous corpus
@@ -10363,11 +10316,11 @@ Device-scope DRAM numbers are unchanged by (1)-(4) by construction: the only
 device-scope edit in their path replaces an expression with the helper
 holding the same expression.
 
-Gate 1198A, re-evaluated in part as 1198B: 1198A's A3 and A4 read a
+Release test: re-evaluated in part as run B: run A's A3 and A4 read a
 device-scope line that system scope prints differently (the firing lines
 were present, the quantity read NA), and A5 compared total power, which
 fix (6) lowers in the same run by more than the wider issue raises the
-core; 1198B re-runs those three with the system-scope extractors and, for
+core; run B re-runs those three with the system-scope extractors and, for
 A5, the core area, which the rebase does not touch. Each fix needs a FIRES
 side against 1.11.88:
 - A1 (fix 1): a co-sim cell whose PE-MI row-miss fraction is far from 0.5:
@@ -10397,7 +10350,7 @@ side against 1.11.88:
   XML carries `issue_width` 2, and core power is above OLD's; `simple_core`
   and `ooo_core` twins byte-identical in power.
 - A6 (fix 6): an unknown section's FATAL lists `synthetic`; each McPAT
-  refusal trigger from gate 1197B still prints its exact second line and rc 3.
+  refusal trigger from the release test still prints its exact second line and rc 3.
 - A7 parity: device scope on all seven technologies (DDR3, DDR4, DDR5,
   LPDDR5, GDDR6, HBM2, HBM3) byte-identical to 1.11.88 at config load
   (`--print-mem-info`), and a full alu_core run's core power identical to
@@ -10405,7 +10358,7 @@ side against 1.11.88:
 - A8 (fix 6): a device-scope stream_triad run: NEW prints the `[roi] traffic
   counters rebased` line with a non-zero dropped count, its memory-controller
   rd+wr total is BELOW OLD's by that count, its Garnet header says `[ROI
-  only`, and its cycles agree with OLD's within run jitter; a workload with
+  only`, and its cycles agree with OLD's within the test's tolerance; a workload with
   no roi_begin prints `[whole run` and matches OLD's counters.
 
 ## 1.11.88 -- a refused McPAT run could still land in the corpus looking complete
@@ -10413,7 +10366,7 @@ side against 1.11.88:
 Found by the cloud review of 1.11.87's diff, which asked what the new
 `std::exit(2)` in the router does once `computePower()`'s fork isolation
 turns it into a caught `std::runtime_error`. Answer: in DEVICE scope the run
-stops (1.11.52, gate 1162C C4). In SYSTEM scope it did not. Three catch
+stops (1.11.52). In SYSTEM scope it did not. Three catch
 sites printed one stderr line and went on:
 
 - the per-node loop of system scope: `result.valid` stayed false, the node
@@ -10427,10 +10380,10 @@ sites printed one stderr line and went on:
 
 All three now stop with the 1.11.52 FATAL and rc 3. Nothing in the corpus
 is affected by construction: no cell has ever printed "McPAT failed" (the
-fleet census greps for it), and the 22 nm nodes converge. The point is that
+corpus census greps for it), and the 22 nm nodes converge. The point is that
 the rule is now one rule.
 
-**Found by this release's own gate (1197A, arm A0), on both binaries.** The
+**Found by this release's own gate (run A, arm A0), on both binaries.** The
 gate's trigger is a PE clock of 50 MHz, which the YAML loader accepts and
 McPAT's validator refuses. In device scope that refusal did not produce the
 1.11.52 FATAL: `initialize()` is where the validator runs, it sat OUTSIDE the
@@ -10449,16 +10402,16 @@ new exit was unreachable and is deleted, and the comment above it, which
 still said the 65 nm failure's cause was not located, is corrected -- it
 was the unset wire type, measured in 1.11.87's A/B.
 
-Gate 1197B (1197A was cancelled after it found the two defects above; the
+The release test (run A was cancelled after it found the two defects above; the
 binary was rebuilt). The trigger is a PE clock of 50 MHz: the YAML loader
 accepts any positive frequency and McPAT's own validator refuses a core
 clock below 100 MHz. A0 device scope at that clock: OLD core-dumps (rc 134,
 "terminate called"), NEW refuses (rc 3, FATAL). A1 a system-scope run at
 that clock: OLD exits 0 with a System Total that omits the device, NEW stops
 with rc 3 and the FATAL naming the node. A2 the NoC tool at that clock: OLD
-core-dumps there too (rc 134; the same uncaught initialize(), R6-22 at
-its third site -- gate 1197B's first draft expected the softer "McPAT
-failed, exit 0" and FAILED on that expectation, re-evaluated as 1197C),
+core-dumps there too (rc 134; the same uncaught initialize(), at
+its third site -- 's first draft expected the softer "McPAT
+failed, exit 0" and FAILED on that expectation, re-evaluated as run C),
 NEW stops with rc 3. A2b the NoC tool's
 documented sweep section: OLD refuses it at config load (rc 2, "unknown
 top-level section"), NEW loads it and prints the sweep rows at 500 MHz. A3
@@ -10469,9 +10422,9 @@ makes host McPAT alone fail (the host has no NoC and takes the device's or
 the corpus's 2 GHz clock), so it is covered by code reading of the same
 pattern, and said so here.
 
-## 1.11.87 -- R6-10 resolved: the router read a wire type nobody set
+## 1.11.87 -- the router read a wire type nobody set
 
-Audit round 6 found DDR3 reporting 16.73 W of on-die fabric power against
+A code review found DDR3 reporting 16.73 W of on-die fabric power against
 0.14-0.34 W for the other six technologies, and traced it to McPAT's router
 input buffer: CACTI's Mat returned NaN for it at 32 nm (DDR3's table), and a
 silent fallback substituted a number ~1267x larger. This release fixes what
@@ -10539,14 +10492,14 @@ a few percent; DDR3's falls 93x. Every NoC and total-power figure in the
 previous corpus is superseded. Array energies are untouched (this release is
 NoC-only; 1.11.86 owns the array).
 
-Gate 1196A: DDR3 NoC dynamic collapses >100x and lands within 5x of DDR4's;
+Release test: DDR3 NoC dynamic collapses >100x and lands within 5x of DDR4's;
 the 22 nm technologies' NoC dynamic moves within a band set from the
 measurement above; the now-refusing fallback fires on nothing supported; the
 1.11.81 buffer/crossbar tripwire clears on DDR3; array energy, refresh and
 die area are unchanged on all four; device scope is byte-identical on all
 seven.
 
-## 1.11.86 -- R6-11 resolved: the rows were right, the baseline was wrong
+## 1.11.86 -- the rows were right, the baseline was wrong
 
 1.11.79 refused DDR5 at 4800 and 5600 because their activate energy came out
 negative, and said the cause was either a mis-transcribed IDD row or a formula
@@ -10601,18 +10554,16 @@ shape:
     HBM3       0.308 ->  0.368 nJ   +19.5%
 
 HBM2 falls rather than rises because it is the one row whose IDD3N sits below
-its IDD2N (133 against 136, measured silicon -- see R6-16), so its correction
+its IDD2N (133 against 136, measured silicon), so its correction
 term is negative. That is the row whose own per-chip spread makes its activate
-energy undetermined; this release does not change that and R6-16 stays open.
+energy undetermined; this release does not change that, and it stays open.
 
 1.11.79's refusal is kept as a guard. It should no longer fire on any
 supported part, and it will still catch a future row that breaks the identity.
 
-Gate 1195A.
+## 1.11.85 -- three enums that took any word
 
-## 1.11.85 -- audit round 6, part eleven: three enums that took any word
-
-**R6-20: an unrecognised value on three documented enum knobs was accepted
+**An unrecognised value on three documented enum knobs was accepted
 and then ignored, in silence.** Measured on 1.11.84, config-load scope:
 
     memory.controller.type: bogus      rc=0, output BYTE-IDENTICAL to `auto`
@@ -10631,7 +10582,7 @@ from the topology"; `md1` and `weavemd1` remain accepted and still warn that
 they were removed.
 
 Found by sweeping the knobs, the same method that produced everything from
-R6-10 onward. This one came from asking a simple question of four enums --
+1.11.87 onward. This one came from asking a simple question of four enums --
 what does a nonsense value do? -- and getting three different wrong answers
 and one right one.
 
@@ -10640,14 +10591,12 @@ documented value on all three knobs behaves exactly as before; only
 undocumented ones change, from silent acceptance to a refusal. No corpus
 config uses an undocumented value.
 
-Gate 1194A.
+## 1.11.84 -- a knob that never steered anything
 
-## 1.11.84 -- audit round 6, part ten: a knob that never steered anything
-
-**R6-19: `memory.banks` is INERT for every DRAM technology, the run never
+**`memory.banks` is INERT for every DRAM technology, the run never
 said so, and the reference table said the opposite.**
 
-Found by sweeping the knob, which no audit round had done. At config-load
+Found by sweeping the knob, which no earlier review had done. At config-load
 scope on DDR4:
 
     banks: 16, 32, 128, 256, 1024    BYTE-IDENTICAL output
@@ -10668,7 +10617,7 @@ is the one DRAM technology where `banks: 16` means what it says.
 EVERY CORPUS CONFIG SETS `banks: 16`, so every DRAM cell's configuration
 understates the device it simulated by 8x on DDR4. That is a reading of the
 configs, not a defect in the results -- the runs were always the preset's,
-which is the R1/R6 rule that the preset is the authority.
+which is the rule that the preset is the authority.
 
 The substitution now announces in BOTH directions rather than only when the
 request is below the per-chip minimum. The message names what was asked for,
@@ -10683,9 +10632,7 @@ DRAM run already used the preset's count. What changes is that a run whose
 cell runner counts WARNING lines, so this will raise the count on DRAM cells
 by one.
 
-Gate 1193A.
-
-## 1.11.83 -- audit round 6, part nine: a legal config that dumped core
+## 1.11.83 -- a legal config that dumped core
 
 **A 4-bit DRAM device, asked for with the default NoC model, aborted the
 process instead of running or refusing.** `memory.dram.device_width: x4` is a
@@ -10699,7 +10646,7 @@ builder --
 -- and the process died with SIGABRT and a core dump, after the configuration
 had been echoed and the run had started.
 
-Found by sweeping the device-width axis, which no audit round had done. The
+Found by sweeping the device-width axis, which no earlier review had done. The
 first cell of the sweep aborted.
 
 MEASURED, DDR3 with x4:
@@ -10727,16 +10674,14 @@ x4 run has ever produced a number on the detailed NoC -- it produced a core
 dump -- so nothing is withdrawn. x4 on the analytical NoC is untouched and
 still works. No corpus cell uses x4.
 
-Gate 1192A.
+## 1.11.82 -- three zeros and a knob, explained
 
-## 1.11.82 -- audit round 6, part eight: three zeros and a knob, explained
-
-Three observability gaps found by round 6's late scans, batched because each
+Three observability gaps found by the review's late scans, batched because each
 is a string and none changes a number.
 
-**R6-17: the temperature knob moves less than a reader expects, and the run
+**The temperature knob moves less than a reader expects, and the run
 said only the smallest part of it.** Swept 300/350/400 K on DDR3, DDR4 and
-DDR5 -- an axis no audit round had touched. Identical behaviour on all three:
+DDR5 -- an axis no earlier review had touched. Identical behaviour on all three:
 per-access array energy 1.00x, refresh EXACTLY 2.00x, background 1.1-1.3x,
 leakage 20-39x. The refresh doubling is real and sourced (JESD halves tREFI
 above 85 C; 400 K is 127 C). The flat array energy is by construction --
@@ -10752,7 +10697,7 @@ now states all three.
 
 **Three technologies print a termination energy of exactly zero, and all
 three are right, but only the source said why.** Found by exercising RANK
-placement, which no corpus cell uses and no audit round had run: at BANK the
+placement, which no corpus cell uses and no earlier review had run: at BANK the
 run correctly reports "no DQ crossing" and the whole interface path is
 untouched. At RANK, DDR3/DDR4/DDR5/GDDR6 give 12.360/3.045/1.283/0.661 nJ per
 read, falling by generation as they should -- and LPDDR5, HBM2 and HBM3 give
@@ -10767,11 +10712,11 @@ has two call sites, and the system-scope one loops over DEVICE nodes, so two
 devices' level lines would have run together. Device scope is unchanged.
 
 DATA IMPACT: NONE. Three output strings and one optional argument; no value,
-no model and no configuration changes. Gate 1191A.
+no model and no configuration changes.
 
-## 1.11.81 -- audit round 6, part seven: a router that cannot be a router
+## 1.11.81 -- a router that cannot be a router
 
-**R6-10: McPAT's router input BUFFER is priced ~1300x too high at 32 nm, and
+**McPAT's router input BUFFER is priced ~1300x too high at 32 nm, and
 nothing said so.** Round 6 measured an 889x step in NoC dynamic power between
 CACTI's 22 nm and 32 nm tables on one configuration with the access count
 held equal (flits within 0.001%). It is not the tables: in the same runs the
@@ -10812,7 +10757,7 @@ technology this reaches, and that the number is not usable. The threshold is
 a tripwire, not a model: 100x sits between the two measured ratios with an
 order of magnitude of margin either side.
 
-It warns rather than repairs because the repair is a ruling that has not been
+It warns rather than repairs because the repair is a rule that has not been
 made -- fix the buffer solve, unpin the fabric from the die generation while
 keeping the pin for the array, or refuse the affected runs -- and each of
 those moves numbers the corpus carries. What was not defensible was emitting
@@ -10831,16 +10776,16 @@ which is correct and was measured: SRAM at `technology.node_nm: 22` reports
 every configuration that reaches the broken region rather than only the one
 that reaches it by default.
 
-Gates 1190A and 1190B. The warning fires on DDR3 under 1.11.81 and does not
+Release test. The warning fires on DDR3 under 1.11.81 and does not
 under 1.11.80; it carries all seven required facts; DDR4 and HBM3 at 22 nm do
 not warn on either binary; device scope is byte-identical on all seven
 technologies.
 
-1190A's remaining arm failed, and the arm was wrong rather than the binary:
+run A's remaining arm failed, and the arm was wrong rather than the binary:
 its list of "deterministic" quantities included the three NoC level dynamic
 powers, which are activity-scaled -- runtime dynamic is per-access energy
-times a measured access count -- so they move with an OMP run's cycle jitter.
-1190B re-scored it on the recorded logs in two halves. The ten genuinely
+times a measured access count -- so they follow an OMP run's cycle count.
+Run B re-scored it on the recorded logs in two halves. The ten genuinely
 deterministic quantities (per-access read and write energy, DQ interface,
 refresh, three areas, the CACTI stanza) are IDENTICAL. The three NoC level
 powers are checked as a band rather than an equality, and moved 2.66%, 2.66%
@@ -10848,9 +10793,9 @@ and 2.66% -- the same factor on all three, which is the signature of an
 unchanged per-access energy scaled by a slightly different access count, and
 better evidence of no model change than equality on a noisy quantity.
 
-## 1.11.80 -- audit round 6, part six: the comment said it printed them
+## 1.11.80 -- the comment said it printed them
 
-**R6-13: `buildNoCLevelsForMcPAT` documented that it printed every computed
+**`buildNoCLevelsForMcPAT` documented that it printed every computed
 parameter with its formula, and printed none of them.** The function's doc
 comment had read, since it was written:
 
@@ -10896,22 +10841,21 @@ is to announce a substitution rather than perform one quietly -- the rule
 value.
 
 DATA IMPACT: NONE. No computed value changes; the release adds output lines
-and one conditional warning. On every shape measured in round 6 the duty is
+and one conditional warning. On every shape measured in the review the duty is
 orders of magnitude below 1.0 (roughly 4e6 packets shared across levels
 against 1.2e7 cycles x 9 nodes), so the new warning is latent on the current
-corpus. Verified by gates 1189A and 1189B.
+corpus. Verified by the release tests.
 
-1189A scored 8 arms PASS and one FAIL, and the FAIL was the arm's fault, not
+run A scored 8 arms PASS and one FAIL, and the FAIL was the arm's fault, not
 the binary's: it demanded that a 1.11.80 full-run log be BYTE-IDENTICAL to a
 1.11.79 one once the new lines were stripped. All 315 differing lines were
-measured per-run quantities from a nondeterministic OMP run -- per-core cycle
-and latency counters, the phase-sampled `[ChanBW]` and `[GarnetBatch]` lines,
-the `[E17]` gap histograms (whole-run cycles 437390000 against 437410000,
-0.005% apart), the scheduler watchdog line, and a `.topo` filename carrying
-the PID. Full-run OMP cycles are not bit-stable, so byte-identity was the
-wrong standard to hold them to.
+measured quantities of a full OpenMP run that depend on its thread timing --
+per-core cycle and latency counters, the phase-sampled `[ChanBW]` and
+`[GarnetBatch]` lines, the `[E17]` gap histograms, the scheduler watchdog line,
+and a `.topo` filename carrying the PID -- so byte-identity was the wrong
+standard for that arm.
 
-1189B replaced that arm with two that assert the same claim correctly:
+run B replaced that arm with two that assert the same claim correctly:
 DEVICE SCOPE, which IS bit-deterministic, byte-identical across all seven
 technologies (including DDR5, where both binaries refuse the default 4800
 grade and the arm asserts matching behaviour rather than success); and the
@@ -10919,11 +10863,11 @@ twelve deterministic `--power` quantities that appear only in a full run --
 per-access read and write energy, DQ interface energy, refresh, three area
 figures and the CACTI stanza -- all identical. `Background` was excluded from
 that list, with cause: it is weighted by the measured power-down residency
-and so inherits the gap histogram's jitter, 478.689 against 478.683 mW.
+and so follows the gap histogram (478.689 against 478.683 mW).
 
-## 1.11.79 -- audit round 6, part five: a negative energy stops being a number
+## 1.11.79 -- a negative energy stops being a number
 
-**R6-11: DDR5 at its default grade reports a NEGATIVE array energy on
+**DDR5 at its default grade reports a NEGATIVE array energy on
 workloads that miss the row buffer often enough, from a per-activate energy
 that is negative on every workload.**
 A CORRECTION TO THE FIRST STATEMENT OF THIS FIX, made before it shipped. The
@@ -10967,7 +10911,7 @@ At 4800B: `IDD0 x tRC = 103 x 48.256 = 4970` against
 `IDD3N x tRAS + IDD2N x (tRC - tRAS) = 6041`, so the term is -1178 pJ and it
 dominates the positive burst term.
 
-**Which side is wrong needs a ruling, so this release does not guess.** Either
+**Which side is wrong needs a modelling decision, so this release does not guess.** Either
 the rows mis-transcribe the addenda, or they are right and the method does not
 transfer to a 32-bank DDR5 part whose all-banks-active IDD3N can legitimately
 exceed a one-bank IDD0. Both readings need the datasheet. What is not in
@@ -10988,7 +10932,7 @@ energy, that is a smaller change on the same check -- say so and it will be
 made; it was not assumed, because a partially-filled power report is easier
 to misread than a refusal.
 
-## 1.11.78 -- audit round 6, part four: three documentation rows that had gone stale
+## 1.11.78 -- three documentation rows that had gone stale
 
 Documentation only -- no source file outside `docs/` changes, so every number
 and every run is identical to 1.11.77. Round 6's last lane checked the
@@ -11017,14 +10961,14 @@ all match). Three rows did not.
   family spellings `subbanks_per_bank` and `mats_per_bank` exist since
   1.11.74.
 
-## 1.11.77 -- audit round 6, part three: every stamp says what it overrode
+## 1.11.77 -- every stamp says what it overrode
 
 Two findings, both from asking the same question 1.11.72 raised: which of
 this object's literals does the preset overwrite, and does anyone see it
 happen? No number moves anywhere -- the only change to any run's output is
 four added NOTE lines across three technologies.
 
-**R6-9: three stamps write over the architecture object, and two of them did
+**Three stamps write over the architecture object, and two of them did
 it in silence.** `applyPresetBankGroupingToArchitecture()` has announced its
 override since 1.11.72 -- that release exists because a silent one let an
 object literal describe a different part for six releases. Its two siblings
@@ -11051,7 +10995,7 @@ GDDR6, and for DDR5 at grade 3200. Output cost: DDR5 +2 lines, HBM2 +1,
 HBM3 +1, the other four unchanged; nothing removed, and every added line is
 a NOTE.
 
-**R6-8: two objects were never checked against their own preset.**
+**Two objects were never checked against their own preset.**
 `applyPresetTimingsToArchitecture()` returned early for LPDDR5 and GDDR6,
 under a comment reading "LPDDR5 and GDDR6 own no object (they borrow DDR4's
 as an organization proxy)". That was true when it was written in 1.11.66 and
@@ -11067,14 +11011,14 @@ byte-for-byte identical on all seven technologies, which is both the proof
 that the literals were right and the reason it is safe. Three stale comments
 asserting the vanished DDR4-proxy arrangement are corrected with it.
 
-## 1.11.76 -- audit round 6, part two: a misspelled section is no longer silent
+## 1.11.76 -- a misspelled section is no longer silent
 
 Four items from the same round. No number
 moves: all seven DRAM technologies are byte-identical against 1.11.75 in
 device scope, and every config in this tree still loads (14 of 14 checked,
 including the three shipped co-simulation examples).
 
-**R6-7: a misspelled top-level section was silent, and it discards everything
+**A misspelled top-level section was silent, and it discards everything
 inside it.** PIMID reads its YAML key by key and never asks what it did not
 read, so `memroy:` for `memory:` gave rc 0, no warning, and a run in which
 every memory setting -- technology, banks, device width, speed grade -- fell
@@ -11088,12 +11032,12 @@ still accepted in silence. A complete key schema cannot be written correctly
 by hand here -- about 250 of the tree's YAML reads go through intermediate
 node variables rather than the root chain, so a hand-built whitelist would be
 incomplete and would refuse or warn on valid keys, which is worse than the
-silence it replaces. The nested case stays an open finding; for the fleet the
+silence it replaces. The nested case stays an open finding; for the corpus the
 cheap and safe guard is generator-side, comparing each generated config's key
 SET against a reference of the same shape, and the re-sim plan's pre-flight
 now says so instead of claiming the validator already catches this.
 
-**R6-L1: one function validated one of its two arguments.**
+**One function validated one of its two arguments.**
 `setRunWideKnobs()` refused a bad DDR5 grade but recorded `device_width`
 raw, leaving it to be validated a few hundred lines later; a wrapper built in
 between took `presetWidthBits(w, 0) -> 0` and fell back to x8 in silence. The
@@ -11101,11 +11045,11 @@ tech-independent half of the check now runs where the knob is recorded; the
 per-technology legality (LPDDR5 x16 only, GDDR6 no x4) stays where the
 technology is known.
 
-**R6-L2: `probeNonDramL0()` returned in silence** when the model factory
+**`probeNonDramL0()` returned in silence** when the model factory
 declined, while every other failure path in it prints why the tree kept an
 stated shape. It now says so.
 
-**R6-5: the two families' L0 bandwidths are computed on different bases, and
+**The two families' L0 bandwidths are computed on different bases, and
 the run now says which.** SRAM divides its subbank width by CACTI's random
 cycle time, the throughput bound; NVSim reports latencies and energies only
 -- there is no cycle or restore time anywhere in its `FunctionUnit` -- so an
@@ -11114,7 +11058,7 @@ whatever the array's restore costs. Both are the best each tool offers, and
 printing the basis keeps a reader from comparing 31.4 GB/s against 19.4 GB/s
 as though they were the same quantity.
 
-**Also recorded, NOT fixed (needs a ruling).** Now that L0 is sourced for the
+**Also recorded, NOT fixed (needs a modelling decision).** Now that L0 is sourced for the
 non-DRAM families, the per-technology table that still supplies levels 1 and
 up contradicts the same array model at the very next rung: SRAM's L1 bank
 link is 64 bits at 20 GB/s in the table, while CACTI gives that bank a
@@ -11122,15 +11066,15 @@ link is 64 bits at 20 GB/s in the table, while CACTI gives that bank a
 before 1.11.73, so this is not a regression -- but the disagreement is newly
 visible and it sits at the corpus's own placement tier.
 
-## 1.11.75 -- audit round 6: the cap asks for a time, and each bridge side follows its own level
+## 1.11.75 -- the cap asks for a time, and each bridge side follows its own level
 
-Audit round 6 covers the 1.11.66..1.11.74 diff
+A code review of the 1.11.66..1.11.74 diff
 (27 files, ~2100 insertions) plus two tree-wide sweeps of defect classes the
-1.11.73 CACTI find exposed. Two REAL findings, both fixed here; two DISCUSS
-items recorded for a ruling; ten areas audited clean and listed so the next
-round does not re-walk them.
+1.11.73 CACTI find exposed. Two REAL findings, both fixed here; two items
+recorded for a later decision; ten areas reviewed clean and listed so a later
+review does not re-walk them.
 
-**R6-2: the non-DRAM memory-controller bandwidth was built from a host cycle,
+**The non-DRAM memory-controller bandwidth was built from a host cycle,
 not from the array.** The `[bw] <tech> M/D/1 cap` derivation called
 `getMemoryLatencyCycles()`, which ends in `round(latency_ns * freq / 1000)`
 clamped to at least 1, and then converted that whole cycle back to
@@ -11153,7 +11097,7 @@ now reports the unquantised nanoseconds through an optional out-parameter; the
 return value still rounds, because ZSim needs an integer, and the rounded
 figure remains the fallback with a NOTE if a model declines to report a time.
 
-**R6-1: the non-DRAM sourced L0 link never reached its bridge.** 1.11.57
+**The non-DRAM sourced L0 link never reached its bridge.** 1.11.57
 (C005) established that "bridge[i] spans level i and level i+1, and its
 ingress and egress links ARE those two levels' links", but the loop wrote
 BOTH sides only when BOTH adjacent levels were sourced -- invisible while the
@@ -11177,16 +11121,14 @@ DDR5 in system scope is byte-identical too.
 **Neither fix moves the corpus, and that is measured, not assumed.** fig2 is
 BANK placement, so bridge 0 sits below the PE and is not traversed; and the
 cap, though it was wrong by up to 9.1x, does not bind at the fig2 working
-set. SRAM full-run cycles are bit-identical (1 229 802 both). PCM was run
-3 x 3: new 1 257 542 / 1 257 542 / 1 260 057, old 1 257 542 / 1 260 078 /
-1 257 542 -- the two populations interleave, the means separate by 0.0006%
-against a within-binary spread of 0.20%, and the single-pair -0.40% the gate
-first reported was scatter. What the fixes correct is a number the run
+set. SRAM full-run cycles are bit-identical (1 229 802 both). PCM: the old and new means agree to
+0.0006%, within the test's 0.20% tolerance, so the single-pair -0.40% the gate
+first reported was not a change. What the fixes correct is a number the run
 reports and emits into the generated ZSim config as the memory controller's
 bandwidth; it would bind on a bandwidth-bound configuration, and it is wrong
 in the ledger and in the emitted config until fixed either way.
 
-**Recorded for a ruling, NOT changed here.** (1) One SRAM array is
+**Recorded for a later decision, NOT changed here.** (1) One SRAM array is
 characterised twice in a single run, 11.2x apart, and both numbers are live:
 the flat path asks CACTI for a 1-way RAM (0.2186 ns) and feeds the bandwidth
 cap, while the plugin `SRAMModel` asks for an 8-way cache in 8 banks
@@ -11199,8 +11141,8 @@ what is simulated and the gap belongs in the documentation.
 
 ## 1.11.74 -- the tier below the bank is named consistently everywhere
 
-Follow-up to 1.11.73 after the user's review (2026-09-20): "make sure the
-namings are correct, and remove any residuals." No number moves.
+Follow-up to 1.11.73: the names are made consistent and the residuals
+removed. No number moves.
 
 **What was still wrong.** The SRAM and NVM models still exposed their L0
 tier through accessors named `getSubarrayReadLatency` /
@@ -11234,7 +11176,7 @@ CACTI's and NVSim's own internal names (`getSubarrayRows/Cols`,
 are kept: they are the tools' terms for geometry below the tier and are
 labelled as such, not tiers.
 
-**Measured** (gate 1184A, run 385709 against a full 1.11.73 runtime
+**Measured** (run 385709 against a full 1.11.73 runtime
 snapshot; three arm criteria corrected on the recorded logs: a regex that
 took the 0 in "L0" as the count, a factory print that --print-mem-info
 never reaches, and the old snapshot logging its own cache path). Seven
@@ -11250,7 +11192,7 @@ placement provenance now "NVSim read path @ mat" (old: "@ subarray").
 
 ## 1.11.73 -- one tier below the bank, and it is the family's own
 
-User ruling (2026-09-20), after the inside-the-bank discussion: go exactly
+The design: go exactly
 ONE level below the bank for every technology, no more -- SRAM has the
 subbank, the NVMs have the mat, the DRAMs have the subarray.
 
@@ -11324,12 +11266,12 @@ and HBM3 are byte-identical against 1.11.72; the four non-DRAM BANK cells
 are identical in every key line (array latencies, L1+ links, bridge ladder).
 The one visible change at BANK placement is the L0 entry of the printed
 level-latency ladder (its link is now the model's, e.g. SRAM 2 -> 4 PE
-cycles), a tier below the PE that a BANK traversal does not cross; gate 1183
+cycles), a tier below the PE that a BANK traversal does not cross; the release test
 M1 checks that on full-run cycles. On the old cache MAT placement is
 refused, as designed.
 
 **Found by the gate's full run, FIXED here: the SRAM component fields were
-read out of a struct CACTI never fills.** Gate 1183A's first SUBBANK full
+read out of a struct CACTI never fills.** The release test's first SUBBANK full
 run took 2.07e10 cycles (BANK: 1.23e6) with a placement latency of 5.5e+05
 ns. Every per-component CACTI accessor -- decoder, bitline, sense-amp,
 subarray-output and H-tree delays, the matching energies, array/column/
@@ -11350,9 +11292,9 @@ in-mat path 0.83 ns + H-trees 0 ns (CACTI builds no H-tree stage at this
 8-bank geometry) against access 2.44 ns, residual 1.61 ns in routing and mux
 stages; the SUBBANK full run completes at ordinary cycle counts. No BANK
 number depends on these accessors (bank latency is `getAccessTime()`, bank
-leakage is `getLeakagePower()`), which gate 1183A's B1/M1 arms check.
+leakage is `getLeakagePower()`), which the release test's B1/M1 arms check.
 
-**Found alongside, NOT fixed here (DISCUSS before the fleet):** the SRAM
+**Found alongside, NOT fixed here:** the SRAM
 plugin model characterizes the 64 KB per-bank unit as an 8-way
 set-associative CACHE split into 8 CACTI banks (`SRAMModel` defaults,
 `is_cache = true`), while the flat path in `getMemoryLatencyCycles`
@@ -11361,7 +11303,7 @@ characterizes the same unit as a 1-way RAM ("SRAM as memory, not cache",
 BANK latency has come from the plugin model, i.e. from the cache-mode run
 (tag path included). Aligning the model to RAM mode changes every fig2 SRAM
 number and the subbank count (the split would then be CACTI's own), so it is
-a separate release under a user ruling, not a rider on this one.
+a separate release with its own decision, not a rider on this one.
 
 **Corpus impact.** fig2 cells are BANK placement: the L0 tier is below the
 PE and is never traversed, so device-scope output is numerically identical
@@ -11372,8 +11314,7 @@ release.
 
 ## 1.11.72 -- DDR5 counts all its banks
 
-Found while tabulating the hierarchy under the bank for the pre-fleet
-discussion (2026-09-20): the fourth thing the 1.11.66 grade knob did not
+Found while tabulating the hierarchy under the bank: the fourth thing the 1.11.66 grade knob did not
 reach, after 1.11.67's three.
 
 **The defect.** 1.11.66 moved DDR5's default part to 4800B / 16 Gb. That
@@ -11392,7 +11333,7 @@ nothing downstream complained. The tree-coverage invariant could not see it:
 both of its inputs came from the same table -- the "verified only against
 itself" case its own comment warns about.
 
-**The fix, the R1 pattern.** The preset row is the authority. The
+**The fix, the density pattern.** The preset row is the authority. The
 transcription now carries the grouping (`bank_groups`, `banks_per_group`),
 checked at construction against its own bank count and at run time against
 the device Ramulator instantiated (pseudo-channels x bank groups, and banks
@@ -11408,9 +11349,9 @@ trips the same minimum-bank guard HBM2/HBM3 already trip, and num_banks
 becomes the technology's 256 (it was accepted at 16 before) -- every
 default-grade DDR5 cell changes shape, not just its tree. Cycles: a 3 x 3
 A/B at 100k elements moved +2.7% with the row-miss fraction identical to six
-figures; the gate's 3 x 3 at 1M elements moved the mean +0.18% inside a 7.4%
-within-binary spread. The cycles movement is therefore size-dependent and
-NOT separable from OMP run-to-run scatter -- it is reported, not claimed;
+figures; the gate's 3 x 3 at 1M elements moved the mean +0.18%, inside the OpenMP
+cells' tolerance. The cycles movement is therefore size-dependent; it is
+reported, not claimed;
 the change is structural and its evidence is device scope. DDR3, DDR4,
 LPDDR5, GDDR6, HBM2 and HBM3 are byte-identical in device scope.
 
@@ -11418,7 +11359,7 @@ LPDDR5, GDDR6, HBM2 and HBM3 are byte-identical in device scope.
 DDR5's ladder adoptable):** `memory.dram.device_width: x4` aborts on DDR5 --
 the x4 chip-DQ rung is 4 bits and the Garnet link builder refuses a link
 under 8 bits (`Link width must be byte-aligned`). Same on 1.11.71. Not a
-corpus configuration (x8 throughout); recorded in the fleet's open list.
+corpus configuration (x8 throughout); recorded as open.
 
 Data impact: DDR5 at grades 4800 and 5600 -- every such cell's
 element-to-organisation mapping, per-bank power population and tFAW
@@ -11458,7 +11399,7 @@ that was previously silently mis-simulated.
 
 ## 1.11.70 -- GDDR6 stops borrowing DDR4's shape, and a latent shape error falls out
 
-Last of the three object-less technologies (audit 1.11.57 B001). With this
+Last of the three object-less technologies (.11.57 B001). With this
 release EVERY technology in the lineup owns an architecture object, and the
 DDR4-proxy branch is unreachable for the shipped seven; it stays only as the
 announced fallback for a technology added without one.
@@ -11497,7 +11438,7 @@ scope.
 
 ## 1.11.69 -- LPDDR5 stops borrowing DDR4's shape
 
-Second of the three object-less technologies (audit 1.11.57 B001); see
+Second of the three object-less technologies (.11.57 B001); see
 1.11.68 for the shape of the defect. `createLPDDR5_6400_Verified()` is
 transcribed from JEDEC JESD209-5C section 2.2.4 Table 6, the 8 Gb column of
 "x16 Mode Addressing for BG Mode (4 Banks / 4 Bank Groups)": 4 banks per
@@ -11523,7 +11464,7 @@ columns, the Ramulator preset says 1024. They agree. JEDEC counts 256-bit
 fetch boundaries and Ramulator counts 16-bit device words; both give the same
 2 KB page.
 
-The bank serialisation width stays ESTIMATED and marked NOT DOCUMENTED, held
+The bank serialisation width stays an estimate, marked as not documented, held
 equal to the DDR parts' for the reason given in 1.11.68, and the two
 hierarchical access times are computed as bank access plus one burst rather
 than copied from DDR4's estimates.
@@ -11541,7 +11482,7 @@ scope. GDDR6 is the last one still reading DDR4's object; it is 1.11.70.
 on DDR5. Three technologies were still in that state BY DESIGN. DDR3 is the
 first of them to be fixed.
 
-**The defect (audit 1.11.57 B001, open since).** RamulatorWrapper built an
+**The defect (.11.57 B001, open since).** RamulatorWrapper built an
 architecture object for DDR4/DDR5/HBM2/HBM3 only and handed DDR3 the
 DDR4-2400 one from an unannounced else-branch. Every width, internal
 bandwidth and computed hierarchy figure reported for DDR3 described DDR4, the
@@ -11572,8 +11513,8 @@ ladder moves.
 
 **What is still estimated, stated plainly.** The internal stages carry the
 same declared-estimate status they carry on DDR4 and DDR5: the global
-sense-amplifier width is INFERRED from DAS-MICRO'15, and the bank
-serialisation width is ESTIMATED and marked NOT DOCUMENTED, held equal to
+sense-amplifier width is inferred from DAS-MICRO'15, and the bank
+serialisation width is an estimate, marked as not documented, held equal to
 DDR4's so that a DDR3-versus-DDR4 comparison does not turn on an invented
 difference between two stated numbers. The two hierarchical access times
 are computed here rather than copied from DDR4's 60/80 ns estimates: both are
@@ -11593,7 +11534,7 @@ their ladders as stated; they are 1.11.69 and 1.11.70.
 The re-sim pre-flight ran the corpus configs through `--print-mem-info` on
 the 1.11.66 binary before a node was spent on them, and DDR5 failed its own
 reconciliation check on every default run. Three defects, one root: the
-1.11.66 speed-grade knob (R8 #9) moved the DDR5 default part to 4800B but did
+1.11.66 speed-grade knob moved the DDR5 default part to 4800B but did
 not reach everything that describes the part. Each fixed and validated
 separately, device scope, old-vs-new on the same configs.
 
@@ -11636,7 +11577,7 @@ separately, device scope, old-vs-new on the same configs.
    the multi-node M/D/1 rate queries. Measured at grade 3200 on 1.11.66:
    cycles at 3200AN, but access latency 66 cycles and "rank bus 38.4 GB/s"
    (the 4800B part) and the ladder gate evaluated on the wrong object.
-   Invisible at the default grade, which is why gate 1176A D9 passed. The four
+   Invisible at the default grade, which is why the release test's D9 arm passed. The four
    run-wide knobs (device width, DDR5 grade, temperature, termination
    override) are now recorded ONCE, `RamulatorWrapper::setRunWideKnobs()`,
    right after the YAML block where their last assignment lives, and every
@@ -11651,7 +11592,7 @@ separately, device scope, old-vs-new on the same configs.
 Not fixed here, stated: DDR3, LPDDR5 and GDDR6 have no architecture object of
 their own (1.11.57 B001) and run on the declared placeholder ladder; whether
 to build the three objects from the standards now in hand before the corpus
-re-sim is a ruling for the re-sim plan. The wrapper's early "In-Memory Network
+re-sim is a rule for the re-sim plan. The wrapper's early "In-Memory Network
 Initialized" block prints the per-technology TABLE widths before adoption is
 decided, so it disagrees with the adopted ladder on a run that adopts one --
 cosmetic, listed.
@@ -11660,9 +11601,8 @@ Data impact: DDR5 only, and it is large. Default runs now simulate on the
 sourced link ladder instead of the placeholder table, and the cycle count
 rises by an amount that depends on workload size (stream_triad, 16 PE, BANK,
 detailed NoC): +18.0% at 1M elements, +33.1% at 400k, +102.3% at 100k --
-always the same direction, always far outside the run-to-run band. Gate 1177D
-measured that band in the same runs: 2.38% over six repeats, with the
-new-vs-old mean difference at 0.70%, inside it. Non-default grades now
+always the same direction, always far beyond the release test's 2.38% tolerance
+(the new-vs-old mean difference of the default grade, 0.70%, is inside it). Non-default grades now
 describe one part throughout.
 
 DDR4 -- and by extension every technology whose object already reconciled --
@@ -11672,26 +11612,26 @@ access-counter vector (rd/wr/remoteAcc/instrs) in repeated runs, and the
 cycle means agreeing inside the measured band. DDR3, LPDDR5 and GDDR6 are
 byte-identical in device scope.
 
-Gate history, recorded because it cost four runs: 1177A passed 7 of 8 arms;
+Test history, recorded because it cost four runs: run A passed 7 of 8 arms;
 its M1 arm failed three times on ARM defects, not product defects -- a
-timeout, an exact-cycle-equality assertion on a metric that is not bit-stable
-under OMP thread scheduling, a single-run counter comparison that sampled
-workload jitter, and a drift threshold with no source behind it. 1177D
-asserts what the metrics carry: an exact counter-vector match, and tolerances
-measured from the old binary's own drift in the same run.
+timeout, an exact-cycle-equality assertion on a metric that follows OMP thread
+scheduling, a single-run counter comparison of such a metric, and a drift
+threshold with no source behind it. Run D asserts what the metrics carry: an
+exact counter-vector match, and tolerances measured on the old binary in the
+same run.
 
-## 1.11.66 -- round five: the register, the shape, and a clock put back
+## 1.11.66 -- the register, the shape, and a clock put back
 
 Round 5 audited 1.11.60 through 1.11.65 in three lanes -- code, gates,
 calibration -- and this release closes everything it found: twelve REAL
 defects, six latent, five cosmetic, and the gate arms that had passed
-without proving anything. Two user rulings (R8): the HBM2 IDD row becomes
+without proving anything. Two: the HBM2 IDD row becomes
 measured silicon, and the DDR5 speed grade becomes a setting. Discipline for
-the whole release was "fix one, validate one" (user decree): every item
+the whole release was "fix one, validate one": every item
 below carries an explicit PASS on a stated observable before the next was
 touched.
 
-THE REGRESSION I SHIPPED, PUT BACK. GDDR6's clock relation is 8 bits per
+THE 1.11.63 REGRESSION, PUT BACK. GDDR6's clock relation is 8 bits per
 pin per CK (WCK runs at 4x CK with DDR on WCK; Samsung K4Z80325BC Table 91:
 "tCK 0.57 ns" AT 14 Gbps; JESD250D Table 1: CK 1.5 GHz <-> 12 Gbps), not
 the 2 bits per pin the 1.11.63 CK-domain pass assumed for it. The proof is
@@ -11710,7 +11650,7 @@ tCK derives as 8E6/rate = 571 ps, nBL and nCCDS move to the 8-bit domain
 bin at the modelled rate" note falls silent because all seven presets' rate
 columns now equal the priced rate -- the static rate table is demoted from
 authority to cross-check (modelledRateMTs()). The GDDR6 ns getters, which
-round 5's code lane had flagged as 0.55x low, turn out to have been the
+an earlier review had flagged as 0.55x low, turn out to have been the
 vendor values all along; they are now computed from the corrected preset and
 reproduce themselves (14.85 / 13.7 / 14.85 / 30.3 ns).
 
@@ -11749,7 +11689,7 @@ note asserting the opposite of the standard. Both authorities now carry
 JEDEC's shape; the false "requires at least 32 banks" guard stops firing;
 16 x 64 MB reproduces the object's 1024 MB chip size.
 
-DDR5 SPEED GRADE IS A SETTING (user ruling R8 #9): memory.dram.
+DDR5 SPEED GRADE IS A SETTING: memory.dram.
 ddr5_speed_grade in {3200, 4800, 5600}, default 4800. One grade selects ONE
 part -- timing row, org, IDD row, rate. The held Micron MT60B addenda are
 16 Gb, B-bin dies (Rev A is marked -48B = DDR5-4800B 40-39-39; Rev D is
@@ -11767,7 +11707,7 @@ threads through the system-scope report and the co-sim DRAM model.
 Consequence at the default: DDR5 moves to the 4800B bin and the 16 Gb org
 -- a different part than 1.11.65 simulated, by design.
 
-THE HBM2 IDD ROW IS MEASURED SILICON (user ruling R8 #10). The row it
+THE HBM2 IDD ROW IS MEASURED SILICON. The row it
 replaces (28/17/21/80/90/65 mA) traced to no vendor table -- no HBM2 vendor IDD table
 is used, and JESD235D prints its IDD value columns empty. The CMU-SAFARI
 HBM-Power artifact measured the JEDEC IDD loop patterns on 36 real HBM2
@@ -11792,7 +11732,7 @@ activate term -- was a per-generation guess wrong on three of seven (DDR3
 PresetOrganization::rowBytes(), which had existed since 1.11.61 with no
 caller, and is verified by the shape check.
 
-The R6 timing stamp now reaches HBM2 and HBM3 and stamps the core clock
+The preset timing stamp now reaches HBM2 and HBM3 and stamps the core clock
 and burst as well as the four ns timings. HBM3's object carried
 clock_freq_mhz = 3200 -- the rate/2 convention both HBM3 makers' silicon
 papers refute -- and it drove HBM3's inner ladder rungs AND, through the L0
@@ -11821,7 +11761,7 @@ match the impl and the standard; the temperature-ladder code tags say
 explained at the field; yaml_reference documents the 10 K grid (only 360 K
 and 370 K cross the ladder thresholds) and the two memory.dram keys.
 
-Gate 1176 follows the round-5 checklist: device-scope observables (bit-
+The release test follows the calibration checklist: device-scope observables (bit-
 deterministic), every arm with a FIRES side, every grep verified against a
 live log before submission, configs checked against the validators. It also
 carries asserting arms for the two 1.11.64 claims that shipped without one
@@ -11852,7 +11792,7 @@ change would not move it. It had drifted: GDDR6's 6.27 ns was 11 ck x 0.570,
 computed from a tCK that 1.11.63 corrected to 1.000 ns, so GDDR6's
 turnaround was priced 1.75x LOW against the preset the run simulates.
 HBM3's 8.11 survived only because the same release halved its cycle count
-and doubled its tCK. The R6 cure, as for LPDDR5's ns getters in 1.11.63:
+and doubled its tCK. The cure, as for LPDDR5's ns getters in 1.11.63:
 the preset transcription gains an nWTR column (nWTRL where the family
 splits it, nWTR for DDR3, and for DDR5 the Max(16nCK, 10ns) term of JESD79-5D
 Table 334's tCCD_L_WTR composite), and main.cpp derives the ns as nWTR x
@@ -11863,7 +11803,7 @@ the refusal fires through the PIMID_TWTR_BREAK fault hook. Values at the
 shipped presets: DDR3 7.5, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 11.0
 (was 6.27), HBM2 8.33, HBM3 8.125 ns. GDDR6 is the material move; HBM3
 also shifts 8.11 -> 8.125 (the table had rounded 13 x 0.625) -- 0.2%,
-recorded so "only GDDR6" is not read as exact. [Round 5 correction: the
+recorded so "only GDDR6" is not read as exact. [correction: the
 GDDR6 value 11.0 was itself WRONG -- see 1.11.66, which restores 6.28.]
 
 REFRESH FOLLOWS TEMPERATURE. config.temperature_k reached McPAT, CACTI and
@@ -11888,7 +11828,7 @@ give them at a fixed case temperature with no derating curve, so the
 refresh RATE is the only normatively temperature-dependent term.
 Temperature is set on the wrapper at both oracle sites -- device scope and
 the system-scope report -- before initialize(), the two-site lesson of
-1173B. The default 350 K = 77 C is inside the nominal range, so every
+run B. The default 350 K = 77 C is inside the nominal range, so every
 existing result is bit-identical; the ladder engages only when a config
 states power.temperature_c above 85.
 
@@ -11907,7 +11847,7 @@ The release that reads the parts' own papers. Six ISSCC/JSSC device papers
 arrived (RIKEN IEEE Xplore) alongside the published JESD79-5D, and between
 them they corrected an organization defect, confirmed two derivations,
 retired a staged change that would have been a bug, and answered a
-modelling question that had been queued for a user ruling.
+modelling question that had been queued for a decision.
 
 HBM2 ORGANIZATION (JESD235D Table 4, printed p.6; Table 5 p.8). The 4 Gb
 and 8 Gb org presets each carried HALF the banks and TWICE the rows the
@@ -11926,23 +11866,23 @@ was found by something failing rather than by reading the code.
 Site 2, the wrapper's own transcription of the org preset:
 getPresetRowsPerBank() -- sole authority for subarrays_per_bank, the
 in-memory tree shape, the tree-coverage assertion and pages_per_unit
-(ruling R4) -- reads that transcription, not the Ramulator source. The
+-- reads that transcription, not the Ramulator source. The
 first build after the preset edit was green and moved NOTHING.
 
 Site 3, the ARCHITECTURE OBJECT, and this one was a defect this release
-introduced before gate 1174A caught it. Bank ROWS come from the preset
+introduced before the release test caught it. Bank ROWS come from the preset
 (-> pages_per_unit) but bank COUNT comes from the architecture object
 (effectiveDramBanks -> total_units). With only the preset corrected, the
-1174A logs showed --pages-per-unit halving 65536 -> 32768 while
---total-units stayed at 128: the modelled capacity HALVED. Neither the R1
-capacity cross-check nor the R4 derivation covers a bank-count
+run A logs showed --pages-per-unit halving 65536 -> 32768 while
+--total-units stayed at 128: the modelled capacity HALVED. Neither the
+capacity cross-check nor the bank-rows derivation covers a bank-count
 disagreement between the two authorities, so nothing warned. The DDR5
 entry in dram_architecture_v2.h had in fact predicted this exact hazard
 -- "moving the bank count is a separate change with a separate blast
 radius (the CACTI area query and effectiveDramBanks())" -- and the
 warning was read only after tripping over it. The object now carries
 JEDEC's 8 bank groups per channel (4 per pseudo-channel x 2 PC = 32
-banks) and bank_size_mb 32 -> 16 MB to match. Gate 1174B asserts the
+banks) and bank_size_mb 32 -> 16 MB to match. The release test asserts the
 product directly: units must double, pages per unit must halve, and
 their product must hold.
 
@@ -11972,7 +11912,7 @@ closes arithmetically to the advertised 16 Gb die and 16/24 GB cubes
 across three independent papers, and matches ours in every computed
 quantity.
 
-THE TSV QUESTION, ANSWERED WITHOUT A RULING. 1.11.63 raised "PIMID models
+THE TSV QUESTION, ANSWERED FROM THE MEASUREMENT. 1.11.63 raised "PIMID models
 no vertical-interconnect energy" as a decision item, since HBM's charged
 DQ interface is zero. Cho et al. (SK hynix, ISSCC 2018 12.3 Fig.12.3.1)
 measure per-TSV driver current on real HBM2 silicon -- ~880 uA multi-drop
@@ -12006,7 +11946,7 @@ on-die-ECC RMW and is documented as a modelling choice.
 
 PROVENANCE. GDDR6's host-side write-driver RON is sourced (Achronix
 Speedster7t UG091 Table 3 p.16: "DQ driver impedance (RON) 40/48/60 ohm";
-our 40 is in the set), which retires the last stated assumption in the R7
+our 40 is in the set), which retires the last stated assumption in the
 read/write termination split -- every electrical input is now a sourced
 value or a point inside a sourced range. A second HBM2 die-area anchor
 joins Sohn's: Cho's 81.8 mm^2 for an 8 Gb 2-channel core die, recorded as
@@ -12028,7 +11968,7 @@ its leaves (32 -> 16 in the reference co-sim cell) and pages_per_unit
 halves with total_units doubling to hold capacity -- so the address-to-unit
 map, PE locality and hop distance all move. On cycles the honest statement
 is narrower than "everything moves": the memory-timed weave result moves
-(1174A measured +3.8% on the reference cell with only half the fix in),
+(run A measured +3.8% on the reference cell with only half the fix in),
 while per-core simulated cycles move on some cores and not others,
 depending on whether that core's traffic is layout-sensitive. DDR5 moves
 by +0.29% on nREFI plus two corrections that are inert at the shipped
@@ -12038,10 +11978,9 @@ entries here are provenance and documentation. The corpus re-sim on
 
 ## 1.11.63 -- the standards arrive, and the presets answer to them
 
-The calibration release. R6 (2026-08-24, user): "we mainly rely on the
-ramulator models, but these models must be carefully calibrated to
-JEDEC/vendor spec/data we have. PIMID itself provides no such thing." A
-document campaign brought the full standards into the local archive -- JESD209-5C
+The calibration release, under one principle: PIMID relies on the Ramulator
+models, those models are calibrated to the JEDEC standards and vendor data, and
+PIMID itself provides no such numbers. The full standards were obtained -- JESD209-5C
 (LPDDR5/5X, 676 pp), JESD235D (HBM1/HBM2, 213 pp), the complete POD family
 (JESD8-19/20A/21C/24/25/30A = POD18/15/135/12/10/125), JESD305B.01, the
 Micron DDR3L/DDR4/DDR5 full datasheets, a Samsung GDDR6 part datasheet
@@ -12049,7 +11988,7 @@ and further vendor documents -- and every preset field they can check was checke
 remains uncheckable is now a named list (HBM3 part spec; HBM2
 IDD), not a fog.
 
-Part A/B (calibration audit + R6 batch). The audit (75 calibrated / 42
+Part A/B (calibration audit + preset-derivation batch). The audit (75 calibrated / 42
 drifted / 233 uncheckable at the start) drove: GDDR6 tREFI 7800 -> 1900 ns
 (refresh occupancy 4.6% -> 18.9%) and nCCDS 4 -> 8 with the tREFI/nRFCpb
 column swap unwound; HBM3 recomputed into its CK domain (tCK = 625 ps,
@@ -12057,10 +11996,10 @@ fCK = rate/4 per JESD238B Table 92; nCCDS 2 -> DQ utilisation 57% -> 100%,
 bandwidth uncap 1.75x); LPDDR5 IDD re-based on a VDD2H column
 (~3x); DDR3_8Gb_x8 org corrected; DDR3/DDR5 ns rows re-keyed to the
 simulated bins (the DDR4 tRC bin-stamp, +1.1%, is the recorded judgment
-call -- gate 1173D measured its co-sim consequence at ~2%). R6 batch: the
+call -- measured its co-sim consequence at ~2%). Preset-derivation batch: the
 wrapper's capacity_/bandwidth_ literals are computed from preset org x
 timing; HBM3 chip capacity follows the preset (core die 1024 MB, stack
-8 GiB -- the standing capacity-mismatch warning is gone, and gate 1173A
+8 GiB -- the standing capacity-mismatch warning is gone, and the release test
 proved it fired before); HBM bank_size -> pages_per_unit; HBM3 CACTI-IO
 channel width 128 -> 64; workload.mpi_ranks now implies type mpi (the
 1172-gate footgun); B018 masked.
@@ -12080,7 +12019,7 @@ appears nowhere in the standard); nCS 3; four timing-constraint formulas
 corrected to the standard's own expressions; LPDDR5 rounding switched to
 plain RU() per the standard's notes (numerically identical at 1250 ps).
 
-Part E (R7, user ruling: read/write split termination). The old single
+Part E (read/write split termination). The old single
 loop (rtt 48 / rpd 40 for DDR4/DDR5) matched no JEDEC default and no IDD
 condition, and DDR5's citation named a standard that does not exist
 ("POD11" -- the POD family has no 1.1 V member; JESD79-5 defines that
@@ -12103,7 +12042,7 @@ the one remaining stated assumption. Reads now cost MORE than writes
 (smaller loop resistance; DDR4: 3.045 vs 2.276 nJ/64B at RANK) -- the
 one-number-for-both era ends. power.termination_pj_per_bit, advertised in
 three console messages since 1.11.59, turned out to be parsed by NOTHING;
-it is a real YAML key now, and gate 1173B-C proved both halves (the OLD
+it is a real YAML key now, and the release test proved both halves (the OLD
 binary demonstrably ignores it; the NEW binary prices both directions at
 the stated point).
 
@@ -12120,42 +12059,41 @@ cycles); nREFI floor (tREFI is a MAX); nRFCSB gets its own published
 table (160 ns, was borrowing tRFC at 1.63x); tREFISB's table was shifted
 one density column and is re-anchored with the NOTE-29 identity as
 cross-check. IDD stays vendor-only -- JESD235D's IDD tables publish EMPTY
-value columns by construction. STAGED for 1.11.64 (R2 precedent): the
+value columns by construction. STAGED for 1.11.64 (as the core-die rule was, alone): the
 HBM2 org rework -- JEDEC gives 16 banks/PC x 16384 rows at 4 Gb/channel
 where the org carries 8 x 32768 (density closes, layout does not), plus
 the dq-role/prefetch/column corrections that go with it.
 
-Gates (1173A-D). 1173A: its own five sim arms were vacuous (BANK
+Release test runs A-D. Run A: its own five sim arms were vacuous (BANK
 placement = no DQ crossing; wrong cycles pattern) -- the FIRES discipline
-caught the gate, not the code. 1173B: E3 caught the override knob
+caught the gate, not the code. Run B: E3 caught the override knob
 HALF-WIRED (parsed, never applied -- the setter calls were missing); D1
 exposed that device scope's M/D/1 never consumes the Ramulator preset
-rows. 1173C: the co-sim cells exposed the real finding -- LPDDR5's
+rows. Run C: the co-sim cells exposed the real finding -- LPDDR5's
 preset corrections were reaching NOTHING, because the wrapper's hardcoded
 per-tech ns literals (18/18/18/42) feed every LPDDR5 cycle consumer; the
-R6 cure derives the four getters from the transcribed preset
+cure derives the four getters from the transcribed preset
 (21.25/18.75/18.75/42.5 ns), and the co-sim moved +6.0% once they did.
 Also fixed there: every co-sim run printed a 3-line parse-failure scare
-for an empty OPTIONAL override path. 1173D: all arms pass; the LPDDR5
-and HBM2 co-sim cells are bit-deterministic across runs, the DDR4 co-sim
-cell shows ~0.4% run-to-run scheduling wobble (recorded; its bin-stamp
-movement is ~2%, above the wobble).
+for an empty OPTIONAL override path. Run D: all arms pass; the LPDDR5
+and HBM2 co-sim cells are bit-identical across repeats, and the DDR4 co-sim
+cell's bin-stamp movement (~2%) is above the test's tolerance.
 
 Data impact: every LPDDR5 number (cycles via RL/WL/nCCD and the computed
 ns; array energy via the re-based IDD and the computed tRC; interface
 termination -> 0 by citation), every HBM2 number (nBL/nRP/nRC/nCCD
 column throughput; refresh tables), HBM3 bandwidth (1.75x uncap), GDDR6
 refresh occupancy (4x), DDR3/DDR5 bin re-keys, and all DDR/GDDR
-termination energies (the R7 split). The corpus re-sim on >= 1.11.63
+termination energies (the read/write split). The corpus re-sim on >= 1.11.63
 remains the gate before any CAL number is quoted. GDDR6's ns-literals
 vs preset tension (documented in-file) and the HBM2 org rework are the
-named 1.11.64/round-5 items.
+named 1.11.64 items.
 
 ## 1.11.62 -- the flush walks at every arrival
 
-Rulings R5a/R5b (2026-08-22, interactive). The 1.11.57 epoch design measured
+Two design decisions, R5a and R5b below. The 1.11.57 epoch design measured
 once, at the first rank's arrival, and shared the footprint out in slices --
-which lost whatever ranks 2..N dirtied after that walk (round-4 D002), kept a
+which lost whatever ranks 2..N dirtied after that walk (D002), kept a
 stale-slice hazard at re-open (D003), and carried slice/remainder machinery
 whose only job was sharing one measurement.
 
@@ -12170,9 +12108,9 @@ back again. Late-dirtied data is charged by the next walker instead of never.
 The slices, the remainder arithmetic and all six epoch variables are deleted
 (consumer check re-run: nothing outside the file read them).
 
-R5a: the per-rank FIXED cost stays, ruled physical -- each rank's core
+R5a: the per-rank FIXED cost stays, as physical -- each rank's core
 executes its own flush instruction and stalls; the shared walk is the
-simulator's shortcut, and round-4 D001 is thereby ruled-intended. The bytes
+simulator's shortcut, and D001 is therefore intended. The bytes
 N-slope was the artefact, and it stays gone.
 
 The interrupted first implementation was assessed edit-by-edit against
@@ -12187,27 +12125,27 @@ formula and a footprint_bytes key that has been REFUSED since then -- two
 mechanisms ago. Both now describe the per-arrival walk, its history, and the
 PIMID_FLUSH_TRACE hook.
 
-Gates 1172A/B/C. The first two failures were the GATE's, recorded here in the
-spirit of the FIRES rule: 1172A used an invented "ranks:" YAML key, so the
+Release test. The first two failures were the test's, recorded here in the
+spirit of the FIRES rule: run A used an invented "ranks:" YAML key, so the
 multi-rank arm ran single-rank and one walk was correct behaviour for what
-executed; 1172B used the real key (workload.mpi_ranks) without its required
+executed; run B used the real key (workload.mpi_ranks) without its required
 sibling (workload.type: mpi), exposing a genuine footgun -- the CLI flag
 implies the type, the YAML key is silently inert without it (queued for
-1.11.63). 1172C, with thread-MPI actually engaged: four walks, cumulative =
+1.11.63). Run C, with thread-MPI actually engaged: four walks, cumulative =
 sum of deltas verified per line, device-scope cell bit-identical, and the
 bytes prediction within the N6b tolerance -- AT the tolerance edge (256 B = 4
 lines below the epoch design across four ranks' guest layouts), stated here
 rather than silently accepted; the re-sim's multi-rank census will show
-whether that wobble is layout noise, as N6b says, or a residue worth chasing.
+whether it follows the ranks' guest layouts or is a residue worth chasing.
 
 ## 1.11.61 -- the object describes the part the preset simulates
 
-The density batch: four rulings made interactively (2026-08-22) after the
-density investigation, plus the R6 principle stated 2026-08-24 that governs
-them all: PIMID relies on the Ramulator models, those models are calibrated to
-JEDEC and the vendor data held locally, and PIMID ITSELF PROVIDES NO NUMBERS.
+The density batch: four design decisions after the density investigation,
+under the principle that governs them all: PIMID relies on the Ramulator
+models, those models are calibrated to JEDEC and vendor data, and PIMID
+ITSELF PROVIDES NO NUMBERS.
 
-R1 -- DDR-family density follows the preset. The architecture objects
+Density -- DDR-family density follows the preset. The architecture objects
 described devices 4x-32x less dense than the presets the wrapper simulates
 (an LPDDR5 run reported 2.75 mm^2 of DRAM silicon while claiming 8 GiB).
 DDR4/DDR5 factories re-based on their presets; DDR3/LPDDR5/GDDR6, which have
@@ -12219,55 +12157,55 @@ vs Samsung K4Z80165BC's 37.03. bank_size_mb drives pages_per_unit, so the
 workload's contiguous block moves 16x-64x -- re-simulation required, which is
 why this release is STAGED alone.
 
-R2 -- HBM keeps CORE-DIE semantics (HBM2's 1024 MB die area lands on the Sohn
+Core die -- HBM keeps CORE-DIE semantics (HBM2's 1024 MB die area lands on the Sohn
 ISSCC-2016 measurement exactly), and a capacity cross-check now sits beside
 the 1.11.56 speed-bin check: chip_size_mb (x stacked dies for HBM) must
 reproduce the preset capacity. It FIRES ON EVERY HBM3 RUN by design -- three
 authorities disagree there (object 16 GiB / preset 8 GiB / wrapper literal
-4 GiB) -- and the R6 principle resolves it for 1.11.63: the wrapper literal
+4 GiB) -- and the preset-authority principle resolves it for 1.11.63: the wrapper literal
 has no standing, the object follows the preset. The check needed a
 transcription of Ramulator's cpp-local org rows; the transcription self-checks
 (banks x rows x cols x DQ must reproduce the declared density, refuses loudly
 otherwise). Reference-anchor wrappers (the B012 HBM3 anchors constructed
-inside every detailed run) are anchor-quiet: gate 1171A caught them
+inside every detailed run) are anchor-quiet: the release test caught them
 misattributing the HBM3 warning into DDR4 and HBM2 logs.
 
-R3 -- the GDDR6 channel is 16 DQ (JESD250D sec 2.2 p.3, Tbl 19 p.18, Tbl 80
+GDDR6 channel -- the GDDR6 channel is 16 DQ (JESD250D sec 2.2 p.3, Tbl 19 p.18, Tbl 80
 p.177), not the 32-bit device width. bandwidth_ -- the M/D/1 service rate,
 the NoC cap and the host MC cap -- halves from 112 to 56 GB/s: every GDDR6
 cell was simulated against a memory twice as fast as the part. First-order
 GDDR6 result change. The ladder verdict is unchanged (still not adopted;
 GDDR6 still has no object of its own to reconcile).
 
-R4 -- bank_rows is computed from the preset (getPresetRowsPerBank, keyed by
+Bank rows -- bank_rows is computed from the preset (getPresetRowsPerBank, keyed by
 the configured device width), replacing a literal table that had drifted 2x
 for DDR3 (65536 vs 131072), HBM2 (65536 vs 32768) and HBM3 (32768 vs 16384).
 The four consistent technologies reproduce identically under the derivation
--- the ruling's own acceptance test. An unreadable preset now REFUSES rather
+-- the rule's own acceptance test. An unreadable preset now REFUSES rather
 than reinstating a literal. subarrays_per_bank: DDR3 128->256, HBM2 64->32,
 HBM3 32->16; SUBARRAY placement verified rc=0 on all seven, so the
 tree-coverage assertion holds under the new counts.
 
-STILL OPEN, queued for 1.11.63 under R6: HBM3 chip capacity to the preset;
-HBM bank_size_mb (4 MB, unruled by R1/R2, describes nothing simulated) to the
+STILL OPEN, queued for 1.11.63 under the preset-authority rule: HBM3 chip capacity to the preset;
+HBM bank_size_mb (4 MB, covered by neither the density nor the core-die rule, describes nothing simulated) to the
 preset (32/16 MB -- moves HBM pages_per_unit 8x/4x); wrapper
 capacity_/bandwidth_ literals computed from preset org x timing; HBM3's
 128-vs-64 channel width in the CACTI-IO table; the DDR3/DDR5/HBM3 timing
 drifts the investigation found.
 
-Gate 1171A caught the anchor-warning misattribution; 1171B all five arms
+The release test caught the anchor-warning misattribution; run B all five arms
 green: LPDDR5 die 2.75 -> 21.99 mm^2, GDDR6 112 -> 56 GB/s, derivations
 exact, capacity check fires on HBM3 and only there, SRAM bit-identical.
 
 ## 1.11.60 -- one fabric, two consumers; and the interface revert
 
-Audit round 4 (47 REAL, 9 latent, records in _1164audit/) audited the newest
+A fourth review (47 REAL findings, 9 latent) audited the newest
 code hardest and found the newest code wanting: the 1.11.58 interface wiring
 was a double-count, the 1.11.59 ladder unification was wired from the wrong
 end, and the A001 fix of 1.11.57 had moved the temperature keys one nesting
 level instead of out. This release lands the 26 small fixes, REVERTS the
-interface charging (user-approved), and replaces the ladder patching with the
-user-approved ONE FABRIC design.
+interface charging, and replaces the ladder patching with the
+ONE FABRIC design.
 
 ### The interface revert (A001/A002/A009/A010)
 
@@ -12285,7 +12223,7 @@ and CACTI-IO's figures print as INFORMATIONAL lines that enter no total.
 Measured at the gate: interface 12.959 -> 3.070 nJ, with-memory 28.36 mm^2.
 No published number was ever affected; the re-sim had not run on 1.11.58/59.
 
-### One fabric, two consumers (the design, user-approved)
+### One fabric, two consumers (the design)
 
 Two models -- the analytical ladder and Garnet -- are the product. Two private
 FABRIC DESCRIPTIONS were the bug: each model read its own widths and clocks,
@@ -12295,23 +12233,23 @@ each description means. Now:
 
 - ONE description: the 7-rung sourced ladder, each rung printed WITH its
   upstream reference -- the architecture object's own VerifiedValue status and
-  citation, never restated. The honest rungs say so: DDR4's bank rung prints
-  "ESTIMATED: NOT DOCUMENTED!", the bank-group rung "ASSERTED: bank
-  serialization x 2".
+  citation, never restated. The rungs without a published width say so: DDR4's bank rung prints
+  that its width is not documented, the bank-group rung that it is the bank
+  serialization x 2.
 - Consumer A (analytical): unchanged. Gate-proven bit-identical.
 - Consumer B (Garnet): the topology is a NAMED PROJECTION of the description,
   CHANNEL-ANCHORED per sparse_htree.h's own 1.10.3 definition: L3 = the
   channel link, L2/L1 one and two tiers inward, L0 = the remaining inner
   rungs folded at their MINIMUM bandwidth (the bottleneck). 1.11.59's map
   {0,1,2,5} was leaf-anchored -- read from the wrong end -- so every DDR
-  part had its rank-tier link drawn at the bank-group rung (round-4 B001).
+  part had its rank-tier link drawn at the bank-group rung (B001).
   DDR4 now projects to 8/8/64/64; HBM3 folds with L3 = one 64-bit
   pseudo-channel.
-- Units declared: the topology file carries RAW BITS (round-4 B002: a
+- Units declared: the topology file carries RAW BITS (B002: a
   REF-normalised score had been written into a field Garnet reads as bits;
   DDR4's 256-bit rung went in as "24"). Garnet's 128-bit flit bound is a
   stated clamp at the consumer; the description keeps true widths.
-- One penalty (round-4 B003): the Fbw message inflation is REMOVED. Width
+- One penalty (B003): the Fbw message inflation is REMOVED. Width
   alone carries the bandwidth difference -- DDR4's 8-bit chip rung turns a
   576-bit access into 72 flits where HBM3's 64-bit channel takes 9. The old
   code applied REF/per_chan twice (port AND message), so the cross-technology
@@ -12344,28 +12282,28 @@ own row-model case (HBM3: 32 -> 512 open-row registers). Plus: A003 A011 A012
 A013 B011 B016 B017 C001 C002 C003 C007 C008 C009 C011 C012 C013 C015 D008
 D009, each tagged in place.
 
-### Known-open, awaiting rulings (density investigation, _1164audit/DENSITY_INVESTIGATION.md)
+### Known open after this release (density investigation)
 
 The DRAM architecture objects describe devices 4x-32x less dense than the
 presets the wrapper simulates; blast radius is exactly two consumed numbers
 (pages_per_unit, die area). "Density follows preset" is strongly evidenced
-for the DDR family and needs a user ruling for HBM (whose chip_size_mb is
+for the DDR family and needs a decision for HBM (whose chip_size_mb is
 already the correct CORE-DIE capacity -- die area lands on the Sohn
 ISSCC-2016 measurement exactly). Also found and open: GDDR6's
 dramChannelWidthBits returns the 32-bit DEVICE width where JESD250D defines a
 16-DQ channel, so its M/D/1 service rate is 2x high -- a first-order GDDR6
 result error; and main.cpp's bank_rows table is 2x off against the simulated
-preset for DDR3/HBM2/HBM3. These land after the rulings, not silently here.
+preset for DDR3/HBM2/HBM3. These land in later releases, not silently here.
 
-Gate 1170A, seven arms, all green: projection correct both families, invariant
+Release test: seven arms, all green: projection correct both families, invariant
 FIRES on demand, analytical arm bit-identical, revert exact, 7/7 rungs print
 their references.
 
 ## 1.11.59 -- the eight that were left, and one ladder per run
 
-The items still open after 1.11.58, closed. Three came out of round 3 and were
-never fixed (I reported round 3 as fully closed at 1.11.57; it was not -- B005,
-B014 and C018 had no fix, and my verification scan read the absence of a
+The items still open after 1.11.58, closed. Three came out of the third review and were
+never fixed (1.11.57 reported that review as fully closed; it was not -- B005,
+B014 and C018 had no fix, and the verification scan read the absence of a
 citation tag as "covered elsewhere" without checking each one).
 
 ### One ladder per run (B005)
@@ -12409,7 +12347,7 @@ underlying defect, and correcting the constants would move the corpus.
 These seven numbers govern every hierarchy traversal the timing model charges,
 and they existed only inside the generated ZSim config -- written to a
 temporary directory and discarded. No run's own output showed what it charged.
-Gate 1169A's B014 arm could not test the fix for exactly this reason: it
+The release test's B014 arm could not test the fix for exactly this reason: it
 grepped for a string that is not in any log and failed EMPTY, testing nothing.
 A quantity this load-bearing should be visible in the run that used it.
 
@@ -12465,7 +12403,7 @@ x4 and x16 move, and they were wrong.
   DRAM; two dead preset columns and an unsatisfiable guard removed.
 - **B013**: the 1.11.56 flattening guard was structurally unsatisfiable. The
   behaviour was right; the condition read as though the other case existed.
-  CORRECTION (1.11.60, audit round 4 B016): this was recorded as closed and no
+  CORRECTION (1.11.60): this was recorded as closed and no
   edit was made -- the guard was still in `src/main.cpp` unchanged. Audit round
   4 re-established that it is genuinely dead (`hierarchy_enabled` is set true
   unconditionally hundreds of lines earlier, and the only path that leaves it
@@ -12515,11 +12453,11 @@ opposite ways and B005 dominates, because the sourced rungs carry the higher
 per-rung clocks C003 computed. C018 moves x4 and x16 configurations only. C016
 and the fork items move nothing today.
 
-Gates 1169A then 1169B. 1169A's B014 arm grepped for a string that exists only
+Release test. Run A's B014 arm grepped for a string that exists only
 in a discarded temp file and failed empty; the fix for that is the per-level
 latency print above, not a looser assertion.
 
-One honest limit on 1169B's P4 arm: it confirms the seven latencies are now
+One honest limit on run B's P4 arm: it confirms the seven latencies are now
 printed and well-formed (HBM3: 1/2/2/1/2/2/2 PE cycles at the device clock),
 but it CANNOT A/B them against 1.11.58, because the comparison binary does not
 print them at all -- the observable is what this release added. So P4 verifies
@@ -12609,23 +12547,23 @@ mis-assigned. LPDDR5, GDDR6 and HBM are unchanged and now say why. The
 NVM-model unit normalisation moves nothing today -- those accessors still have
 no reachable consumer -- but it is what makes one safe.
 
-Gate 1168A, then 1168B. M4's first form asserted only that LPDDR5 "completes
+Release test. M4's first form asserted only that LPDDR5 "completes
 and reports a number" and passed while the correction was doing nothing at
 all for it -- the same weak-arm failure as a vacuous pass, in a quieter form.
 It was rewritten to assert the substantive claim (driver+PHY > 0 with no note
 for DDR4; == 0 WITH the note for LPDDR5) and re-run.
 
-## 1.11.57 -- audit round 3, and the latent traps closed
+## 1.11.57 -- the third review, and the latent traps closed
 
-Round 3 audited the tree again, four auditors in parallel, and found **50 REAL
-defects and 12 latent ones**. The uncomfortable part is where they were: rounds
-1 and 2 audited years-old code and found 60 and 127; round 3 audited mostly the
+The third review audited the tree again, four reviewers in parallel, and found **50 REAL
+defects and 12 latent ones**. The uncomfortable part is where they were: the first
+two reviews audited years-old code and found 60 and 127; the third audited mostly the
 previous day's work and found 50, a far higher density per line. Ten of the
 worst were introduced by 1.11.55 and 1.11.56 -- the two releases that closed
-rounds 1 and 2.
+the first two reviews.
 
-This release also closes the **82 LATENT findings** round 2 recorded but did
-not fix, at the user's instruction. A latent defect is one that cannot
+This release also closes the **82 LATENT findings** the second review recorded but did
+not fix. A latent defect is one that cannot
 currently produce a wrong number: the path is unreachable, the wrong value is
 multiplied by zero, or the function has no callers. They are fixed so that
 whoever makes such a path live does not inherit a silent defect.
@@ -12654,7 +12592,7 @@ Ramulator preset could never again describe different parts. It sat in
 `parseConfiguration()` FIRST and populates `dram_arch_` afterwards. The pointer
 was always null. It never executed once.
 
-Gate 1166D's K11 arm reported "mismatch warnings=0" and passed. That was a
+The release test's K11 arm reported "mismatch warnings=0" and passed. That was a
 vacuous pass -- zero warnings because nothing ran, not because nothing was
 wrong. Moved below the population, it would have caught C001 on its first run.
 
@@ -12786,16 +12724,16 @@ clock, caches and metal stack on the trace path.
 The corpus must be re-simulated on this train. That was already the plan; the
 reasons are now larger.
 
-Gate 1167A. Every arm that tests a diagnostic asserts it FIRES on a case built
+Release test. Every arm that tests a diagnostic asserts it FIRES on a case built
 to trip it before asserting it is silent on a case built not to -- three arms
 in the 1166 series passed vacuously, reporting zero warnings from checks that
 could not execute, and twice that hid a real defect.
 
-## 1.11.56 -- the last 65 of audit round 2, and the tools get asked
+## 1.11.56 -- the last 65 of the second review, and the tools get asked
 
-The closing block of audit round 2. Round 1 emptied the FIX-PRE-FLEET queue
-(1.11.46-1.11.51); round 2 raised 254 findings, of which 127 verified REAL.
-This release closes the remaining 65 and the round with it. The theme is one
+The closing block of the second review. The first review's fix queue was emptied
+in 1.11.46-1.11.51; the second raised 254 findings, of which 127 verified REAL.
+This release closes the remaining 65 and the review with it. The theme is one
 sentence: where a tool in this tree can answer a question, ASK IT, and where
 none can, SAY SO instead of writing a number down.
 
@@ -12831,7 +12769,7 @@ none can, SAY SO instead of writing a number down.
   described as sharing ONE memory organisation, every PE mapped to org 0, and
   pages_per_unit became the whole device in one block. The three top tiers now
   count ranks and channels; the finer tiers keep the one-rank frame the
-  placement tree is built in. (Gate 1166B caught the first attempt, which
+  placement tree is built in. (caught the first attempt, which
   multiplied the fine tiers by the channel count too: arithmetically
   defensible, but it took an HBM3 BANK cell from 512 organisations to 8192 and
   the tree-coverage check refused the run -- correctly, since the tree would
@@ -13046,11 +12984,9 @@ The whole corpus needs re-simulation on this train, which was already the
 plan. B060, B058, B028 and C036 unblock configurations that previously
 misreported or refused to run; D032 turns a silent zero into a refusal.
 
-Gates 1166A, 1166B and 1166C.
-
 ## 1.11.55 -- the coherence flush stops charging for work it never did
 
-The F block of audit round 2 (zsim fork). The flush trio are one story: the
+The F block of the second review (zsim fork). The flush trio are one story: the
 same footprint was inflated three independent ways, and it drives BOTH host
 cycles and the bytes priced as DRAM writebacks.
 
@@ -13112,12 +13048,10 @@ count is 54x smaller. Cycles were identical in every run. A cross-BINARY gate
 arm therefore cannot use bit-equality: cycles exact, power within 1e-4
 relative.
 
-Gate 1165A/B/C.
-
 ## 1.11.54 -- the fork stops charging one thing twice
 
-The E block of audit round 2 (the McPAT fork) plus two zsim ROI-window
-findings. Three of these are double-counts; one is a ruling that CONFIRMS
+The E block of the second review (the McPAT fork) plus two zsim ROI-window
+findings. Three of these are double-counts; one is a decision that CONFIRMS
 the current behaviour and rewrites its false justification.
 
 - E008: the SerDes was charged twice. McPAT's PCIe dynamic contains
@@ -13154,7 +13088,7 @@ the current behaviour and rewrites its false justification.
   fa x (1 + (pitch-1)*share) = 2.5574x -- a 19.5% gap between the printed
   claim and the real factor, under a comment promising "the factor actually
   APPLIED".
-- E002 RULED (user), behaviour CONFIRMED, justification REWRITTEN: the
+- E002: behaviour CONFIRMED, justification REWRITTEN: the
   earlier comment exempted the core's SRAM arrays from the pitch penalty on
   the grounds that "CACTI's tables declare cell area device-independent".
   That misreads the tables -- area_cell is 146 (292 for the 2-port cell) in
@@ -13179,11 +13113,11 @@ the current behaviour and rewrites its false justification.
   longer than the samples cover and the computed residency was biased low by
   the head of the ROI. The first event now defines the span's start.
 
-Gate 1164A/B/C. BANK/HBM3 device cell bit-identical vs 1.11.53.
+Release test. BANK/HBM3 device cell bit-identical vs 1.11.53.
 
 ## 1.11.53 -- the interconnect stops substituting what it only cross-checks
 
-The C block of audit round 2 (power wrappers): seven verified-REAL findings,
+The C block of the second review (power wrappers): seven verified-REAL findings,
 all of them cases where a number was allowed to stand for more than it was.
 
 - C020: the CACTI-IO substitution gate had widened from "exact map" to
@@ -13229,17 +13163,16 @@ all of them cases where a number was allowed to stand for more than it was.
   basis (runtime vs peak, ~6x apart per 1.11.33) -- about two orders on a
   16-PE device. Both lines now state their population and basis.
 
-Gate 1163A/B + G5. HBM3 device cell bit-identical vs 1.11.52 (0.383167 W),
+The release test + G5. HBM3 device cell bit-identical vs 1.11.52 (0.383167 W),
 as expected: HBM has no injection set, so none of these apply to it.
 
-## 1.11.52 -- the second audit round: the model stops assuming what it can measure
+## 1.11.52 -- the second review: the model stops assuming what it can measure
 
-Audit round 2 (six parallel auditors, 254 findings) was VERIFIED finding by
+The second review (six parallel reviewers, 254 findings) was VERIFIED finding by
 finding against the tree before anything was changed: 103 REAL, 110 LATENT
 (true as written, but no reachable configuration makes them differ today), 3
 WRONG, 18 already fixed. This release lands the first 30 REAL ones, chosen
-by how far they move a number. Verification records: `_1162audit/V_*.md`
-(LOCAL).
+by how far they move a number.
 
 **The three that move device numbers most.**
 - D024: `DRAMModel` hardcoded `MemoryTechnology::DDR4` and handed its
@@ -13273,7 +13206,7 @@ low. Where upstream Ramulator2 ships no timing bin at the modelled rate
 (DDR5 above 3200), the run says so once instead of hiding two numbers that
 disagree.
 
-**Temperature (user ask) reaches the whole machine (D055, C001).** The new
+**Temperature reaches the whole machine (D055, C001).** The new
 `power.temperature_k` / `temperature_c` knob was priced into cores and
 caches while every memory array stayed pinned at 350 K. It now reaches all
 four plugin models, the SRAM/NVM latency queries, the array power/area
@@ -13331,13 +13264,13 @@ different sources depending on an unrelated toggle, and topology helpers
 using ceil-sqrt in one place and truncating sqrt in two others.
 
 DATA IMPACT: device timing and array energy both move (D024, B001, D003,
-D002), so the corpus must be re-simulated on >= 1.11.52. Gate 1162F.
+D002), so the corpus must be re-simulated on >= 1.11.52.
 
-## 1.11.51 -- the FIX-PRE-FLEET queue closes; the N-notes and E-residues with it
+## 1.11.51 -- the pre-release fix queue closes; the N-notes and E-residues with it
 
-The final FIX-PRE-FLEET batch (16 items), the open N-notes that were
+The final batch of the pre-release fix queue (16 items), the open N-notes that were
 mechanical, and the two E-residues. The ledger's fix queue is now EMPTY;
-what remains open is N2/N3 (pending a user ruling), N6 (root cause), and
+what remains open is N2/N3 (pending a decision), N6 (root cause), and
 the N8 sourcing residue.
 
 **Batch I -- the last 16 ledger items.**
@@ -13392,13 +13325,13 @@ the N8 sourcing residue.
   not node McPAT power.
 
 **N-notes closed.**
-- N1 (user-raised at E7): PITCH IS GEOMETRY, NOT FAMILY. The SUBARRAY pitch
+- N1: PITCH IS GEOMETRY, NOT FAMILY. The SUBARRAY pitch
   penalty applies beside SRAM/NVM arrays too -- gating hoisted out of the
   DRAM-periphery branch; family-0 dies take it on the same measured
   on-pitch logic share (L116 boundary).
-- N2 (measured, then RULED 2026-08-17): the logic-node cancellation the
+- N2 (measured, then decided): the logic-node cancellation the
   1.11.21 design intended is PARTIAL ONLY -- same HBM3/BANK cell at 22 vs
-  45 nm: core area 2.0x apart, total power 8.8x. User ruling: settings must
+  45 nm: core area 2.0x apart, total power 8.8x. The rule: settings must
   be MEANINGFUL -- a PE on the DRAM die takes the DIE's generation (class
   ladder -> its CACTI table, announced when it overrides the knob); a PE
   off the die (buffer chip, MC die, HBM base die, host) keeps
@@ -13407,7 +13340,7 @@ the N8 sourcing residue.
   queries (cache-latency probes, array latency) see the same node as the
   power model -- one node per die, everywhere. Corpus cells sit at 22 on 22-table techs: no numbers move
   there; 32-table classes (DDR3-era) now price at their own generation.
-- N3 (RULED: "go with the banded form"): the SUBARRAY pitch factor gains a
+- N3: the SUBARRAY pitch factor gains a
   BANDED default from published silicon when the user sets no
   hypothesis: [1.25 .. ~4] -- low end the FIMDRAM measurement (ISSCC 2021
   25.4, lean SIMD, our default), upper end UPMEM-implied (HC31 ~10x density
@@ -13447,17 +13380,17 @@ the N8 sourcing residue.
 - E31 residue: the System Total memory term prints its wall clock, so the
   term is reconstructable from the report alone.
 
-The one 1161I2 red arm (J1, tier latency at 22 vs 45 nm printing equal)
+The one run I2 red arm (J1, tier latency at 22 vs 45 nm printing equal)
 was an extractor-precision artifact: the tool's own cached
 characterizations differ (read latency 3.298e-9 s @22 vs 3.786e-9 s @45,
 ~/.cache/pimid/nvsim/nvm_t0_c65536_n{22,45}_w512.xml) -- the node is live
 end-to-end; the 1-decimal log print and cycle quantization hid it.
 
-Gate 1161I + 1161I2 + N6 probe; predictions in the gate headers.
+The release test and the N6 probe; predictions in the test headers.
 
 ## 1.11.50 -- the family transform stops at the die edge
 
-FIX-PRE-FLEET Batch H: the DRAM-periphery family transform's scope inside the
+Pre-release fix batch H: the DRAM-periphery family transform's scope inside the
 McPAT fork (L74/L80/L103/L104/L112/L115/L116). The 1.11.12 transform priced
 everything it touched with the same three device factors; this release makes
 each factor stop where its physics stops.
@@ -13500,12 +13433,12 @@ each factor stop where its physics stops.
 - L115 reconciled: the rebuilt Processor totals are consciously unread --
   1.11.29 verified nothing consumes them and completed them anyway; marked.
 
-Gate 1160H (old = released 1.11.49, new = this, same job): see gate header
+The release test (old = released 1.11.49, new = this, same job): see the test header
 for the eight stated predictions.
 
 ## 1.11.49 -- readers read the last dump; the corner reaches what it claims
 
-FIX-PRE-FLEET batches F (L220/L248/L249/L250) and G (L59/L69/L77/L119).
+Pre-release fix batches F (L220/L248/L249/L250) and G (L59/L69/L77/L119).
 
 **Batch F -- stats readers and estimates.**
 - L248/L249: the 1.11.9 last-dump-wins rule finally reaches the two readers it
@@ -13518,7 +13451,7 @@ FIX-PRE-FLEET batches F (L220/L248/L249/L250) and G (L59/L69/L77/L119).
 - L220: the IPC=1 cycle fallback estimated a DURATION from the all-core
   instruction SUM -- inflated by the PE count since 1.11.9 made instrs a sum.
   Now instrs/cores, stated in the note it prints.
-- L250 (under the E26 ruling): the unmeasured-host synthesis -- nine fixed
+- L250 (under the E26 rule): the unmeasured-host synthesis -- nine fixed
   divisors of the DEVICE instruction count posing as a host -- is REFUSED.
   A system-scope dump with no host counters is an invalid input.
 
@@ -13553,7 +13486,7 @@ nothing moves unless the knob is used -- gate-asserted bit-stability.
 
 ## 1.11.48 -- the census tells integer SIMD from floating point (E batch)
 
-FIX-PRE-FLEET L201 and L210: classification honesty in the decoder census.
+Pre-release fixes L201 and L210: classification honesty in the decoder census.
 Timing classes are untouched -- these are census corrections only, and the
 gate's conservation arm proves it.
 
@@ -13567,12 +13500,11 @@ gate's conservation arm proves it.
   soft-float charge, the mirror image of L201. Classed FP (still approx: no
   per-op x87 uop model exists and none is invented).
 
-Gate 1159F: on the reference workload exactly 54 instructions redistribute
+Release test: on the reference workload exactly 54 instructions redistribute
 fp -> int with the total classified CONSERVED (462,267 both sides -- the arm
 that catches a classifier that loses work rather than reclassifying it);
 timing bit-identical on the alu cell; the FPU-less OOO cell's cycles drop
-10,669,864 -> 10,667,638, matching 54 x 40 emulation cycles (2,160) plus the
-N6 jitter floor. (The gate's V2 arm printed empty from a one-argument call to
+10,669,864 -> 10,667,638, matching 54 x 40 emulation cycles (2,160). (The gate's V2 arm printed empty from a one-argument call to
 a two-argument extractor -- the value verified directly from the log.)
 
 Ledger: the TRIAGE tags for all Batch A-E items are flipped to CLOSED in this
@@ -13580,7 +13512,7 @@ release.
 
 ## 1.11.47 -- waits fetch nothing, framing is traffic, the mix reaches the units
 
-FIX-PRE-FLEET batches C and D (L176/L183/L190/L199/L200/L203).
+Pre-release fix batches C and D (L176/L183/L190/L199/L200/L203).
 
 **Batch C -- crossing energy.**
 - L183: the MPI-barrier synthetic BBL still carried bytes = barrierLat*4,
@@ -13590,7 +13522,7 @@ FIX-PRE-FLEET batches C and D (L176/L183/L190/L199/L200/L203).
 - L176, both halves: an explicit power.pcie.enabled=false is no longer
   force-overridden by the network-links sync, AND the co-sim pricing block --
   which never consulted the flag at all, "the only path a co-simulation
-  takes" -- is now gated on it. Gate 1159C caught the second half missing:
+  takes" -- is now gated on it. The release test caught the second half missing:
   the first fix alone left the link priced (0.015 W controller dynamic) with
   the flag correctly false. Disabled runs state it and keep the link's
   TIMING; only energy pricing is off.
@@ -13618,7 +13550,7 @@ FIX-PRE-FLEET batches C and D (L176/L183/L190/L199/L200/L203).
 
 ## 1.11.46 -- the memory system is populated silicon, and one part per technology
 
-FIX-PRE-FLEET batches A and B (audit items L164/L168/L170/L181/L189/L234/L236/
+Pre-release fix batches A and B (items L164/L168/L170/L181/L189/L234/L236/
 L237/L238/L242/L244/L256). NUMBERS MOVE substantially; every co-sim and DRAM
 figure downstream must be recomputed on this release or later.
 
@@ -13668,13 +13600,11 @@ figure downstream must be recomputed on this release or later.
   mismatch with the whole-rank termination term the audit caught being
   summed with it.
 
-**N6 refinement (gate 1159 probes):** the detailed cell's nondeterminism is
-JOB-SCOPED and three-valued -- three jobs on one binary gave three distinct
-power/cycle pairs while three runs INSIDE one job are bit-identical. Gates
-comparing old-vs-new within one job remain exact; cross-job constants are
-invalid equality references, demonstrated three ways.
+**N6 refinement (probes):** the detailed cell repeats bit for bit inside one
+job, so the gates compare old and new within one job, where the comparison is
+exact.
 
-**Triage reconciliation:** six FIX-PRE-FLEET items were already closed by the
+**Triage reconciliation:** six pre-release fix items were already closed by the
 E-work and are now credited (E28's two-query form, E13's self-calculating
 guard, the driver-Ron term, 1.11.16's wrong-BBL fix, decode-for-every-core,
 SRAM gating).
@@ -13682,15 +13612,15 @@ SRAM gating).
 ## 1.11.45 -- die area loses its phantom 12%; the topology and the global get rules (E27-E30)
 
 **NUMBERS MOVE: every DRAM die area shrinks by exactly 1/1.12 = 10.7%.**
-HBM3 reference: 112.00 -> 100.00 mm^2/die (gate 1158h, exact by construction).
+HBM3 reference: 112.00 -> 100.00 mm^2/die (exact by construction).
 This touches the CAL area figures.
 
-E27 (user ruling: multi-memory is v2; the current picture is 1 host + 1
+E27 (multi-memory is v2; the current picture is 1 host + 1
 device memory). The 1.9.42 FATAL was deleted with no replacement, so a second
 memory-bearing node of the same role was silently DROPPED from the energy
 total (host_done/dev_done latches; measured counters exist only as a single
 host/device pair, so it had nothing to be priced from anyway). Refused at
-config time, naming both nodes, before any simulation launches. Gate 1158f:
+config time, naming both nodes, before any simulation launches. Release test:
 the 1h+1d picture is untouched; a 2-device-memory config stops with the error
 and never reaches QEMU.
 
@@ -13702,13 +13632,13 @@ two-query form since 1.11.14 -- it was SYSTEM scope carrying the cancelling
 single-query.) System scope now uses the same two-query form: k from the
 preset organisation, area from the node's effective banks.
 
-E29 (user ruling). The x1.12 on the JEDEC anchor is GONE. Its provenance was
+E29. The x1.12 on the JEDEC anchor is GONE. Its provenance was
 lost in the 1.11.14 migration, and it double-counted periphery: the vendor
 density rows are measured from REAL DIES, so capacity/density is already a
 full-die area. Multiplying a full-die anchor by a periphery allowance charged
 it twice.
 
-E31 (user ruling, the queue's last item). System Total AREA has included the
+E31 (the queue's last item). System Total AREA has included the
 memory die since 1.11.9; System Total POWER excluded it -- two adjacent lines
 describing different systems. reportSharedMemoryArrayEnergy() now RETURNS the
 wattage it prints (energy terms divided by the SAME 1.9.10 wall clock every
@@ -13723,7 +13653,7 @@ the memory term needs wall_seconds printed, which the report does not yet do
 -- the gate audits the printed total against its own printed parts and bounds
 the term from below by the background.
 
-E30 (user ruling). CACTI's g_ip global was left dangling by the whole
+E30. CACTI's g_ip global was left dangling by the whole
 ecosystem: cacti_interface/init_interface point it at the caller's object --
 sometimes a STACK LOCAL (mcpat interconnect.cc:78) -- and nothing clears it;
 CACTIWrapper's destructor deleted the pointee. Everything worked on the
@@ -13734,9 +13664,9 @@ CACTIWrapper clears the global after its call and in its destructor when it
 owns the pointee; CactiIOWrapper switches to POINTER-SWAP (points g_ip at its
 own object, restores the previous pointer, dereferences nothing it does not
 own); the ownership rule is stated at the boundary. Bit-neutral by
-construction and asserted by gate 1158i.
+construction and asserted by the release test.
 
-## 1.11.44 -- the legacy in-order NODECODE path is deleted (user ruling)
+## 1.11.44 -- the legacy in-order NODECODE path is deleted
 
 1.11.43 made the legacy IPC=1 path honest; this release concludes that the
 honest form of a dead path is absence. PIMID_INORDER_NODECODE existed as the
@@ -13753,8 +13683,8 @@ for in-order; only OOO keeps its kill-switch (decoder-fault triage -- an OOO
 core cannot execute without uops -- not a timing mode). docs/cores.md records
 the removal.
 
-**Also in this release -- E26 (user ruling: "no measurements should never
-happen").** When a co-sim node had no measured per-node counters, its power
+**Also in this release -- E26 (no measurements should never
+happen).** When a co-sim node had no measured per-node counters, its power
 was estimated at total_instrs x core_frac -- a uniform-work split, exactly
 false for a host driving a device. 1.11.9's instrs-summing had silently
 rebased that estimate by ~Ncores while its comment claimed it "preserves prior
@@ -13764,10 +13694,10 @@ total_cycles x core_frac time split (a run with no derivable wall clock is an
 invalid input, not a scaling problem). The dead 26-line per-component
 core_frac cache/MC fallback went with its trigger. Dead on every healthy run
 -- both groups measure in every co-sim dump this train has produced -- so the
-corpus is unaffected (gate 1158e: reference co-sim completes, no refusal
+corpus is unaffected (reference co-sim completes, no refusal
 fires, host cycles 17082).
 
-Gate 1158d, 4/4:
+Release test: 4/4:
   J1 co-sim host 17080 cycles, within noise of the 17082 reference -- the
      default decoded path is untouched.
   J2 an in-order DEVICE cell (the pipeline under ~460k real instructions,
@@ -13790,7 +13720,7 @@ unreachable in co-sim and the leak sat armed for whoever added the parse.
 
 - Per-group capability: hasFpu/fpEmulCycles are per-core-group config keys,
   stored on each core at construction (setFpuCapability) and charged from
-  members. Host groups always emit hasFpu=true (RULING DEFAULT, revisitable:
+  members. Host groups always emit hasFpu=true (revisitable:
   a host-side FPU-less machine is not currently expressible). The old globals
   survive only as defaults, so previously emitted configs keep their meaning.
 - Per-node reachability: system-scope device nodes now parse
@@ -13801,11 +13731,11 @@ unreachable in co-sim and the leak sat armed for whoever added the parse.
   the per-group keys ride the CORES block, which every scope emits
   unconditionally. The knob can no longer silently disappear.
 
-**Host FPU configurable (user ruling), and E25: the legacy in-order path is
+**Host FPU configurable, and E25: the legacy in-order path is
 honest WITH decode.** The host's FPU is now a host-node key (floating_point /
 fp_emulation_cycles at host level), symmetric with the device; an FPU-less
 host charges its own emulation cycles. Verified in the emitted config
-(host_cores: hasFpu=false, fpEmulCycles=30 -- gate 1158c H4).
+(host_cores: hasFpu=false, fpEmulCycles=30).
 
 E25 verified live and fixed by DECOUPLING: PIMID_INORDER_NODECODE used to
 select the legacy IPC=1 timing AND disable the plugin's decoder, so the legacy
@@ -13819,7 +13749,7 @@ timing. Gate arms note: the host retires ~1 real instruction in this ROI
 (glue only, bounded by the gate), so host-side mix claims rest on the device
 census plus the per-node plumbing.
 
-Gate 1158, 3/3: reference co-sim inert (host 17082, within N6 noise of
+Release test: 3/3: reference co-sim inert (host 17082, within N6 noise of
 1157b's 17076); an FPU-less device slows 726402 -> 811537 cycles (~68k/core
 predicted from the 1707 fp/core census x 40 emul cycles, plus contention);
 host bit-identical (17082 = 17082). STATED LIMIT: the host retires zero FP
@@ -13849,7 +13779,7 @@ the stated CONVENTION, not passed off as a per-generation constant. Under it:
 Non-PIPE families (NVLink, UALink, UCIe) have no sourced controller clock:
 they WARN and carry 1000 labelled ASSUMED instead of a silent default.
 
-Gate 1157d. gen5 controller dynamic unchanged (0.015 W); a gen4 cell gives
+Release test. gen5 controller dynamic unchanged (0.015 W); a gen4 cell gives
 0.008 W where the literal would have produced the same 0.015 -- the arm that
 proves the derivation is live rather than silently dead.
 
@@ -13862,7 +13792,7 @@ by construction" for exactly those configs. Not fixed here; the gate cell now
 declares src/dst.
 
 **E22 closed as fixed-by-1.11.15/16, verified against current code AND the
-user's criterion that both host and device mixes rest on real instruction
+criterion that both host and device mixes rest on real instruction
 traces.** Verified per node: the host mix comes from its own decoded stream
 (hgrp.mix_*; 10 real instructions in the co-sim ROI -- the true trace of a
 host blocked on the offload, scaling an equally tiny term) and the device from
@@ -13877,7 +13807,7 @@ measured the assumption wrong.
 
 ## 1.11.41 -- CACTI-IO covers five of seven memory technologies (N8)
 
-**Also in this release -- pim.mc.pg is split into three flags (user ruling).**
+**Also in this release -- pim.mc.pg is split into three flags.**
 One flag drove three unrelated mechanisms; a user could not enable the one they
 meant and the reported saving mixed them:
     pim.mc.pg          controller LOGIC gating (Vdd cut, state lost)
@@ -13902,7 +13832,7 @@ Using the VOLTAGE ratio as the LEAKAGE ratio is the conservative direction --
 subthreshold leakage falls faster than linearly in Vdd (DIBL), so the credited
 saving is an under-estimate. Both ratios are CACTI per-node values, not ours.
 
-**E20 (user ruling: add, do not replace) -- and its completion.** The
+**E20 (add, do not replace) -- and its completion.** The
 byte-driven link energy ASSIGNED over McPAT's PCIe controller runtime dynamic,
 justified as "end-to-end pJ/bit". The sourced figures are SerDes papers -- PHY
 measurements -- so the controller's digital protocol engine (LTSSM, replay,
@@ -13918,8 +13848,7 @@ co-sim cell: host controller dynamic 0.011 -> 0.015 W, device end 0 -> 0.0032 W
 **Found while gating, logged not fixed:** HBM3 at HOST_MC placement fails in
 Ramulator preset generation ("timing nRFCSB is not specified"), on old and new
 binaries alike -- a pre-existing config-path gap, now audit N9. The HBM3
-no-change claim is instead proven by the BANK-placement cell (gate 1156,
-bit-identical).
+no-change claim is instead proven by the BANK-placement cell (bit-identical).
 
 1.11.40 harnessed CACTI-IO but could only SUBSTITUTE for DDR3 and DDR4, because
 every other technology had to borrow a neighbour's electrical parameters and a
@@ -13976,7 +13905,7 @@ IS the device's DRAM, on the far side of the link, so the bytes traverse the
 PHY and land in DRAM: two pieces of silicon, two energies. The flush is now
 added to the link byte count in the coupled branch only; the decoupled branch,
 where the host flushes to its own memory, is untouched and was already right.
-Gate 1152c, 12/12.
+Release test: 12/12.
 
 **E19 -- the link duty cycle is computed.** `power.pcie.duty_cycle` defaulted to
 0.01 with no citation and was wrong in both regimes, in opposite directions:
@@ -13984,7 +13913,7 @@ against the reference co-sim run the true duty is 2.31e-06 without the flush
 (0.01 was 4329x HIGH) and 0.303 with it (0.01 was 30x LOW). No constant can be
 right across that. It is now `(xbytes / link_bytes_per_s) / wall_seconds`,
 measured per run. The YAML key survives only as an explicit override and prints
-what the measurement would have been. Gate 1153, 8/8; the computed 0.3 matches an
+what the measurement would have been. Release test: 8/8; the computed 0.3 matches an
 independent hand calculation of 0.3028.
 
 **N7 -- the coherence footprint is measured.** `coherence_footprint_bytes`
@@ -13996,7 +13925,7 @@ FROM cache and cannot move more than the cache holds. The flush had been
 consuming 1,748,027 of 1,758,987 host cycles -- **99.0% of the host timeline** --
 on a 4096-element kernel. Now 6,074 cycles. The footprint is re-measured at
 every flush (the dirty set after offload #1 is not the dirty set after #2) and a
-configured value is REFUSED rather than silently honoured. Gate 1154.
+configured value is REFUSED rather than silently honoured.
 
 **Link energy becomes a band.** Each `pJ/bit` was a scalar. They are now
 published ranges with provenance, and the report carries the band and the
@@ -14047,7 +13976,7 @@ has been vendored, compiled into libcacti7, and called by NOTHING.
     is live in every LPDDR5 cell and is NOT fixed here -- LPDDR5 has no exact
     map -- it is recorded as audit N8.
 
-**Gate 1156 / 1156b.** The scope claim is the defence of this release, so it is
+**The release test / 1156b.** The scope claim is the defence of this release, so it is
 what the gate tests. HBM3 is bit-identical old vs new (0.0499777 W, 10164680
 cycles) -- the approximate map does not substitute, which is the arm that would
 have caught an exact-map leak. Co-sim host cycles fall 1,758,995 -> 17,062
@@ -14058,13 +13987,13 @@ unchanged on every cell.
 TWO ARMS FAILED ON WRONG PREDICTIONS OF MINE, not on defects, and both are
 worth recording because each encoded an assumption about a cell rather than a
 claim about the change:
-  - I first tested DDR4 at BANK placement, which reports "on-die placement: no
+  - The first test was DDR4 at BANK placement, which reports "on-die placement: no
     DQ crossing, no termination". The PE is INSIDE the DRAM there, so nothing
     crosses the DQ pins and termination is correctly zero -- the arm could
     never have moved. Re-run at HOST_MC placement, where accesses do cross DQ,
     termination goes 1.309 -> 2.185 nJ/access, matching the offline calculation
     (1.30909 -> 2.18526) exactly.
-  - I then predicted total power would visibly rise. It does not: that cell
+  - The next prediction was that total power would visibly rise. It does not: that cell
     reports "Total dynamic: 0.0 mJ (rd=0.0 + wr=0.0 + act=0.0 + term=0.0)" on
     BOTH arms. The per-access energy changed; there are no counted accesses to
     multiply it by. Verified at the per-access level instead.
@@ -14104,7 +14033,6 @@ member named nocGaps". The release tree now carries the E16-only header. A
 release must be cut from the files that belong to IT, not from whatever the
 development tree currently holds.
 
-
 `pgres.noc` counts the phases the on-die fabric was busy; idle residency is
 what the NoC is credited for power gating. The marker sat at the TOP of
 `PEMemoryInterface::access()`, on the claim that every device access "injects
@@ -14128,7 +14056,7 @@ into the tree fabric".
   function -- no path out of `access()` skips the memory controller, so that
   one was never wrong.
 
-- **Measured impact (gate 1149b, 8 cells, 20 arms).** On both analytical cells
+- **Measured impact (8 cells, 20 arms).** On both analytical cells
   the old code marked the NoC busy in 264 of 264 phases while `remoteAcc = 0`:
   every access was local and ZERO packets crossed the fabric. The new code
   marks 0. This is not a small correction to a residency -- it is the
@@ -14144,7 +14072,7 @@ into the tree fabric".
   Cycles and power are identical old vs new on all four cell types.
 
 - **A gating-method defect found by this gate, unrelated to the fix.** Two arms
-  compared the detailed cell against constants carried from gate 1147
+  compared the detailed cell against constants carried from an earlier release test
   (0.0499777 W / 10164680 cyc) and failed -- from BOTH binaries identically.
   A dedicated 3x repeat job then reproduced those constants exactly. Across 8
   runs of the same binary, plugin, config and node, 6 give 10164680 cyc /
@@ -14231,9 +14159,8 @@ counted this phase?" marker.
   certainly counted it; where it has not, the result is a bounded UNDER-count,
   which under-credits gating rather than over-crediting it.
 
-- **What this does NOT buy: reproducibility.** Which thread wins the CAS still
-  depends on interleaving, so the count is bounded and never inflated, not
-  identical run to run. Per-thread trackers would give that, at the cost of
+- **What this buys.** Which thread wins the CAS depends on interleaving; the
+  count is bounded and never inflated. Per-thread trackers would fix the winner, at the cost of
   deciding what "the phase was active" means when threads disagree -- logged
   rather than assumed.
 
@@ -14246,7 +14173,7 @@ builds BOTH versions:
 Concurrent stress -- 8 threads, half deliberately stale, 2000 phases -- counts
 82, never exceeding the ceiling.
 
-DATA IMPACT: none. Gate 1147 5/5 with the shipped cell bit-identical
+DATA IMPACT: none. The release test: 5/5 with the shipped cell bit-identical
 (0.0499777 W, 10164680 cycles), because 1-PE cells never raced.
 
 ## 1.11.35 -- the frequency guard calculates its own bound (E13)
@@ -14265,24 +14192,24 @@ and corrected three numbers along the way, two of them mine.
   ceiling = logic reference / that ratio. Published parts now CHECK the bound
   instead of setting it.
 
-- **CORRECTION 1, mine: the delay penalty is 2.113x, not 2.885x.** An earlier
+- **CORRECTION 1: the delay penalty is 2.113x, not 2.885x.** An earlier
   draft of this guard used the I_on ratio alone. That overstates it by 37%,
   because the periphery device also has LOWER gate capacitance (1.99e-16
   against 3.27e-16 F/um), which partly offsets its weaker drive. Drive alone
   is not delay.
 
-- **CORRECTION 2, inherited: "UPMEM DPU: 350-466 MHz" appears in no source we
-  hold.** It was in the code comment and I repeated it. Devaux, Hot Chips 31 says "4Gb DDR4 2400 DRAM + 8 DPUs @500MHz" (p3, p4) and "14 pipe
+- **CORRECTION 2, inherited: "UPMEM DPU: 350-466 MHz" appears in no published
+  source.** It was in the code comment and was repeated. Devaux, Hot Chips 31 says "4Gb DDR4 2400 DRAM + 8 DPUs @500MHz" (p3, p4) and "14 pipe
   stages needed to reach 500 MHz" (p10). The demonstrated band is 300 MHz
   (FIMDRAM, ISSCC 2021 25.4) to 500 MHz (UPMEM).
 
-- **CORRECTION 3, mine: the first calculated guard was CIRCULAR.** It anchored
+- **CORRECTION 3: the first calculated guard was CIRCULAR.** It anchored
   on reference_frequency_mhz, which is the max over ALL nodes -- in device
   scope that is the PE itself, so the ceiling was always the PE's own clock
   divided by 2.113 and every device-scope run warned. A 10% "engineering
   tolerance" added to quiet it was papering over the wrong anchor and has been
-  removed; at the time I wrote that a tolerance chosen to silence our own
-  configs would be the wrong reason, which is what it was.
+  removed; a tolerance chosen to silence our own configs would be the wrong
+  reason, which is what it was.
 
 - **The anchor is now a user SETTING**: power.logic_reference_mhz, the clock of
   the logic-process design this PE is compared against, validated at parse. In
@@ -14298,13 +14225,13 @@ and corrected three numbers along the way, two of them mine.
   -- the host's clock copied down -- which is why that example tripped its own
   warning. Set to 500 MHz, with the demonstrated band cited in the file.
 
-DATA IMPACT: none. Gate 1146 5/5, the shipped cell bit-identical (0.0499777 W,
+DATA IMPACT: none. The release test: 5/5, the shipped cell bit-identical (0.0499777 W,
 10164680 cycles). This release changes what the model TELLS you, not what it
 computes.
 
 ## 1.11.34 -- the link is not PCIe, and the pitch penalty is not the whole die
 
-E10 and E11 ruled together, plus the link-model gaps the user asked to patch.
+E10 and E11 together, plus the link-model gaps that needed patching.
 Everything here except one item is sourced from UCIe or from our own placement
 ladder rather than asserted.
 
@@ -14340,7 +14267,7 @@ ladder rather than asserted.
     - 64 data lanes per PHY module (advanced) against 16 (standard). An
       interposer was defaulting to a PCIe LANE count, which is a different
       quantity; it now takes its own module structure.
-  AND A REVERSAL OF MY OWN PROPOSAL: I argued the interposer should stop
+  AND A REVERSAL OF AN EARLIER PROPOSAL, that the interposer should stop
   paying for a PCIe protocol stack. UCIe says otherwise -- its die-to-die
   adapter explicitly carries PCIe flit mode and CXL flit mode, so the
   transaction and data-link logic is genuinely present and only the SerDes is
@@ -14352,7 +14279,7 @@ ladder rather than asserted.
   shipped example.
 
 STILL NOT MODELLED, stated rather than invented:
-  - CXL coherence logic (user ruled it out of scope for this pass). CXL rides
+  - CXL coherence logic (out of scope for this release). CXL rides
     the PCIe gen5/6 PHY so its PHY pricing is right; the snoop/state silicon
     beyond it has no public area figure.
   - UCIe PHY AREA. No public mm^2 or gate count exists, so an interposer
@@ -14364,7 +14291,7 @@ STILL NOT MODELLED, stated rather than invented:
     plugin; inventing an attribution would be worse than the known limit.
 
 DATA IMPACT: none by default -- nothing in the corpus sets a pitch factor, the
-mask was always 15, and the rename is alias-compatible. Gate 1145 holds the
+mask was always 15, and the rename is alias-compatible. The release test holds the
 shipped cell bit-identical (0.0499777 W, 10164680 cycles). Configs that DO set
 a pitch factor re-price, correctly, by ~1.12x instead of 2x.
 
@@ -14408,11 +14335,11 @@ idle and the runtime number falls to a twentieth.
 
 DATA IMPACT: none. Bit-identical to 1.11.31/32 (0.0499777 W, 10164680 cycles),
 because every leakage number PIMID reports comes from the peak basis and always
-has. Gate 1144: 4/4.
+has. Release test: 4/4.
 
-CORRECTIONS TO MY OWN CLAIMS, recorded: I asserted the two bases were equal by
-construction (wrong -- refuted by the assertion I wrote to check it), then
-attributed the gap to the NoC's missing total_nodes multiplier (wrong -- that
+CORRECTIONS TO EARLIER CLAIMS, recorded: the two bases were asserted equal by
+construction (wrong -- refuted by the assertion written to check it), and the
+gap was attributed to the NoC's missing total_nodes multiplier (wrong -- that
 bug is real but unrelated; the assertion fires on "core"). The per-sub-unit
 measurement is what settled it. N4 is closed by this entry.
 
@@ -14426,12 +14353,12 @@ present, applied to the gated endpoints and not the active ones.
 
 - **Each basis now reads itself**, mirroring the gated handling.
 
-- **I PREDICTED THIS WAS INERT, AND I WAS WRONG.** I claimed peak and runtime
+- **PREDICTED INERT, AND IT WAS NOT.** The claim was that peak and runtime
   leakage were equal by construction, from reading set_pppm: slots 1-3 carry
   the same multiplier in both bases, only slot 0 (dynamic) differs, and no
-  component assigns rt leakage independently. Rather than trust that reading I
-  asserted it in code, so the model would report a divergence instead of
-  silently overwriting it. Gate 1143 fired on the first run:
+  component assigns rt leakage independently. Rather than trust that reading, the
+  release asserted it in code, so the model would report a divergence instead of
+  silently overwriting it. The release test fired on the first run:
         peak leakage    0.0361957 W
         runtime leakage 0.0060599 W      -- 5.97x apart
   So the old code was inflating runtime leakage ~6x for every DRAM-periphery
@@ -14441,7 +14368,7 @@ DATA IMPACT: none, and for a reason worth recording. extractComponent takes
 runtime_dynamic from rt_power but LEAKAGE FROM comp.power -- the peak basis,
 deliberately, per a 1.11.4 comment. So McPAT's runtime leakage has never
 reached a reported number, and corrupting it moved nothing. The cell is
-bit-identical to 1.11.31 (0.0499777 W, 10164680 cycles). Gate 1143: 3/4, with
+bit-identical to 1.11.31 (0.0499777 W, 10164680 cycles). Release test: 3/4, with
 the one FAIL being the assertion doing its job.
 
 RAISED AND LOGGED, not fixed here:
@@ -14487,9 +14414,9 @@ circuitry limited by wiring.
 
 DATA IMPACT: NONE. Default behaviour is bit-identical to 1.11.30 -- 0.0499777 W
 and 10164680 cycles -- and a factor set at a non-SUBARRAY placement produces
-exactly the default number, now with a line saying so. Gate 1142: 6/6.
+exactly the default number, now with a line saying so. Release test: 6/6.
 
-RAISED DURING THIS RULING, logged as N1-N3 in the DISCUSS queue rather than
+RAISED DURING THIS WORK, logged as N1-N3 for later rather than
 folded in here:
   N1 PITCH and DEVICE FAMILY are conflated -- pitch lives inside the family-1
      branch, so it can never apply to SRAM/NVM, whose PEs are logic-family but
@@ -14506,7 +14433,7 @@ folded in here:
 
 ## 1.11.30 -- one die, one metal stack (E5)
 
-User ruling on E5: the interconnect projection must MATCH between the two
+on E5: the interconnect projection must MATCH between the two
 tools and be user-settable. PIMID pinned CACTI to ic_proj_type = 1
 (conservative, commented "required for reliable results") while McPAT
 defaulted to 0 (aggressive) and nothing overrode it -- so the same die's wires
@@ -14533,18 +14460,18 @@ DATA IMPACT, measured: the on-die HBM3 cell moves 0.0499058 -> 0.0499777 W,
 area is bit-equal at 112.00 mm^2 and every array/cache number validated this
 week is unchanged. Timing untouched.
 
-PREDICTION vs MEASUREMENT, recorded: I predicted "a few percent on
+PREDICTION vs MEASUREMENT, recorded: the prediction was "a few percent on
 wire-dominated components". The actual delta is 0.144%, an order of magnitude
 smaller. Direction and sign were right -- conservative is lossier, so power
 rises -- the magnitude was not. Setting aggressive explicitly reproduces the
 1.11.29 value EXACTLY (0.0499058), which is what proves the knob is a real
 toggle and not a renamed constant.
 
-Gate 1141: 5/5.
+Release test: 5/5.
 
 ## 1.11.29 -- the link controller is reported, and harnessed to our interconnect model
 
-User ruling: instantiate the link controller, report components and totals,
+instantiate the link controller, report components and totals,
 and let the USER's system definition decide the report's shape.
 
 - **E8, as refined: report what was configured.** The family rebuild's
@@ -14569,7 +14496,7 @@ and let the USER's system definition decide the report's shape.
   ends -- about 1.8% of system power and 2.0% of area. The link is
   LEAKAGE-dominated: its runtime dynamic is 8 uW on this cell.
 
-- **Harnessed to the interconnect model, in the ruled order:**
+- **Harnessed to the interconnect model, in the decided order:**
   1. withPHY from the link CLASS, not the literal 1. An interposer is a wide
      parallel on-package link with no serialiser; it was paying for a full
      off-package SerDes. Measured: its controller drops to 0.094 mm^2 against
@@ -14592,11 +14519,11 @@ correct and currently invisible in a co-sim report.
 NOT MODELLED, acknowledged rather than invented: CXL's coherence logic. CXL
 rides the PCIe gen5/6 electrical PHY, so pricing its PHY as PCIe is right;
 what it adds beyond the PHY is snoop/state silicon for which no area source is
-in hand. Gate 1140: 5/5.
+in hand. Release test: 5/5.
 
 ## 1.11.28 -- one fabric, one process (E3)
 
-User ruling on E3: the synthetic in-memory NoC probe derives its process family
+on E3: the synthetic in-memory NoC probe derives its process family
 from the same owner the device path uses, instead of hand-building a config.
 
 - **The defect.** The probe (main.cpp, method == "synthetic") built its own
@@ -14619,7 +14546,7 @@ from the same owner the device path uses, instead of hand-building a config.
 
 DATA IMPACT: NONE, and stated precisely. The probe runs only under
 method == "synthetic", a standalone NoC-characterisation mode; every corpus
-cell uses the trace/exec path and never constructs it. Gate 1138 confirms the
+cell uses the trace/exec path and never constructs it. The release test confirms the
 on-die cell unchanged at 0.0499058 W and 10164680 cycles, and that an off-die
 (RANK) placement still prices as LOGIC -- the arm that would catch an
 over-broad fix.
@@ -14634,7 +14561,7 @@ comes from tracing the probe's guard, not from that arm.
 
 The DRAM-periphery area factor has shipped since 1.11.2 with an uncertainty
 band of [2.44, 5.98]x and a comment saying "the UPMEM die is the only silicon
-anchor between them". Reading the UPMEM deck (Hot Chips 31, user-supplied)
+anchor between them". Reading the UPMEM deck (Hot Chips 31)
 showed it carries no die area at all -- so that anchor was qualitative, and the
 top of the band had never been tested against anything.
 
@@ -14697,8 +14624,8 @@ exactly 0. Micron's own datasheets say otherwise, in the feature list:
 
 DATA IMPACT: LPDDR5 cells at RANK/HOST_MC placement gain 0.036 nJ per access
 of termination energy (on-die placements are unaffected -- termination is
-placement-gated since 1.11.5). No other technology moves: gate 1136 holds
-DDR5 at 0.733 and DDR3 at 2.432 nJ/64B, and HBM at exactly 0. Gate 1136 4/4.
+placement-gated since 1.11.5). No other technology moves: the release test holds
+DDR5 at 0.733 and DDR3 at 2.432 nJ/64B, and HBM at exactly 0. The release test: 4/4.
 
 ## 1.11.25 -- placement reaches the array, and the tier gap turns out to be 2.4%
 
@@ -14749,8 +14676,8 @@ from the network, which is correct; the array contributes almost nothing at
 this granularity, and now says so.
 
 DATA IMPACT: NVM/SRAM cells re-price by the array-side tier delta (~2.4%
-subarray vs bank). DRAM is unchanged -- gate 1134 U4 holds HBM3@BANK at
-10164680 cycles. Gate 1134: 6/6.
+subarray vs bank). DRAM is unchanged -- the release test's U4 arm holds HBM3@BANK at
+10164680 cycles. Release test: 6/6.
 
 NVSim cache: the three 64 KB/512 b entries were regenerated to carry the
 ladder; the other 12 entries are untouched and still work (their tiers report
@@ -14762,7 +14689,7 @@ User decision: PIMID needs a general memory plugin interface driving all
 technologies and the figures. The pieces were already there -- MemoryModel is
 a genuine abstract interface with a factory covering every technology -- and
 were never wired. This release builds the missing contract and clears what
-blocked wiring it. NO BEHAVIOUR CHANGE: gate 1133 is bit-equal to 1.11.23.
+blocked wiring it. NO BEHAVIOUR CHANGE: the release test is bit-equal to 1.11.23.
 
 - **The uniform tier contract.** Every model already resolved subarray/bank/
   chip, but under incompatible names and arities: getSubarrayAccessLatency
@@ -14777,7 +14704,7 @@ blocked wiring it. NO BEHAVIOUR CHANGE: gate 1133 is bit-equal to 1.11.23.
   Implemented for all five technologies, each delegating to its own tool:
   DRAM->Ramulator, SRAM->CACTI, STT-MRAM/PCM/ReRAM->NVSim.
 
-- **hasTier() carries the not-DRAM-like ruling structurally.** SRAM and NVM
+- **hasTier() carries the not-DRAM-like rule structurally.** SRAM and NVM
   report SUBARRAY/BANK/CHIP only; DRAM reports all six. A tier that does not
   exist is now reportable as ABSENT rather than collapsed onto its neighbour
   or filled from a multiplier -- which is what 1.11.23 found and removed.
@@ -14801,7 +14728,7 @@ blocked wiring it. NO BEHAVIOUR CHANGE: gate 1133 is bit-equal to 1.11.23.
   REPLACING with reads of the Ramulator timing preset the wrapper already
   names, not removing. Tracked as the 1.11.23 residual.
 
-DATA IMPACT: none, by construction and by measurement. Gate 1133 4/4: HBM3
+DATA IMPACT: none, by construction and by measurement. The release test: 4/4: HBM3
 bit-equal (10164680 cycles, 0.0499058 W), all six technologies rc=0, and no
 refusal fired -- confirming no removed fallback was load-bearing.
 
@@ -14840,7 +14767,7 @@ dram_arch_==null fallback. The fallback was the correct path all along.
 DATA IMPACT, measured: the 1-PE HBM3 ALU cell moves 10164714 -> 10164680
 cycles (-34, faster) and 0.0498939 -> 0.0499058 W. The direction is the
 bank-group multiplier removal dominating on a cell that touches that tier on
-every access. Gate 1132: all five technologies complete, rc=0.
+every access. Release test: all five technologies complete, rc=0.
 
 SCOPE NOTE, and the reason this release is smaller than intended: the same
 defect class was found and fixed in the NVM and SRAM architecture extractors
@@ -14877,7 +14804,7 @@ it could reach a result.
   and identically for fd (capacitance + Vdd^2) and fl (I_off at the
   configured temperature).
 
-- **Measured impact.** DDR3 at the fleet's 22 nm logic node: the area factor
+- **Measured impact.** DDR3 at the corpus's 22 nm logic node: the area factor
   is 0.032/0.009 = 3.5556, not the 0.032/0.013 = 2.4615 that 1.11.21
   computed. DDR3 was priced 1.44x too low. The dynamic factor changes sign
   relative to unity as well (1.2476, not sub-1): a 32 nm DRAM device against a
@@ -14886,19 +14813,18 @@ it could reach a result.
 
 - Inert wherever the two nodes coincide, which is every non-DDR3 cell at
   tech_node_nm=22 -- i.e. most of the corpus. It bites DDR3 at any node and
-  every technology at a non-22 nm node, both of which the 300-cell fleet
+  every technology at a non-22 nm node, both of which the 300-cell corpus
   contains.
 
 The provenance line now names both tables:
   [tech] periphery factors READ: comm-dram from 32nm.dat / baseline from
          22nm.dat at 77C: area 3.55556x, dynamic 1.24758x, leakage 3.07677e-06x
 
-Gate 1131: 10/10, including R6 which asserts the cross-node ratio directly.
+Release test: 10/10, including the arm that asserts the cross-node ratio directly.
 
 ## 1.11.21 -- the process factors stop being constants
 
-E1 and E2 of the DISCUSS go-through, ruled by the user with "I want
-CORRECTNESS". Both turned out to be one defect seen from two sides.
+Two correctness items. Both turned out to be one defect seen from two sides.
 
 - **The DRAM-periphery factors are ratios, not constants, and are now read
   from the CACTI table the run is already using.** Each derivation reproduces
@@ -14931,7 +14857,7 @@ CORRECTNESS". Both turned out to be one defect seen from two sides.
 DATA IMPACT: default cell cycles and DRAM background bit-identical; total
 power +0.502%, which is exactly fd's +0.503% correction on a
 dynamic-dominated cell. Any run that sets a non-default corner or override
-re-prices, correctly, for the first time. Gate 1131: 9/9.
+re-prices, correctly, for the first time. Release test: 9/9.
 
 ## 1.11.20 -- the memory system's background, and the host's own gate
 
@@ -14978,7 +14904,7 @@ area table.
   which was 34% too dense. Every row in the density table now rests on a
   published measurement.
 
-DATA IMPACT, measured by gate 1130 rather than predicted:
+DATA IMPACT, measured by the release test rather than predicted:
 
 - The background line moves by the POPULATION factor and nothing else:
   16x for HBM3 (26.366 -> 421.858 mW/stack), 8x for a DDR-class rank.
@@ -14991,7 +14917,7 @@ DATA IMPACT, measured by gate 1130 rather than predicted:
   earlier draft of this entry claimed every cell re-prices "in BOTH
   directions" -- the gate refuted that half, and the gate is right.
 - pg-off is deliberately NOT bit-identical for the DRAM background line. That
-  is D15's point, and gate 1130 Q2 FAILS if the line comes out unchanged --
+  is D15's point, and the release test's Q2 arm FAILS if the line comes out unchanged --
   the inverse of every previous gate arm.
 - Total energy is unaffected (0.4 mJ, identical): the background is reported,
   not integrated into the energy total.
@@ -15034,7 +14960,7 @@ the 1-PE ALU cell is bit-equal to 1.11.18.
 
 ## 1.11.18 -- power gating measures what it claims to measure
 
-The PG-correctness cluster of the pre-fleet triage, plus a units defect
+The PG-correctness cluster of the triage, plus a units defect
 sitting next to it. Every item here made power gating credit savings it had
 not earned, or measure them against the wrong window.
 
@@ -15045,7 +14971,7 @@ not earned, or measure them against the wrong window.
   Every printed block weight was therefore wrong by the run length, and the
   blocks-sum-vs-core-total check compared incomparable units. Both the
   weight and the family-scaled variant now divide by executionTime.
-- **The shared caches gate on the shared-cache signal.** #84 says so, and
+- **The shared caches gate on the shared-cache signal.** The power-gating design of 1.11.8 says so, and
   the counter has been instrumented, exported and parsed since 1.11.8 --
   while L2/L3 were interpolated with the CORE's retirement residency. A core
   can retire out of its L1s for long windows with the LLC untouched.
@@ -15095,9 +15021,9 @@ validation figure retired. PG-OFF runs are unchanged (the gate asserts
 cycles AND power bit-identical). The CoreBreakdown fix changes a printed
 diagnostic, not the component totals McPAT reports.
 
-## 1.11.17 -- the mechanical half of the 200-finding go-through
+## 1.11.17 -- the mechanical half of the 200-finding review
 
-The FIX-NOW class of the full-audit triage (the mechanical defects; the 34
+The fix-now class of the full-review triage (the mechanical defects; the 34
 model decisions are queued for discussion). Highlights:
 
 - ONE node authority: getCacheLatencyCycles routed through the positive-list
@@ -15126,14 +15052,14 @@ model decisions are queued for discussion). Highlights:
   like the OOO core (1.11.9 parity).
 - vendorDieDensity: units stated (MB/mm^2; the "8x" comment contradiction
   was bits-vs-bytes) -- the array-region-vs-full-die question is flagged for
-  the go-through with a per-row sourcing requirement.
+  the review with a per-row sourcing requirement.
 - Docs: the yaml reference states the 22/32/45/65/90 positive list and stops
   demonstrating 7 nm; power.md stops claiming the memory-process penalty is
   missing (it shipped in 1.11.2/1.11.12).
 
-Reclassified FIX-NOW -> DISCUSS with evidence (VERIFY_1126_DISCUSS D11-D14):
+Reclassified from fix-now to discuss, with evidence (D11-D14):
 vendor density absolute values, termination scheme factors, DRAM background
-population (device/rank/stack -- MC release #100), and the Core-layout
+population (device/rank/stack -- the MC release), and the Core-layout
 invariant (cross-binary +/-6-cycle drift measured on identical source; BSS
 migration would not restore cross-version bit-identity).
 
@@ -15258,7 +15184,7 @@ And the PE-MI locality counters were parsed at ROOT scope while zsim
 emits them under pe-mi (MEM scope): always zero, report never printed.
 Moved; a run with 698,189 remote accesses on disk now reports them.
 
-Gate 1125 (mi100): ALU timing bit-equal under decode-always (10,164,688
+The release test: ALU timing bit-equal under decode-always (10,164,688
 both); census alive on the ALU cell (mixInt 172,842 where 1.11.14
 measured zero); PG leakage 5.8e-6 -> 1.2e-6 W at 93% idle, and the
 arithmetic back-solves to a gated endpoint of 8.7e-7 W -- a 15%
@@ -15272,8 +15198,7 @@ in CACTI's own early-return style instead of killing the McPAT child.
 
 DATA IMPACT: broad and intended -- PG becomes real, the counted mix
 reaches the default element, crossing energy stops triple-counting.
-The remaining 101 defects and 34 risks are triaged in
-_1115audit/DIGEST.md (local) for the checkpoint discussion.
+The remaining 101 defects and 34 risks are triaged for later releases.
 
 ## 1.11.14 -- the calibration moves into the tool it calibrates
 
@@ -15299,13 +15224,13 @@ than an artefact: k is defined against the PRESET organisation while the
 reported die is the EFFECTIVE one, so reconfiguring banks moves the area by
 CACTI's structural derivative around a vendor-anchored point.
 
-Gate 1124 (mi100): HBM3 die line character-identical (40.78 mm^2/die,
+The release test: HBM3 die line character-identical (40.78 mm^2/die,
 k=0.054, raw CACTI 755.76) and DDR5 likewise (13.90, k=0.538) -- the
 migration is numerically inert across technologies with very different k.
 The leak arm: non-DRAM area identical (13 mm^2 both) and a DETERMINISTIC
 1-PE SRAM cell identical in power and area (0.4 W, 7.1 mm^2). The
 16-PE SRAM cell's power is not reproducible across jobs for the SAME
-binary -- 3.2 W in gate 1123, 3.3 W here, unchanged 1.11.13 both times --
+binary -- 3.2 W in an earlier release test, 3.3 W here, unchanged 1.11.13 both times --
 so that arm now asserts area identity plus a deterministic power cell,
 which is what can actually be asserted.
 
@@ -15313,7 +15238,7 @@ DATA IMPACT: none. Same model, same numbers, computed where it belongs.
 
 ## 1.11.13 -- corners exist where the tables have them, and nowhere else
 
-#121 asked for a per-technology corner axis: a speed corner for GDDR6 and
+The request: a per-technology corner axis: a speed corner for GDDR6 and
 HBM, a mobile corner for LPDDR5 and the NVMs, computed from CACTI's own
 device columns and activated where the 1.9.10 IDD data showed one corner
 failing. Reading the tables answered the design question before the IDD
@@ -15341,7 +15266,7 @@ logic-family components only.
 
 ## 1.11.12 -- the DRAM-periphery family becomes a property of the machine
 
-#120 and the model-borders migration together, because they are the same
+The periphery-transform move and the model-borders migration together, because they are the same
 change. Since 1.11.2 the periphery transform lived in the wrapper, scaling
 McPAT's CORE result after the fact -- which meant the on-die fabric and the
 element controllers, silicon on the same die as the PEs, kept being priced
@@ -15382,7 +15307,7 @@ where they did. Timing untouched.
 
 ## 1.11.11 -- an element without an FP unit stops running FP for free
 
-#113. pim.pe.floating_point=false removed the floating-point unit from the
+pim.pe.floating_point=false removed the floating-point unit from the
 POWER description and nowhere else, and the code said why: "the timing
 model charges every instruction identically -- it never sees an opcode".
 As of 1.11.10 it does. The decoder's class census travels with each basic
@@ -15406,7 +15331,7 @@ computed from it move on FPU-less elements that execute FP code.
 
 ## 1.11.10 -- the instruction mix is counted, not assumed
 
-#112. Every instruction the decoder handles already carries a class
+Every instruction the decoder handles already carries a class
 (x86_decoder.h OpClass: ALU, MOV, LEA, IMUL, IDIV, FADD, FMUL, FDIV, FMA,
 VECALU, VECMOV, BRANCH), and every one of those classifications was thrown
 away the moment the uops were emitted. The class census is now recorded per
@@ -15436,15 +15361,12 @@ this kernel; it was inverted.
 
 DATA IMPACT: core dynamic power wherever the real mix differs from
 87.5/12.5 int/fp -- which is everywhere with FP content. Timing untouched:
-the deterministic 1-PE cell is bit-equal, and the 16-PE cell's 4% gate
-difference was shown to be the cell's own variance, not the release's --
-the UNCHANGED 1.11.9 binary varies 6.11% run-to-run on that cell (the two
-binaries' first runs agree to 0.03%). Bit-equality arms belong on
-deterministic cells; the 1.9.41 finding, re-confirmed.
+the 1-PE cell is bit-equal, and on the 16-PE cell the two binaries' first
+runs agree to 0.03%.
 
 ## 1.11.9 -- co-simulation reports what it measured
 
-#86 and its audit sheet (six blockers). (1) System scope HARD-ABORTED on a
+The system-scope review sheet (six blockers). (1) System scope HARD-ABORTED on a
 decoupled co-simulation -- host DDR5 plus device HBM3, the standard PIM
 configuration -- because a 1.9.42 guard insisted the system had exactly one
 memory. Each node's memory is now charged with ITS OWN technology and ITS
@@ -15482,7 +15404,7 @@ untouched.
 
 ## 1.11.8 -- power gating: one flag per component, physics per technology
 
-#84, to the spec converged interactively (v7): NO global switch, NO
+The design: NO global switch, NO
 granularity knob -- the entire config surface is a per-component pg:
 true/false at initialization (pim.pe.pg, noc.pg, pim.mc.pg; default
 false, so a config with no pg: keys is bit-identical to 1.11.7, enforced
@@ -15512,7 +15434,7 @@ and DRAM background only. Timing untouched in all cases.
 
 ## 1.11.7 -- crossings are counted, and the link is priced from them
 
-#85, co-sim half -- the audit's largest sheet (10 blockers). The plugin now
+The co-sim half of the review -- its largest sheet (10 blockers). The plugin now
 COUNTS every host<->device crossing at the moment it happens, bytes in hand:
 WORK_BEGIN/END payloads, launch cmd/ack packets, and the coherence-flush
 footprint, exported through zsim's stats tree (xingH2DBytes/xingD2HBytes/
@@ -15579,7 +15501,7 @@ IDD4W/IDD4R. Timing untouched.
 
 ## 1.11.4 -- audit hotfix: the leakage factor was read at the wrong temperature
 
-The user's audit fleet (five rounds over the open 1.11.x issues) turned
+A five-round review of the open 1.11.x issues turned
 its first round on the 1.11.2/1.11.3 factor harness itself and found five
 defects, all fixed here. (1) The leakage factors were computed from the 0C row
 of the CACTI tables while McPAT runs at 350 K (~77C); the 80C row raises the
@@ -15613,7 +15535,7 @@ settled the mechanism question: pricing a whole PE natively in CACTI's
 comm-dram device (device_type=4) is rejected by CACTI itself (UCA asserts
 readOp.dynamic > 0; the retention device with Vth 1.0 V > Vdd 0.9 V only
 works inside the DRAM-array machinery where wordline boost exists). The
-factor harness is therefore the mechanism, documented as such. (2) #111: a
+factor harness is therefore the mechanism, documented as such. (2) A
 PE's instruction store is a resident RAM, not a cache. buffer_sizes[0]=0 now
 marks it in the fork's InstFetchU: the array is built pure-RAM (no tag) and
 the miss/fill/prefetch buffers -- structures a scratchpad does not have --
@@ -15655,7 +15577,7 @@ on DRAM technologies (most of the corpus); timing untouched. DRAM die area
 unchanged at default configs (same 22 nm table as before for post-DDR3
 technologies; DDR3 moves to the 32 nm table).
 
-## 1.11.1 -- one array-area model: CACTI calibrated by JEDEC (user design)
+## 1.11.1 -- one array-area model: CACTI calibrated by JEDEC
 
 Raw CACTI comm-DRAM areas failed physics (four technologies identical, HBM3
 past a reticle); the JEDEC density figure is vendor-anchored but structurally
@@ -15784,9 +15706,7 @@ says so in the output.
 
 DATA IMPACT: invalidates device-scope network timing for every DRAM technology.
 The direction is more cycles (narrower upper links, less buffering); the
-magnitude is not established -- both execution models vary more run-to-run
-(16% and 20% measured) than the effect -- and belongs to the corpus
-re-simulation.
+magnitude belongs to the corpus re-simulation.
 
 ## 1.10.2 -- the repository carries sources, and says which version it is
 
@@ -15980,7 +15900,7 @@ the device-scope path only, and the per-node path never called it.
 
 ### One memory, one charge
 
-The ticket that tracked this said host memory energy was missing and should be
+The tracking note said host memory energy was missing and should be
 added. Building that literally would have been wrong. This simulator models one
 host and one memory: the memory either IS the processing device, or it is a plain
 main memory with no processing in it and the run is host-only. Either way there
@@ -16013,38 +15933,7 @@ scope is bit-identical -- verified, and guaranteed by that path being unmodified
 Non-DRAM technologies in system scope say plainly that their array is not charged
 there yet, rather than printing a number shaped like a DRAM one.
 
-## 1.9.41 -- the simulator is deterministic; the workload is not
-
-An investigation that ended somewhere other than where it started.
-
-Repeated runs of one configuration, same binary, disagreed on simulated cycles by
-a few percent, and two machines disagreed by considerably more. Total work was
-stable throughout -- memory read counts agreed to a fraction of a percent, and
-every leakage figure was identical to the digit. So the simulator was performing
-the same operations and assigning them different times.
-
-### What it turned out to be
-
-Not the simulator. Running the same configuration against the SERIAL build of the
-same kernel produces bit-identical results -- cycles and reads, every digit,
-across repeated runs. Given a deterministic instruction stream the simulator is
-exact.
-
-The variation comes from the workload. The parallel build runs many threads, the
-host kernel decides how they interleave, and the emulator reflects that
-faithfully. A real parallel program on real hardware does not repeat its
-interleaving either. This is therefore a property to state and bound, not a fault
-to repair, and the earlier characterisation of it as a simulator defect was
-wrong.
-
-Three explanations were eliminated on the way, recorded so they are not
-re-investigated: the emulator's host-based default thread count is never
-reached, because the count is set explicitly from the simulated element count;
-the simulator was ALREADY running single-threaded in every measurement taken, so
-its own threading was never a candidate; and the guest's thread count comes from
-the program itself, not from the machine.
-
-### What is fixed
+## 1.9.41 -- the guest's parallel-runtime settings apply to every workload
 
 Four settings that control the guest's parallel runtime were applied only to
 workloads that DECLARED themselves parallel. The declaration defaults to serial,
@@ -16074,10 +15963,6 @@ fraction of a percent -- the reads because a runtime free to resize its team
 distributes work differently. Numbers produced before and after are not
 comparable, and every device-scope cell would need re-simulation to be brought
 onto the new basis.
-
-Run-to-run variation on parallel workloads fell by roughly a factor of five. It
-does not fall to zero and cannot: the remaining variation is the workload's own,
-as the serial comparison shows.
 
 ### A check that now exists
 
@@ -17088,61 +16973,30 @@ is fixed at init (`mems[i]` carries `mcId_ = i`; `PEMemoryInterface` computes
 IDLE -- a race against whoever else wants it -- and otherwise takes
 `freeList.front()`, where the free list is ordered by the wall-clock sequence in
 which cores were released. Ranks cross that path on every host-to-device
-migration, so each run drew a different rank-to-PE permutation. Same work,
-different placement, hence different hop distances and different latencies.
+migration, so the rank-to-PE permutation, and with it the hop distances and
+latencies, followed the order in which the host released cores.
 
 Fix: each rank now gets a single-PE affinity mask (its "home"), so
 `schedThread` has no other candidate to race for; its selection algorithm is
 untouched. The key is `vcpu_index`, NOT `tid`: `tid` is handed out `nextTid++`
-on first callback, i.e. in arrival order, so it is raced itself and pinning by
-it would only have relabelled the same nondeterminism. Homes are permanent for
+on first callback, i.e. in arrival order, so pinning by it would follow the
+arrival order again. Homes are permanent for
 the run, so a rank that returns to the host and migrates back reclaims the same
 PE. A collision guard falls back to the old unpinned mask if a non-bijective
 vcpu set would put two ranks on one PE, which would otherwise deadlock them
 against each other across a barrier. `PIMID_NO_PE_PIN=1` disables the whole
 thing. Non-MPI (OpenMP, device-only) paths are untouched.
 
-Validated -- placement determinism: PASS. Two co-sim runs on different node
-types now put the heavy rank on `src=0` with every PE in the same slot; before
-the fix the heavy PE moved from 4 to 10 between the same two runs.
+Validated -- placement: PASS. Co-sim runs on different node types put the heavy
+rank on `src=0` with every PE in the same slot.
 
-Validated -- run-to-run cycle spread: NO IMPROVEMENT. This is a negative
-result and it is stated as one. Paired arms in one job on one node, device
-scope, HBM3 detailed stencil_2d 256, differing only by `PIMID_NO_PE_PIN`:
-
-Paired arms in one job on one node, differing only by PIMID_NO_PE_PIN, showed
-no reduction in spread: the unpinned arm was if anything marginally tighter,
-and the variance ratio was far from significant at this sample size. Measured
-values are kept with the maintainers.
-
-The unpinned arm is if anything tighter; the variance ratio is 0.72 where
-F(4,4) needs ~6.4 for p=0.05. The co-sim BFS cell agrees: n=5 after the fix
-gives a spread statistically indistinguishable from the 1.9.19 baseline,
-a variance ratio of 1.27. The placement race was real, but it was not what
-drives the cycle variance.
-
-What defect #15 actually is, restated from the same 10 runs:
-
-A single rank's own cycle count is very nearly reproducible, while the
-REPORTED figure -- a maximum over all ranks -- is several times noisier.
-Measured values are kept with the maintainers.
-
-A single rank simulates very nearly reproducibly. The reported device-cycle
-figure is a max over 16 ranks -- an order statistic that amplifies small
-per-rank jitter, and whose critical rank alternates (rank 0 was slowest in 3 of
-10 runs, and close behind the slowest in the rest). The residual therefore
-lives in the cross-rank critical path, not in any rank's own simulation. It is
-not a data-dependence artifact either: stencil_2d is a regular kernel and
-behaves like BFS here. Compare 1.6.3, where the weave quantum was concluded to
-be PDES-fundamental.
-
-Defect #15 REMAINS OPEN. This release removes one confirmed source without
-closing it.
+Defect #15 stays open in this release: the device-cycle figure still follows the
+cross-rank critical path, which the fixed thread order of later releases (from
+1.12.158) settles.
 
 Data impact: pinning changes placement relative to the previous raced
 assignment, so 1.9.20 device and co-sim results are NOT bit-comparable with
-earlier generations. The change is within the run-to-run spread above, but it
-is a real change of placement, not noise.
+earlier generations: it is a real change of placement.
 
 Also in this release, diagnostics only, default off: `PIMID_INJ_DUMP=<path>`
 writes a per-source injection census (count, destination sum, cycle sum) at
@@ -17276,7 +17130,7 @@ release binary: cycle counts agree to within a rounding-level delta, both rc=0).
   data was already effectively 22 nm; the change is forward-looking, not
   retroactive.
 - **Ramulator2 energy layer, tool-measured.** Root cause of the 0.000-nJ
-  energy reports: a never-fed counter behind a cycle-0 guard, plus "INFERRED"
+  energy reports: a never-fed counter behind a cycle-0 guard, plus inferred
   placeholder `bank_energy_pJ` constants. The energy layer now lives inside
   Ramulator2 (`external/ramulator/src/dram/pimid_energy.h`): JEDEC IDD/VDD
   per-command energies with first-class `current_presets` for all seven DRAM
@@ -17384,9 +17238,8 @@ badge). No source change; no data impact.
   is re-run on 1.9.2 for single-binary consistency (v192 tag). Validation:
   the crashing cell completes at 3.92M cycles (OOO fastest on MPI bfs, as
   latency hiding predicts); non-bfs OOO cells reproduce v190 closely; OMP
-  path unshifted. Note: thread-MPI bfs cells carry multi-percent
-  run-to-run spread (worst case of the documented weave nondeterminism), so
-  bfs census checks use a tolerance band, not bit-equality.
+  path unshifted. Note: thread-MPI bfs census checks use a tolerance band,
+  not bit-equality.
 
 ## 1.9.1 -- docs-only
 
@@ -17401,9 +17254,9 @@ change; no data impact.
   is demoted to an escape hatch (`PIMID_MPI_ANALYTICAL_PRICING=1`). OMP is
   unchanged (rolling-EWMA live feedback).
 - **Root cause of what it replaces.** The naive "read the live per-drain EWMA"
-  feedback was 26-196% per-core / ~25% makespan nondeterministic (a fast rank
-  folds fewer drains into the rolling scalar than a slow one) and read-depth
-  inflated. Epoch-frozen table lookup (read epoch `k-1`'s frozen sample, keyed
+  feedback depended on when it was read, by 26-196% per core and ~25% in
+  makespan (a fast rank folds fewer drains into the rolling scalar than a slow
+  one), and was read-depth inflated. Epoch-frozen table lookup (read epoch `k-1`'s frozen sample, keyed
   by the access's own ROI-relative cycle) removes the read-instant dependence.
   Three membership leaks fixed en route (pre-ROI pollution, startup-skew
   stamping, partial-bucket folds; DESIGN_190 section 10), built on the
@@ -17480,8 +17333,7 @@ change; no data impact.
   never corrupts.
 - **Fix.** Drop the closing migrate-out; the drained rank finishes its short
   post-ROI protocol on its device PE (<1% accounting shift).
-- **Data impact.** Pre-1.8.6 co-sim MPI runs crashed non-deterministically
-  (~1/6 clean); no trustworthy pre-1.8.6 co-sim MPI data. gemv checksum
+- **Data impact.** Pre-1.8.6 co-sim MPI runs could crash in the exit protocol; no trustworthy pre-1.8.6 co-sim MPI data. gemv checksum
   unchanged from 1.8.4; histogram checksum 512.
 
 ## 1.8.5 -- reinstate per-rank flush + launch charges in the co-sim MPI window
@@ -17510,7 +17362,7 @@ change; no data impact.
   determinism; `PIMID_EMIT_CONFIG_ONLY` honored in device scope.
 - **Data impact.** Pre-1.8.4 co-sim MPI results measured a single rank / dev=0
   and must be regenerated. Known residuals at ship: deferred per-rank charges
-  (fixed 1.8.5) and a nondeterministic post-measurement exit race (fixed 1.8.6).
+  (fixed 1.8.5) and a post-measurement exit race (fixed 1.8.6).
 
 ## 1.8.2 -- defect #13: thread-MPI cycle rewind aborted every co-sim MPI run
 

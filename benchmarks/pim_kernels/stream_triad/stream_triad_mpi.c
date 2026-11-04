@@ -43,7 +43,7 @@ static void stream_triad_range(pimid_spm_t* s, float* a, const float* b, const f
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the largest rank share
+/* 1.11.94: need of the largest rank share
  * [a][b][c] chunks, chunk = ceil(N/nprocs). */
 static size_t stream_triad_mpi_need(long n, const void* c) {
     long np = *(const int*)c;
@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
     float* dbuf = NULL;
     float* ape = NULL, *bpe = NULL, *cpe = NULL;
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+        /* 1.11.94: a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {

@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -24,7 +24,7 @@ class HBM3 : public IDRAM, public Implementation {
       {"HBM3_2Gb",   {2<<10,  128,  {1, 2,  4,  4, 1<<13, 1<<6}}},
       {"HBM3_4Gb",   {4<<10,  128,  {1, 2,  4,  4, 1<<14, 1<<6}}},
       {"HBM3_8Gb",   {8<<10,  128,  {1, 2,  4,  4, 1<<15, 1<<6}}},  // density label fix (6->8 Gb); banks 32 = JEDEC HBM3
-      /* 1.12.41 (user ruling 2026-10-25): the 16 Gb die, 8-High part the record names. JESD238B.01 Table 4 p.6,
+      /* 1.12.41: the 16 Gb die, 8-High part the record names. JESD238B.01 Table 4 p.6,
        * column "16 Gb 8High": 8 Gb per channel, 4 Gb per PC, RA[13:0] = 16384 rows, CA[4:0], bank address
        * "SID, BA[3:0]" = 2 SIDs x 16 banks = 32 banks per pseudo-channel, 1 KB page per PC. This model has no SID
        * level: the second SID is folded into the bank-group count (8 BG x 4 banks per PC), so banks in different
@@ -45,7 +45,7 @@ class HBM3 : public IDRAM, public Implementation {
        * note on the preset row below. */
       // Replaces the earlier placeholder "HBM3_2Gbps" preset, which used the
       // wrong data rate (2.0 vs 6.4 Gb/s) and impossible ~7ns row timings.
-      /* PIMID 1.11.59 (audit F036): the nRFC/nRFCSB/nREFISB columns are -1,
+      /* PIMID 1.11.59: the nRFC/nRFCSB/nREFISB columns are -1,
        * because get_timing_vals() overwrites all three from the per-density
        * tables further down before anything reads them. This line used to
        * carry nRFC=706 with a comment claiming "tRFC=220ns @4Gb" -- a value
@@ -56,7 +56,7 @@ class HBM3 : public IDRAM, public Implementation {
        * dead and the comment beside it read as the authority, which is the
        * worse half. -1 is this file's idiom for "supplied elsewhere" and the
        * completeness check below still catches a column nothing fills. */
-      /* PIMID 1.11.63 (calibration): THE WHOLE ROW IS RE-DERIVED IN THE CK
+      /* PIMID 1.11.63 (calibration): THE WHOLE ROW IS re-derived IN THE CK
        * DOMAIN. This is a FIRST-ORDER change: it uncaps HBM3 bandwidth.
        *
        * THE ERROR. The row ran at tCK = 312 ps, which is tWDQS -- the write
@@ -141,7 +141,7 @@ class HBM3 : public IDRAM, public Implementation {
        *  IO sense amp sits at the end of the bank (DDR/LPDDR) and ~2.5 ns
        *  where it sits mid-bank (GDDR/HBM) -- the physical reason HBM's
        *  column-to-column spacing is half the DDR figure. */
-      /* 1.12.41 (user ruling 2026-10-25): nRP 26 -> 24 and nRC 79 -> 77. JESD238B.01 Table 84 p.153 (the
+      /* 1.12.41: nRP 26 -> 24 and nRC 79 -> 77. JESD238B.01 Table 84 p.153 (the
        * standard's timing set for the IDD loops): tRC 48 ns, tRAS 33 ns, tRP 15 ns, NOTE 1 "nRAS = RU(tRAS/tCK),
        * nRP = RU(tRP/tCK) ... nRAS + nRP = nRC": RU(15/0.625) = 24, nRAS 53 unchanged, nRC = 53 + 24 = 77
        * (48 ns / 0.625 = 76.8). The 16 ns tRP above was not a JESD238B number. */
@@ -255,7 +255,7 @@ class HBM3 : public IDRAM, public Implementation {
       Node(HBM3* dram, Node* parent, int level, int id) : DRAMNodeBase<HBM3>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -266,7 +266,7 @@ class HBM3 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
     };
 
@@ -281,7 +281,7 @@ class HBM3 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -289,7 +289,7 @@ class HBM3 : public IDRAM, public Implementation {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {
@@ -468,7 +468,7 @@ class HBM3 : public IDRAM, public Implementation {
         {  -1,  200,   -1,   -1},
       };
 
-      /* PIMID 1.11.59 (audit F034, HBM2's twin): this header said "tRFC
+      /* PIMID 1.11.59 (HBM2's twin): this header said "tRFC
        * table" over the same-bank refresh INTERVAL table. */
       // tREFIsb table (same-bank refresh INTERVAL, unit is nanosecond!)
       /* 1.11.63 (calibration): the four constants {4875, 4875, 2438, 2438} are
@@ -507,7 +507,7 @@ class HBM3 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037): the lambda returns -1 for any density
+      /* PIMID 1.11.59: the lambda returns -1 for any density
        * outside the four tabulated ones, and that -1 then indexed three
        * constexpr arrays. An out-of-bounds read one element BEFORE a table of
        * plausible nanosecond figures does not crash -- it yields whatever
@@ -547,7 +547,7 @@ class HBM3 : public IDRAM, public Implementation {
        *     now used where the standard supplies one; the tRFCab upper bound
        *     survives only for the columns the standard marks TBD. */
       m_timing_vals("nREFISB") = (long long)(tREFIsb_ns * 1000.0f) / tCK_ps;   /* 1.12.42: tREFI is a MAXIMUM -- round DOWN (as DDR5.cpp, JESD79-5D cl.13.2 max algorithm) */
-      /* PIMID 1.11.59 (audit F035): the `if (nRFCSB == -1)` this replaces was
+      /* PIMID 1.11.59: the `if (nRFCSB == -1)` this replaces was
        * unconditionally true -- the one shipped preset sets that column to -1
        * -- while nRFC and nREFISB immediately above were overwritten with no
        * guard at all. The guard therefore documented a preset-wins precedence

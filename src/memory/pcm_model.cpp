@@ -43,7 +43,7 @@ PCMModel::PCMModel(const std::string& config_path)
     pcm_config_.banks = 16;
     pcm_config_.read_write_ports = 1;
     pcm_config_.tech_node_nm = 90;
-    /* 1.11.56 (audit D054): nanoseconds, not cycles. These are placeholders
+    /* 1.11.56: nanoseconds, not cycles. These are placeholders
      * that initializeNVSim() overwrites on every reachable path; they exist so
      * the struct is not read uninitialized if the tool binding fails, and the
      * model refuses (throws) in that case anyway. */
@@ -126,7 +126,7 @@ void PCMModel::initialize() {
      * and wordline terms alone, and no write is timed by them: the timing path takes NVSim's bank
      * write latency, printed here instead. */
     if (pcm_arch_->timing.inner_bank.set_pulse_ns > 0.0 || pcm_arch_->timing.inner_bank.reset_pulse_ns > 0.0) {
-        /* 1.11.56 (audit D062): say when the SET path is a substitution. */
+        /* 1.11.56: say when the SET path is a substitution. */
         std::cout << "[PCMModel] Inner-bank SET write latency: "
                   << pcm_arch_->timing.inner_bank.getTotalSetWriteLatency() << " ns"
                   << (pcm_arch_->timing.set_from_generic_write
@@ -145,7 +145,7 @@ void PCMModel::initialize() {
               << pcm_arch_->timing.inner_bank.source << std::endl;
 
     // Use architecture energy values (may have been extracted from NVSim)
-    /* 1.11.58 (audit D022/D043, the gated unit change memory_model.h asked
+    /* 1.11.58 (the gated unit change memory_model.h asked
      * for): this member is NANOJOULES PER ACCESS, the contract's unit.
      *
      * It used to hold two different quantities depending on which path ran.
@@ -158,7 +158,7 @@ void PCMModel::initialize() {
      * getTotalEnergy() no longer has to guess. */
     read_energy_ = pcm_arch_->energy.read_energy_per_byte
                    * bytesPerAccess(access_width_bits_) / 1000.0;   // pJ/B -> nJ/access
-    /* 1.11.60 (audit round 4, C015): THE SET ENERGY, because every write this
+    /* 1.11.60: THE SET ENERGY, because every write this
      * model sees is charged as a SET everywhere else.
      *
      * This used to read energy.write_energy_per_byte, which the extractor
@@ -194,12 +194,12 @@ void PCMModel::initialize() {
     std::cout << "  Capacity: " << (pcm_config_.capacity / (1024.0 * 1024 * 1024)) << " GB" << std::endl;
     std::cout << "  Banks: " << pcm_config_.banks << std::endl;
     std::cout << "  Technology: " << pcm_config_.tech_node_nm << " nm" << std::endl;
-    /* 1.11.56 (audit D054): printed as NANOSECONDS, which is what NVSim
+    /* 1.11.56: printed as NANOSECONDS, which is what NVSim
      * reported and what these fields hold. They were labelled "cycles" while
      * carrying a 1 GHz product, so the number was right only for a 1 GHz PE. */
     std::cout << "  Read Latency: " << pcm_config_.read_latency_ns << " ns" << std::endl;
     std::cout << "  SET Write Latency: " << pcm_config_.set_write_latency_ns << " ns" << std::endl;
-    /* 1.11.56 (audit D045): name the substitution when there is one. */
+    /* 1.11.56: name the substitution when there is one. */
     std::cout << "  RESET Write Latency: " << pcm_config_.reset_write_latency_ns << " ns"
               << (reset_latency_is_set_path_
                   ? " (NVSim did not resolve resetLatency -- this IS the SET path)"
@@ -207,7 +207,7 @@ void PCMModel::initialize() {
               << std::endl;
     std::cout << "  Endurance: " << pcm_config_.endurance << " writes (limited)" << std::endl;
     std::cout << "  WARNING: PCM only suitable for read-heavy PIM workloads!" << std::endl;
-    /* 1.11.60 (audit round 4, C001): nJ PER ACCESS. 1.11.58 re-based the
+    /* 1.11.60: nJ PER ACCESS. 1.11.58 re-based the
      * member and left this label on the retired pJ/byte basis, so the printed
      * number was 15.6x below what it claimed at the 512-bit configured line
      * (125x at the 64-bit model default). Invisible because the value was
@@ -215,7 +215,7 @@ void PCMModel::initialize() {
      * very print as the evidence for the old unit. The "(Nx read)" ratio on
      * the write line is unit-invariant and is unaffected. */
     std::cout << "  Read Energy: " << read_energy_ << " nJ/access" << std::endl;
-    /* 1.11.56 (audit D046): the "(30x read!)" tag was a constant printed over
+    /* 1.11.56: the "(30x read!)" tag was a constant printed over
      * a computed number. Nothing ever compared the two -- on the shipped
      * characterization the real ratio is nowhere near 30 -- so the log asserted
      * a headline figure that the run itself contradicted. Compute the ratio
@@ -241,7 +241,7 @@ void PCMModel::loadConfig(const std::string& config_path) {
     std::cout << "[PCMModel] Using default 1GB PCM configuration" << std::endl;
 }
 
-/* 1.11.56 (audit D054): THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
+/* 1.11.56: THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
  *
  * MemoryModel's legacy access()/getLatency() return Cycle, and this model is
  * handed no clock -- the simulator drives it through getTierLatencyNs(), which
@@ -256,7 +256,7 @@ static inline Cycle legacyNsAsCycles(double ns) {
     return static_cast<Cycle>(std::ceil(ns));   // 1 GHz: no clock is supplied
 }
 
-/* 1.11.60 (audit round 4, C001): READ THE PARAGRAPH BELOW AS HISTORY, NOT AS
+/* 1.11.60: READ THE PARAGRAPH BELOW AS HISTORY, NOT AS
  * A STATEMENT OF THE PRESENT UNIT. It was written at 1.11.57 and it was true
  * then; 1.11.58 re-based read_energy_/write_energy_ to NANOJOULES PER ACCESS
  * at assignment (see the note beside the assignments in initialize()), and
@@ -357,7 +357,7 @@ void PCMModel::tick() {
 
 Cycle PCMModel::getLatency(MemoryRequestType type) const {
     switch (type) {
-        // 1.11.56 (audit D054): see legacyNsAsCycles above.
+        // 1.11.56: see legacyNsAsCycles above.
         case MemoryRequestType::READ:
             return legacyNsAsCycles(pcm_config_.read_latency_ns);
         case MemoryRequestType::WRITE:
@@ -371,7 +371,7 @@ Cycle PCMModel::getLatency(MemoryRequestType type) const {
 }
 
 double PCMModel::getTotalEnergy() const {
-    /* 1.11.58 (audit D022/D043): NANOJOULES, as MemoryModel documents.
+    /* 1.11.58: NANOJOULES, as MemoryModel documents.
      *
      * Two errors lived on these three lines. The dynamic term multiplied a
      * pJ/byte density by an access count and called the product picojoules
@@ -386,7 +386,7 @@ double PCMModel::getTotalEnergy() const {
      * That is not an estimate of a clock -- these models carry none; it is
      * the same convention legacyNsAsCycles() states, and it is why leakage
      * in nJ is simply watts x cycles. */
-    /* 1.11.60 (audit round 4, C015): the comment on this line used to be the
+    /* 1.11.60: the comment on this line used to be the
      * only place that said what the write term was, and it said "every write
      * counted as SET" while write_energy_ held the SET/RESET mean. The counter
      * and the latency were SET; the energy was not. write_energy_ is now the
@@ -436,7 +436,7 @@ void PCMModel::printStats() const {
     std::cout << "  Chip SET Write: " << getChipSetWriteLatency() << " ns" << std::endl;
 
     std::cout << "\nEnergy Consumption:" << std::endl;
-    /* 1.11.60 (audit round 4, C002): THE SECOND MULTIPLY IS GONE.
+    /* 1.11.60: THE SECOND MULTIPLY IS GONE.
      *
      * These lines multiplied read_energy_/write_energy_ by bytes-per-access.
      * That was right at 1.11.57, when the members were an energy DENSITY;
@@ -453,12 +453,12 @@ void PCMModel::printStats() const {
      * product was 0 x wrong.
      *
      * The per-access figures are now the members themselves, and the per-byte
-     * line is DERIVED from them rather than being the stored quantity, so the
+     * line is derived from them rather than being the stored quantity, so the
      * two can no longer drift apart again. */
     const double bpa = bytesPerAccess(access_width_bits_);
     std::cout << "  Access Width: " << (bpa * 8.0) << " bits (" << bpa << " B)" << std::endl;
     std::cout << "  Read Energy (per access): " << read_energy_ << " nJ" << std::endl;
-    // 1.11.56 (audit D046): the ratio is measured here, not asserted.
+    // 1.11.56: the ratio is measured here, not asserted.
     std::cout << "  SET Write Energy (per access): " << write_energy_ << " nJ";   // 1.11.60 (C015)
     if (read_energy_ > 0.0)
         std::cout << " (" << (write_energy_ / read_energy_) << "x read)";
@@ -672,7 +672,7 @@ void PCMModel::initializeNVSim() {
 
         // Extract NVSim results if valid
         if (nvsim_wrapper_->isValid()) {
-            /* 1.11.56 (audit D054): NVSim reports SECONDS. Carry them as
+            /* 1.11.56: NVSim reports SECONDS. Carry them as
              * nanoseconds. The old code multiplied by a hardcoded 1 GHz and
              * stored the product in a field called *_latency, which the
              * printout then labelled "cycles" -- so a run at 2 GHz reported
@@ -686,7 +686,7 @@ void PCMModel::initializeNVSim() {
             }
             if (write_ns > 0) {
                 pcm_config_.set_write_latency_ns = write_ns;
-                /* 1.11.56 (audit D045): RESET is a MELT-QUENCH PULSE, and its
+                /* 1.11.56: RESET is a MELT-QUENCH PULSE, and its
                  * duration is a cell property NVSim resolves as
                  * FunctionUnit::resetLatency -- not 30% of a composed write
                  * latency. 1.11.23 removed that assertion from the extractor
@@ -794,7 +794,7 @@ double PCMModel::l0BandwidthGBs() const {
 }
 std::string PCMModel::tierLatencySource(Tier tier, Op op) const {
     if (getTierLatencyNs(tier, op) < 0.0) return "";
-    /* 1.11.56 (audit D062): ATTRIBUTE WHAT WAS ACTUALLY READ. This claimed
+    /* 1.11.56: ATTRIBUTE WHAT WAS ACTUALLY READ. This claimed
      * "NVSim FunctionUnit::setLatency" for the SET/WRITE ops unconditionally,
      * including on the cache-hit path where getSetLatency() returns -1 and the
      * extractor substitutes the generic write latency -- which is the normal
@@ -848,7 +848,7 @@ uint64_t PCMModel::getBandwidth() const {
     static bool announced = false;
     if (!announced) {
         announced = true;
-        std::cerr << "[PCMModel] getBandwidth() returns 0 = NOT SOURCED. This model "
+        std::cerr << "[PCMModel] getBandwidth() returns 0 (no sourced value). This model "
                      "characterizes latency, energy and area through its tool; "
                      "it has no sustained-bandwidth model, and the literal that "
                      "used to stand here (capacity_ / 200) was fabricated. Compose a "

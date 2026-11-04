@@ -34,7 +34,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
      * across banks. Off by default: the shipped behaviour is unchanged. */
     bool m_pimid_bank_parallel = false;
     int  m_pimid_banks_per_channel = 1;
-    /* PIMID 1.12.18 (user ruling 2026-10-24): per-chip bank state for PE traffic at chip-level placement.
+    /* PIMID 1.12.18: per-chip bank state for PE traffic at chip-level placement.
      * Each x8 chip is its own Ramulator rank; a host request (source_id 1 in the ROI, 3 outside) drives every chip of
      * its rank in lock step (see m_pimid_ls; (1.12.151): one queue entry, before that one request per chip with the
      * copies past chip 0 sent as source_id 4/6 "shadows"); its chip ACTs past chip 0 are host chip ACTs (energy).
@@ -190,7 +190,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       const int sid_ = pimid_sid(source_id);
       s_pimid_activates++; if (shadow || source_id >= 4) s_pimid_shadow_acts++;
       if (sid_ == 1) s_pimid_src_acts++;
-      if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; }   /* PIMID 1.12.18 (R1): 2/3 = outside the ROI */
+      if (sid_ >= 2) { s_pimid_out_acts++; if (sid_ == 3) s_pimid_out_hacts++; }   /* PIMID 1.12.18: 2/3 = outside the ROI */
     }
     /* PIMID 1.12.20: PRECHARGE POWER-DOWN in the replayed controller. A power-down unit (the rank -- with the
      * per-chip split, one chip -- or the whole channel on a standard without a rank level: HBM, GDDR6) with no
@@ -375,7 +375,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       }
       if (m_pimid_host_ca) {   /* PIMID 1.12.18: CA occupancy per command, from the still-unfiltered channel level */
         const int ncmd = (int)m_dram->m_commands.size();
-        /* 1.12.18 (AA10): the opening command by name, checked (LPDDR5 splits it into ACT-1/ACT-2); without one every
+        /* 1.12.18: the opening command by name, checked (LPDDR5 splits it into ACT-1/ACT-2); without one every
          * command keeps the 1-cycle default CA occupancy */
         const int act = m_dram->m_commands.contains("ACT") ? m_dram->m_commands("ACT")
                       : m_dram->m_commands.contains("ACT-1") ? m_dram->m_commands("ACT-1") : -1;
@@ -544,7 +544,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
         pd_issued(req_it->addr_vec);   // PIMID 1.12.19
         m_dram->issue_command(req_it->command, req_it->addr_vec);
-        if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
+        if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18: the host's share
 
         // If we are issuing the last command, set depart clock cycle and move the request to the pending queue
         if (req_it->command == req_it->final_command) {
@@ -552,7 +552,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
             req_it->depart = m_clk + m_dram->m_read_latency;
             pending.push_back(*req_it);
           } else if (req_it->type_id == Request::Type::Write) {
-            /* PIMID 1.11.96 (review H12): a write COMPLETES when its WR command issues (the data is accepted by the device
+            /* PIMID 1.11.96: a write COMPLETES when its WR command issues (the data is accepted by the device
              * after nCWL + nBL, which the next command's constraints already enforce). Ramulator2 shipped this branch as a
              * TODO, so an external requester never heard of its writes: the zsim controller held every write event forever
              * and reported zero writes. The callback carries the departure clock like a read's. */
@@ -952,7 +952,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       return true;
     }
 
-    /* PIMID 1.12.18 (user ruling 2026-10-24 host closed page): the auto-precharge is chosen AT ISSUE.
+    /* PIMID 1.12.18 (host closed page): the auto-precharge is chosen AT ISSUE.
      * A host (source 1/3, lock-step shadows 4/6) column command becomes RDA/WRA only when no other queued request
      * hits the same row of the same bank -- the close-when-no-pending-hit behaviour of a closed-page controller
      * (Synopsys uMCTL2 SCHED.PAGECLOSE, reset 1: "bank is kept open only while there are page hit transactions
@@ -974,7 +974,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       if (!(s == 1 || s == 3 || s == 4 || s == 6)) return;
       if (req_it->command != req_it->final_command) return;   // not the column command yet
       if (!(m_dram->m_commands.contains("RD") && m_dram->m_commands.contains("WR") && m_dram->m_commands.contains("RDA") &&
-            m_dram->m_commands.contains("WRA"))) return;   // 1.12.18 (AA10): the plugin never sets the flag then; belt and braces
+            m_dram->m_commands.contains("WRA"))) return;   // 1.12.18: the plugin never sets the flag then; belt and braces
       const int rd = m_dram->m_commands("RD"), wr = m_dram->m_commands("WR");
       if (req_it->command != rd && req_it->command != wr) return;
       if (pl_row_count(req_it->addr_vec) > 1) return;   // a queued hit keeps the row open (PIMID (1.12.127): = pimid_pending_hit
@@ -1008,7 +1008,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
       pd_issued(req_it->addr_vec);   // PIMID 1.12.19
       pl_bump(req_it->addr_vec);   // PIMID (1.12.127): its bank's state may change
       m_dram->issue_command(req_it->command, req_it->addr_vec);
-      if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18 (R0605): the host's share
+      if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18: the host's share
       }
       if (pimid_ca_host(*req_it) && req_it->command >= 0 && req_it->command < (int)m_pimid_ca_occ.size()) {   // PIMID 1.12.18
         m_pimid_ca_free = m_clk + m_pimid_ca_occ[req_it->command];
@@ -1028,7 +1028,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           req_it->depart = m_clk + m_dram->m_read_latency;
           pending.push_back(*req_it);
         } else if (req_it->type_id == Request::Type::Write) {
-          req_it->depart = m_clk + m_dram->m_read_latency;   /* as tick(): 1.11.96 H12 */
+          req_it->depart = m_clk + m_dram->m_read_latency;   /* as tick(): 1.11.96 */
           if (req_it->callback) {
             req_it->callback(*req_it);
           }
@@ -1047,7 +1047,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     }
 
     void pimid_tick_bank_parallel() {
-      /* PIMID 1.12.18 (user ruling 2026-10-24, write drain): the standard
+      /* PIMID 1.12.18 (write drain): the standard
        * watermark write-drain mode, Ramulator's own set_write_mode: write mode
        * is entered when the write queue holds more than wr_high_watermark x
        * its size or no read is pending, and left when it holds less than
@@ -1198,12 +1198,12 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     void pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits, uint64_t& caCmds, uint64_t& caActs) const override {   // PIMID 1.12.18; (1.12.151): CA slots
       shadowActs += s_pimid_shadow_acts; caWaits += s_pimid_ca_waits; caCmds += s_pimid_ca_cmds; caActs += s_pimid_ca_acts;
     }
-    /* PIMID 1.12.18 (ruling 17 / R0605): the host's share (source_id 1). */
+    /* PIMID 1.12.18: the host's share (source_id 1). */
     uint64_t s_pimid_src_hits = 0, s_pimid_src_misses = 0, s_pimid_src_conflicts = 0, s_pimid_src_acts = 0;
     void pimid_src_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates) const override {
       hits += s_pimid_src_hits; misses += s_pimid_src_misses; conflicts += s_pimid_src_conflicts; activates += s_pimid_src_acts;
     }
-    /* PIMID 1.12.18 (user ruling R1 2026-10-24): requests sent with source_id
+    /* PIMID 1.12.18: requests sent with source_id
      * 2 (device) or 3 (host) were stamped after the ROI end: replayed, not
      * priced. Their row hits / misses / conflicts and activates (hostActs: the
      * source_id 3 share), cumulative. */
@@ -1219,7 +1219,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
 
       if (req->type_id == Request::Type::Read) 
       {
-        /* PIMID 1.12.18 (R0605): source_id 1 is the host; the per-core
+        /* PIMID 1.12.18: source_id 1 is the host; the per-core
          * vectors hold get_num_cores() entries (1 for the GEM5 frontend), so
          * an id past them is not indexed. */
         const bool pimid_core = (req->source_id >= 0 && (size_t)req->source_id < s_read_row_hits_per_core.size());
@@ -1248,7 +1248,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         if (is_row_hit(req)) {
           s_write_row_hits++;
           s_row_hits++;
-          if (req->source_id == 1) s_pimid_src_hits++; if (req->source_id >= 2) s_pimid_out_hits++;   // PIMID 1.12.18 (R0605)
+          if (req->source_id == 1) s_pimid_src_hits++; if (req->source_id >= 2) s_pimid_out_hits++;   // PIMID 1.12.18
         } else if (is_row_open(req)) {
           s_write_row_conflicts++;
           s_row_conflicts++;

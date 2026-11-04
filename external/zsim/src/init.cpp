@@ -43,7 +43,7 @@ using namespace std;
 #include "core.h"
 #include "debug_zsim.h"
 #include "pe_memory_interface.h"
-#include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
+#include "dram_epoch_replay.h"   // 1.11.98
 #include "event_queue.h"
 #include "filter_cache.h"
 #include "galloc.h"
@@ -54,7 +54,7 @@ using namespace std;
 #include "mem_ctrls.h"
 #include "host_fabric.h"   // 1.12.23: host on-chip fabric (ring | crossbar | bus)
 
-/* 1.11.97 (review H08): routes a request to the requester's home memory
+/* 1.11.97: routes a request to the requester's home memory
  * interface (core id / elements per MI); the address is passed as is. */
 class HomeRoutedMemory : public MemObject {
     private:
@@ -95,7 +95,7 @@ class HomeRoutedMemory : public MemObject {
 #include "tracing_cache.h"
 #include "port_virtualizer.h"
 #include "weave_md1_mem.h" //validation, could be taken out...
-#include "noc_wire_data.h"   // (user ruling 2026-10-25: measured wire activity)
+#include "noc_wire_data.h"   // (measured wire activity)
 #include "zsim.h"
 
 extern void EndOfPhaseActions(); //in qemu_zsim_plugin.cpp
@@ -105,7 +105,7 @@ extern void EndOfPhaseActions(); //in qemu_zsim_plugin.cpp
  * follow the layout of zinfo, top-down.
  */
 
-/* 1.11.59 (audit F018): who owns a cache group, so the flush registry can be
+/* 1.11.59: who owns a cache group, so the flush registry can be
  * role-aware instead of asserting in a comment that it does not need to be.
  *
  * The system-scope emitter names every cache group "<node.name>_l1d" /
@@ -139,13 +139,13 @@ static int cacheGroupOwnerNode(const string& groupName) {
     return best;
 }
 
-/* 1.11.59 (audit F018): banks excluded from the flush registry because their
+/* 1.11.59: banks excluded from the flush registry because their
  * owning node is a DEVICE, reported once the groups are built so the decision
  * is visible in the log rather than inferred from a count that silently got
  * smaller. */
 static uint32_t g_flushRegistryDeviceBanks = 0;
 
-/* 1.11.40 (audit N7): register every cache so the coherence flush can MEASURE
+/* 1.11.40: register every cache so the coherence flush can MEASURE
  * its footprint instead of using a constant. There was no global registry;
  * caches were only reachable through the local cMap during InitSystem.
  * Device PEs of type alu_core have no cache at all (see pe_memory_interface.h,
@@ -153,7 +153,7 @@ static uint32_t g_flushRegistryDeviceBanks = 0;
  * cache -- which is what makes summing the whole registry the right answer
  * for a HOST flush.
  *
- * 1.11.59 (audit F018): that held only because the shipped co-sim gives
+ * 1.11.59: that held only because the shipped co-sim gives
  * its device node an alu_core. The condition was never CHECKED -- the
  * push_back was unconditional and the sentence that followed it said a
  * cache-bearing PE type "must" make this role-aware, which is a comment,
@@ -399,7 +399,7 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         if (type != "Simple") panic("Terminal cache %s can only have type == Simple", name.c_str());
         if (arrayType != "SetAssoc" || hashType != "None" || replType != "LRU") panic("Invalid FilterCache config %s", name.c_str());
         cache = new FilterCache(numSets, numLines, cc, array, rp, accLat, invLat, name);
-        static_cast<FilterCache*>(cache)->setHitLatency(latency);   // 1.11.97 (x05-5, gate 1207D): the configured L1 latency, for the core's load-use charge
+        static_cast<FilterCache*>(cache)->setHitLatency(latency);   // 1.11.97: the configured L1 latency, for the core's load-use charge
     }
 
     RegisterFlushCache(prefix, cache);
@@ -429,9 +429,9 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
     } else if (type == "MD1" || type == "WeaveMD1") {
         panic("Memory controller type '%s' has been removed. Use 'Simple' (M/D/1 is always active) or 'WeaveSimple'.", type.c_str());
     } else if (type == "Ramulator") {
-        /* (1.12.147, user ruling 2026-10-28: "move HOST_MC placement and system
+        /* (1.12.147, move HOST_MC placement and system
          * devices of type Ramulator onto the epoch replay (no DAMOV-style
-         * weave path left)"): a memory of type Ramulator is a REPLAYED
+         * weave path left)): a memory of type Ramulator is a REPLAYED
          * controller. The controller object is the host memory's
          * (SimpleMemory; WeaveSimpleMemory when sys.mem.weave = 1, the
          * in-order / OOO requesters), charged in the bound phase with the
@@ -440,13 +440,13 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
          * exists: InitSystem, "memDramReplay"); the M/D/1 at the zero-load
          * latency and the controller's bandwidth is the bootstrap before the
          * first replayed epoch, exactly as on the replayed host memory
-         * (1.12.18 ruling 17). RamulatorMemory -- bound phase req.cycle +
+         * (1.12.18). RamulatorMemory -- bound phase req.cycle +
          * minLatency, Ramulator2 run in the weave phase, so a dependent
          * request never saw Ramulator's latency and a bound-only core
          * (alu_core, simple_core) saw minLatency only -- is removed. */
         if (!config.exists("sys.mem.bandwidth"))
             panic("sys.mem.type = Ramulator (%s): the replayed controller's bootstrap (M/D/1 before the first replayed epoch) needs sys.mem.bandwidth, "
-                  "the controller's own MB/s; PIMID's emitter writes it (user ruling 2026-10-28)", name.c_str());
+                  "the controller's own MB/s; PIMID's emitter writes it", name.c_str());
         const uint32_t bandwidth = config.get<uint32_t>("sys.mem.bandwidth");
         if (config.get<uint32_t>("sys.mem.weave", 0)) mem = new WeaveSimpleMemory(lineSize, frequency, bandwidth, latency, latency, domain, name);
         else mem = new SimpleMemory(lineSize, frequency, bandwidth, latency, name);
@@ -538,8 +538,8 @@ static void InitSystem(Config& config) {
     // GarnetNetwork inherits from Network, so we use a single Network* pointer
     Network* network = nullptr;
     zinfo->garnetNetwork = nullptr;  // Initialize to null
-    zinfo->nocWire = new NocWireData();   // measured wire activity (user ruling 2026-10-25: measured wire activity)
-    {   /* PIMID's packet header field widths (user ruling 2026-10-26: PIMID's own packet header) (one 64-bit word):
+    zinfo->nocWire = new NocWireData();   // measured wire activity
+    {   /* PIMID's packet header field widths (PIMID's own packet header) (one 64-bit word):
          *   node ids  12 bits: the fabric's nodes are the PE endpoints (at most 2048, the
          *             MAX_THREADS clamp in autoGeneratePEMemMap) plus the memory / aggregated
          *             region endpoints -- 4096 ids;
@@ -599,7 +599,7 @@ static void InitSystem(Config& config) {
         uint32_t dataMsgBits = config.get<uint32_t>("sys.network.dataMsgBits", 0);
         bool ringUnidirectional = config.get<bool>("sys.network.ringUnidirectional", false);
 
-        uint32_t flitSizeBits = config.get<uint32_t>("sys.network.flitSizeBits", 128);   // 1.11.97 (row 18): noc.flit_size_bits reaches the fork
+        uint32_t flitSizeBits = config.get<uint32_t>("sys.network.flitSizeBits", 128);   // 1.11.97: noc.flit_size_bits reaches the fork
         GarnetNetwork* garnet = new GarnetNetwork(
             topo, meshRows, meshCols, routerLat, linkLat,
             cycleAccurate, routing, vcsPerVnet, buffersPerVc,
@@ -669,7 +669,7 @@ static void InitSystem(Config& config) {
     zinfo->hierarchy.enabled = config.exists("sys.hierarchy");
     if (zinfo->hierarchy.enabled) {
         zinfo->hierarchy.placementLevel = config.get<uint32_t>("sys.hierarchy.placementLevel", 1);
-        /* 1.11.94 (review H17): HOST_MC is rung 7; anything above is not a tier
+        /* 1.11.94: HOST_MC is rung 7; anything above is not a tier
          * this build knows (the old -1 sentinel arrived here as 0xFFFFFFFF and
          * indexed the latency arrays at -1). */
         if (zinfo->hierarchy.placementLevel > 7)
@@ -697,10 +697,10 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.channelsPerSystem = config.get<uint32_t>("sys.hierarchy.channelsPerSystem", 1);
         zinfo->hierarchy.dramChannels = config.get<uint32_t>("sys.hierarchy.dramChannels", 1);
         zinfo->hierarchy.stackChannelsPerDie = config.get<uint32_t>("sys.hierarchy.stackChannelsPerDie", 0);   // 1.12.18
-        zinfo->hierarchy.indieFabric = config.get<uint32_t>("sys.hierarchy.indieFabric", 0);   // 1.11.103 (ruling 9)
+        zinfo->hierarchy.indieFabric = config.get<uint32_t>("sys.hierarchy.indieFabric", 0);   // 1.11.103
         zinfo->hierarchy.indieGridW = config.get<uint32_t>("sys.hierarchy.indieGridW", 0);
         zinfo->hierarchy.indieGridH = config.get<uint32_t>("sys.hierarchy.indieGridH", 0);
-        zinfo->hierarchy.dramEpochReplay = config.get<uint32_t>("sys.hierarchy.dramEpochReplay", 0);   // 1.11.98 (ruling 4 (c))
+        zinfo->hierarchy.dramEpochReplay = config.get<uint32_t>("sys.hierarchy.dramEpochReplay", 0);   // 1.11.98
         zinfo->hierarchy.nocAggBandwidthMBs = config.get<uint64_t>("sys.hierarchy.nocAggBandwidthMBs", 0);
         zinfo->hierarchy.dqTurnNsX100 = config.get<uint32_t>("sys.hierarchy.dqTurnNsX100", 0);
         zinfo->hierarchy.fpEmulCycles = config.get<uint32_t>("sys.hierarchy.fpEmulCycles", 0);  // 1.11.11
@@ -709,7 +709,7 @@ static void InitSystem(Config& config) {
         // use the global sys.frequency. In system-scope co-sim PIMID emits the
         // DEVICE node frequency here so device contention is not host-clocked.
         zinfo->hierarchy.nocBandwidthFreqMHz = config.get<uint32_t>("sys.hierarchy.nocBandwidthFreqMHz", 0);
-        for (int i = 0; i < 8; i++) {   // 1.11.94 (H17): rung 7 = HOST_MC
+        for (int i = 0; i < 8; i++) {   // 1.11.94: rung 7 = HOST_MC
             char key[64]; snprintf(key, sizeof(key), "sys.hierarchy.levelLatency%d", i);
             zinfo->hierarchy.levelLatency[i] = config.get<uint32_t>(key, 0);
         }
@@ -743,7 +743,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.pagesPerUnit = config.get<uint32_t>("sys.hierarchy.pagesPerUnit", 32);
         zinfo->hierarchy.slotRowBytes = config.get<uint32_t>("sys.hierarchy.slotRowBytes", 0);   // (1.12.256)
         zinfo->hierarchy.dramRowBytes = config.get<uint32_t>("sys.hierarchy.dramRowBytes", 0);  // 1.11.52 (D003)
-        zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91 (R8-1)
+        zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91
         zinfo->hierarchy.dramPowerDown = config.get<bool>("sys.hierarchy.dramPowerDown", false);   // 1.12.19
         zinfo->hierarchy.dramPdIdleClocks = config.get<uint32_t>("sys.hierarchy.dramPdIdleClocks", 64);
         zinfo->hierarchy.dramPdTxpNck = config.get<uint32_t>("sys.hierarchy.dramPdTxpNck", 0);
@@ -758,7 +758,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.bankServiceCycles = config.get<double>("sys.hierarchy.bankServiceCycles", 0.0);   // (1.12.111)
         zinfo->hierarchy.writeSlotCycles = config.get<double>("sys.hierarchy.writeSlotCycles", 0.0);   // (1.12.114)
         zinfo->hierarchy.defaultBandwidthMBs = config.get<uint64_t>("sys.hierarchy.defaultBandwidthMBs", 0);
-        zinfo->hierarchy.tierBandwidthMBs = config.get<uint64_t>("sys.hierarchy.tierBandwidthMBs", 0);   // 1.11.97 (ruling 26)
+        zinfo->hierarchy.tierBandwidthMBs = config.get<uint64_t>("sys.hierarchy.tierBandwidthMBs", 0);   // 1.11.97
 
         // M:N PE-to-memory-org mapping
         zinfo->hierarchy.connectionMode = config.get<uint32_t>("sys.hierarchy.connectionMode", 0);
@@ -1012,7 +1012,7 @@ static void InitSystem(Config& config) {
         zinfo->bridge.protocolOverheadCycles = config.get<uint32_t>("sys.bridge.protocolOverheadCycles", 0);
         zinfo->bridge.channels = config.get<uint32_t>("sys.bridge.channels", 1);
         zinfo->bridge.uncachedCycles = config.get<uint32_t>("sys.bridge.uncachedCycles", 0);
-        zinfo->bridge.headerBytes = config.get<uint32_t>("sys.bridge.headerBytes", 0);       // (user ruling 2026-10-27: serial links calibrated)
+        zinfo->bridge.headerBytes = config.get<uint32_t>("sys.bridge.headerBytes", 0);       // (serial links calibrated)
         zinfo->bridge.l1EntryCycles = config.get<uint32_t>("sys.bridge.l1EntryCycles", 0);
         zinfo->bridge.l1ExitCycles = config.get<uint32_t>("sys.bridge.l1ExitCycles", 0);
         const char* bpc = config.get<const char*>("sys.bridge.bytesPerCycle", "0.0");
@@ -1046,7 +1046,7 @@ static void InitSystem(Config& config) {
              * the value as honoured -- a branch this panic guarantees no run
              * can ever reach.
              *
-             * 1.11.59 (audit F021, fork half): the value is now a LOCAL. It
+             * 1.11.59 (fork half): the value is now a LOCAL. It
              * used to be stored in zinfo->coherence.footprintBytes, where it
              * was read by nothing except this panic and the startup line
              * below, which printed it as "footprint=%llu B" -- always 0, and
@@ -1073,7 +1073,7 @@ static void InitSystem(Config& config) {
                  "by the element each thread will run on, as a device run's elements claim them");
         const char* wbpc = config.get<const char*>("sys.coherence.writebackBytesPerCycle", "0.0");
         zinfo->coherence.writebackBytesPerCycle = atof(wbpc);
-        /* 1.11.59 (audit F021): this line used to print "footprint=%llu B"
+        /* 1.11.59: this line used to print "footprint=%llu B"
          * from the refused config field, which could only ever be 0 and read
          * as a report of the flush size. The flush size is measured per
          * flush and printed there; what belongs here is that fact. */
@@ -1230,7 +1230,7 @@ static void InitSystem(Config& config) {
     /* Since we have checked for no loops, parent is mandatory, and all parents are checked valid,
      * it follows that we have a fully connected tree finishing at the LLC.
      */
-    /* 1.11.59 (audit F018): say what the flush domain ended up containing.
+    /* 1.11.59: say what the flush domain ended up containing.
      * The flush log already prints the registry size; without this line a
      * reader could not tell a smaller registry from a config that simply has
      * fewer caches, which is how the un-checked assumption stayed invisible
@@ -1286,7 +1286,7 @@ static void InitSystem(Config& config) {
             // bank >> channel DQ). Scale the local MI bandwidth by placement level
             // so a subarray-local access is the widest/fastest path, overcoming
             // its extra hops. subarray=4x, bank/bank-group=2x, coarser=1x.
-            /* 1.11.97 (ruling 26): the per-interface bandwidth is the placement
+            /* 1.11.97: the per-interface bandwidth is the placement
              * tier's rung (width x clock, from the sourced ladder), not the
              * aggregate scaled by a x4/x2/x1 placement gradient. */
             if (zinfo->hierarchy.tierBandwidthMBs > 0) bw = zinfo->hierarchy.tierBandwidthMBs;
@@ -1350,14 +1350,14 @@ static void InitSystem(Config& config) {
             rawMIs[i]->dqData().setBeatBytes(config.get<uint32_t>("sys.hierarchy.dqBeatBytes", 8));   // measured DQ data: the device channel's bytes per beat
         }
 
-        /* 1.11.98 (sweep-94 ruling 4 (c)): ONE Ramulator2 instance per device
+        /* 1.11.98: ONE Ramulator2 instance per device
          * replays every interface's DRAM requests at the epoch boundary; the
          * interfaces price the previous epoch's measured service latency.
          * Built from the same Ramulator YAML the oracle and the HOST_MC
          * controller use (sys.mem.configFile), at the element clock the
          * interfaces stamp on. */
         if (zinfo->hierarchy.dramEpochReplay) {
-            /* 1.11.98 (gate 1208A): the replay's own keys; in system scope
+            /* 1.11.98: the replay's own keys; in system scope
              * sys.mem describes the HOST's memory, not the device's. */
             std::string replayCfg = config.get<const char*>("sys.hierarchy.dramReplayConfigFile", "");
             if (replayCfg.empty()) replayCfg = config.get<const char*>("sys.mem.configFile", "");
@@ -1365,7 +1365,7 @@ static void InitSystem(Config& config) {
             uint32_t bursts = config.get<uint32_t>("sys.hierarchy.dramReplayBurstsPerLine", config.get<uint32_t>("sys.mem.burstsPerLine", 1));
             uint32_t lineBits = 0; while ((1u << lineBits) < zinfo->lineSize) lineBits++;
             zinfo->dramReplay = new DramEpochReplay(replayCfg, (uint64_t)peMiFreqMHz * 1000000ull, mcCount, bursts, lineBits, "dramReplay");
-            for (uint32_t i = 0; i < mcCount; i++)   // 1.12.18 (R1): requests outside the ROI leave the interfaces' rd/wr
+            for (uint32_t i = 0; i < mcCount; i++)   // 1.12.18: requests outside the ROI leave the interfaces' rd/wr
                 zinfo->dramReplay->bindCounters(rawMIs[i]->replayMi(), rawMIs[i]->rdCounter(), rawMIs[i]->wrCounter(),
                                                 rawMIs[i]->replayPricedCounter(), rawMIs[i]->replayLatCounter());   // (1.12.153): and the charged view
         }
@@ -1377,7 +1377,7 @@ static void InitSystem(Config& config) {
             mems.clear();
             info("[ZSim] Co-sim: %u PE-MIs serve the device; host keeps its own MCs", mcCount);
         } else if (mcCount > 1) {
-            /* 1.11.97 (review H08): a cache-based element's misses go to ITS
+            /* 1.11.97: a cache-based element's misses go to ITS
              * OWN memory interface (the requester's home MI, by core id and
              * elements per MI), with the address undivided -- the same
              * routing the ALU element gets through mi_. The SplitAddrMemory
@@ -1408,7 +1408,7 @@ static void InitSystem(Config& config) {
                 mems[i] = BuildMemoryController(config, zinfo->lineSize, zinfo->freqMHz, domain, name);
             }
 
-            /* (1.12.147, user ruling 2026-10-28): a memory of type Ramulator (the
+            /* (1.12.147): a memory of type Ramulator (the
              * HOST_MC placement's memory, any sys.mem of that type) gets ONE
              * replay instance of its own, hostOnly-style: the memory's own
              * Ramulator2 YAML (sys.mem.configFile), technology, channel count
@@ -1426,10 +1426,10 @@ static void InitSystem(Config& config) {
              * RamulatorMemory charged tRCD + tCAS (sys.mem.latency) only. */
             if (memType == "Ramulator") {
                 if (config.get<uint32_t>("sys.mem.hostDramReplay", 0))
-                    panic("sys.mem.type = Ramulator is replayed by its own instance; sys.mem.hostDramReplay = 1 names a second replay of the same controllers (user ruling 2026-10-28)");
+                    panic("sys.mem.type = Ramulator is replayed by its own instance; sys.mem.hostDramReplay = 1 names a second replay of the same controllers");
                 const string rCfg = config.get<const char*>("sys.mem.configFile", "");
                 if (rCfg.empty()) panic("sys.mem.type = Ramulator needs sys.mem.configFile (the memory's Ramulator2 YAML)");
-                const uint32_t rBursts = config.get<uint32_t>("sys.mem.burstsPerLine", 1);   // 1.11.96 (H01/H02)
+                const uint32_t rBursts = config.get<uint32_t>("sys.mem.burstsPerLine", 1);   // 1.11.96
                 const uint32_t rCh = config.get<uint32_t>("sys.mem.channels", memControllers);
                 const bool rSplit = (memControllers > 1) && config.get<bool>("sys.mem.splitAddrs", true);
                 const uint64_t rHz = 1000000ull * zinfo->freqMHz;
@@ -1443,15 +1443,14 @@ static void InitSystem(Config& config) {
                     const uint32_t mi = rRep->addHostInterface(rHz);
                     sm->setHostReplay(rRep, mi, 0);
                     if (rSplit) sm->setAddrSplit(i, memControllers);
-                    rRep->bindCounters(mi, sm->rdCounter(), sm->wrCounter());   // 1.12.18 (R1)
+                    rRep->bindCounters(mi, sm->rdCounter(), sm->wrCounter());   // 1.12.18
                 }
                 info("[ZSim] memory of type Ramulator: %u controller(s) replayed through Ramulator2 (one instance, %u channel(s), the YAML's address mapper), "
                      "charged in the bound phase at the measured service latency of their interface; M/D/1 bootstrap before the first replayed epoch; "
-                     "no weave-timed controller [user ruling 2026-10-28]", memControllers, rCh);
+                     "no weave-timed controller", memControllers, rCh);
             }
 
-            /* 1.12.18 (ruling 17 / R0605, user: "make the power model
-             * complete"): the host memory is replayed through Ramulator2 like
+            /* 1.12.18: the host memory is replayed through Ramulator2 like
              * the device memory (dram_epoch_replay.h). Coupled (the device IS
              * the host's memory): the host controllers join the device's
              * instance, so one controller sees all traffic on the shared
@@ -1482,9 +1481,9 @@ static void InitSystem(Config& config) {
                 for (uint32_t i = 0; i < memControllers; i++) {
                     const uint32_t mi = hRep->addHostInterface(hHz);
                     static_cast<SimpleMemory*>(mems[i])->setHostReplay(hRep, mi, hPath);
-                    hRep->bindCounters(mi, static_cast<SimpleMemory*>(mems[i])->rdCounter(), static_cast<SimpleMemory*>(mems[i])->wrCounter());   // 1.12.18 (R1)
+                    hRep->bindCounters(mi, static_cast<SimpleMemory*>(mems[i])->rdCounter(), static_cast<SimpleMemory*>(mems[i])->wrCounter());   // 1.12.18
                 }
-                info("[ZSim] host memory: %u controller(s) replayed through Ramulator2 (%s), host-path adder %u cycles on top of the measured service latency [1.12.18 ruling 17]",
+                info("[ZSim] host memory: %u controller(s) replayed through Ramulator2 (%s), host-path adder %u cycles on top of the measured service latency [1.12.18]",
                      memControllers, hShared ? "the device's instance: one controller for the shared array" : "a host-only instance", hPath);
             }
 
@@ -1497,7 +1496,7 @@ static void InitSystem(Config& config) {
              * carry the replay hook); other types keep the array-side charge. */
             if (config.get<uint32_t>("sys.mem.flushWritebacksToMC", 0)) {
                 const string fType = config.get<const char*>("sys.mem.type", "Simple");
-                if (fType == "Simple" || fType == "WeaveSimple" || fType == "Ramulator") {   // (1.12.147, user ruling 2026-10-28): Ramulator is a replayed SimpleMemory
+                if (fType == "Simple" || fType == "WeaveSimple" || fType == "Ramulator") {   // (1.12.147): Ramulator is a replayed SimpleMemory
                     zinfo->flushHostMems = new g_vector<SimpleMemory*>();
                     for (uint32_t i = 0; i < memControllers; i++)
                         zinfo->flushHostMems->push_back(static_cast<SimpleMemory*>(mems[i]));
@@ -1573,7 +1572,7 @@ static void InitSystem(Config& config) {
 
                 MemObject* mc;
                 if (devType == "Ramulator") {
-                    /* (1.12.147, user ruling 2026-10-28): the weave-timed
+                    /* (1.12.147): the weave-timed
                      * RamulatorMemory is removed. No PIMID configuration
                      * reaches this branch: the system emitter writes every
                      * router device as Simple (its M/D/1 at the Ramulator2
@@ -1581,7 +1580,7 @@ static void InitSystem(Config& config) {
                      * type Ramulator can only come from a hand-written zsim
                      * configuration. It is refused, loudly, rather than timed
                      * by the DAMOV-style path. */
-                    panic("SystemRouter device%u (sys.mem.device%u.type = Ramulator): the weave-timed Ramulator controller is removed (user ruling 2026-10-28: "
+                    panic("SystemRouter device%u (sys.mem.device%u.type = Ramulator): the weave-timed Ramulator controller is removed ("
                           "no DAMOV-style weave path left) and PIMID's emitter never writes this type for a router device; name Simple or WeaveSimple", d, d);
                 } else if (devType == "WeaveSimple") {
                     uint32_t bw = config.get<uint32_t>((devPrefix + ".bandwidth").c_str(), 12800);
@@ -1843,11 +1842,11 @@ static void InitSystem(Config& config) {
 
             string prefix = string("sys.cores.") + group + ".";
             uint32_t cores = config.get<uint32_t>(prefix + "cores", 1);
-            /* PIMID 1.12.1 (ticket #114): REQUIRED. The default was "Simple"
+            /* PIMID 1.12.1: REQUIRED. The default was "Simple"
              * (SimpleCore, IPC 1), retired and deleted in 1.12.1; PIMID
              * emits the type of every group it writes. */
             string type = config.get<const char*>(prefix + "type");
-            /* 1.11.43 (audit E23): the FPU flag is PER GROUP, not global. The
+            /* 1.11.43: the FPU flag is PER GROUP, not global. The
              * old sys.hierarchy.peHasFpu applied the device PE's soft-float
              * penalty to every core in the simulation, host included. The
              * global keys survive as the default so old emitted configs keep
@@ -1865,7 +1864,7 @@ static void InitSystem(Config& config) {
                 ALUCore* aluCores;
             };
             if (type == "Simple") {
-                /* PIMID 1.12.1 (ticket #114): SimpleCore is retired and its
+                /* PIMID 1.12.1: SimpleCore is retired and its
                  * source deleted; a hand-written config naming it is told
                  * the replacement rather than "invalid core type". */
                 panic("%s: core type Simple (SimpleCore, IPC 1) was retired in PIMID 1.12.1; "
@@ -1926,12 +1925,12 @@ static void InitSystem(Config& config) {
                         // In-order superscalar issue width (YAML pim.pe.issue_width;
                         // PIMID_INORDER_WIDTH env overrides inside the ctor). Default 2.
                         uint32_t issueWidth = config.get<uint32_t>(prefix + "issueWidth", 2);
-                        /* 1.11.97 (R2313 (b)): the two front-end penalties of the
+                        /* 1.11.97: the two front-end penalties of the
                          * core record (params/core/default.yaml, in_order.*),
                          * emitted by PIMID. REQUIRED keys: no value lives here. */
                         uint32_t mispredPenalty = config.get<uint32_t>(prefix + "mispredPenalty");
                         uint32_t resteerPenalty = config.get<uint32_t>(prefix + "resteerPenalty");
-                        /* PIMID 1.12.1 (ticket #114): the branch predictor,
+                        /* PIMID 1.12.1: the branch predictor,
                          * "pag" (PAg + BTB + RAS) or "none" (static not-taken,
                          * no prediction structure) -- REQUIRED, emitted by
                          * PIMID from pim.pe.branch_predictor / devices[].pim.pe.
@@ -1955,7 +1954,7 @@ static void InitSystem(Config& config) {
                         core = tcore;
                     } else {
                         assert(type == "OOO" || type == "OoO");
-                        /* 1.11.97 (R2355 (b)): the wrong-path fetch depth is
+                        /* 1.11.97: the wrong-path fetch depth is
                          * derived from the core record's ooo.mispredict_penalty_cycles
                          * x ooo.fetch_width_bytes, emitted by PIMID. REQUIRED keys.
                          * 1.12.0 (#50 (b)): the same penalty is the TOTAL mispredict
@@ -2046,7 +2045,7 @@ static void InitSystem(Config& config) {
                                                   ? rawMIs.size() / n : 1;
                             miIdx = (miIdx + r * misPerRank) % rawMIs.size();
                         }
-                        if (miIdx < rawMIs.size()) { mi = rawMIs[miIdx]; mi->setGetxIsStore(true); }   // 1.11.97 (H07): the cacheless element's GETX is a store
+                        if (miIdx < rawMIs.size()) { mi = rawMIs[miIdx]; mi->setGetxIsStore(true); }   // 1.11.97: the cacheless element's GETX is a store
                     }
                     ALUCore* acore = new (&aluCores[j]) ALUCore(name, computeFactor, accessFactor,
                                                              throughputFactor, operandWidth, energyFactor,
@@ -2118,13 +2117,13 @@ static void InitSystem(Config& config) {
     //Initialize event recorders
     //for (uint32_t i = 0; i < zinfo->numCores; i++) eventRecorders[i] = new EventRecorder();
 
-    if (zinfo->dramReplay) zinfo->dramReplay->initStats(zinfo->rootStat);   // 1.11.98 (ruling 4 (c))
-    if (zinfo->hostDramReplay) zinfo->hostDramReplay->initStats(zinfo->rootStat);   // 1.12.18 (ruling 17 / R0605)
+    if (zinfo->dramReplay) zinfo->dramReplay->initStats(zinfo->rootStat);   // 1.11.98
+    if (zinfo->hostDramReplay) zinfo->hostDramReplay->initStats(zinfo->rootStat);   // 1.12.18
     AggregateStat* memStat = new AggregateStat(true);
     memStat->init("mem", "Memory controller stats");
     for (auto mem : mems) mem->initStats(memStat);
     zinfo->roiRebaseStats->push_back(memStat);   // 1.11.90
-    zinfo->nocWire->initStats(zinfo->rootStat, "nocWire", "Measured device-fabric wire activity: bits carried and transitions between successive flits per source, per flit width (user ruling 2026-10-25: measured wire activity)");
+    zinfo->nocWire->initStats(zinfo->rootStat, "nocWire", "Measured device-fabric wire activity: bits carried and transitions between successive flits per source, per flit width (measured wire activity)");
     zinfo->roiRebaseStats->push_back(zinfo->nocWire->stat());
     if (hostFabric) {   // 1.12.23: the host fabric counters, their own ROI-rebased group
         AggregateStat* hs = hostFabric->initStats(zinfo->rootStat);
@@ -2262,9 +2261,9 @@ static void InitGlobalStats() {
     phaseStat->init("phase", "Simulated phases", &zinfo->numPhases);
     zinfo->rootStat->append(phaseStat);
 
-    /* 1.11.7 (#85): crossing counters -> zsim.out root scalars.
+    /* 1.11.7: crossing counters -> zsim.out root scalars.
      *
-     * 1.11.54 (audit F009): these are plain ProxyStats over the raw
+     * 1.11.54: these are plain ProxyStats over the raw
      * accumulators -- NO ROI base, unlike the pg counters below -- and they
      * ARE priced (link framing + byte energy, and the flush writebacks).
      * That is correct today only because of an INVARIANT: every crossing
@@ -2291,7 +2290,7 @@ static void InitGlobalStats() {
     xFlush->init("xingFlushBytes", "Coherence-flush footprint bytes crossed",
                  (uint64_t*)&zinfo->xing.flushBytes);
     zinfo->rootStat->append(xFlush);
-    ProxyStat* xL1 = new ProxyStat();   // (user ruling 2026-10-27: serial links calibrated)
+    ProxyStat* xL1 = new ProxyStat();   // (serial links calibrated)
     xL1->init("xingL1Exits", "Host-device transfers that found the link in ASPM L1 (charged its exit latency)",
               (uint64_t*)&zinfo->xing.l1Exits);
     zinfo->rootStat->append(xL1);
@@ -2304,14 +2303,14 @@ static void InitGlobalStats() {
                    (uint64_t*)&zinfo->xing.flushMcLines);
     zinfo->rootStat->append(xFlushMc);
 
-    // 1.11.8 (#84): PG residency trackers -> zsim.out root scalars.
+    // 1.11.8: PG residency trackers -> zsim.out root scalars.
     // Idle residency derives at consumption: r = 1 - activePhases/phase.
-    /* 1.11.18 (audit go-through): ROI-RELATIVE. These were whole-run while
+    /* 1.11.18: ROI-RELATIVE. These were whole-run while
      * every activity counter the residency is weighed against is windowed
      * at roi_begin; pgPhaseWindow is the matching denominator (numPhases
      * minus the ROI phase), so consumers divide two numbers from the same
      * window. Without an ROI every base is 0 and these are the old values. */
-    /* 1.12.3 (ruling 1 (a)): once the co-sim MPI kernel window has closed
+    /* 1.12.3: once the co-sim MPI kernel window has closed
      * (pgres.markKernelClose, the last rank's closing-barrier marker), the
      * numerators read the snapshot taken there and the denominator below is
      * the phase index at that instant; the post-kernel tail is outside the
@@ -2348,7 +2347,7 @@ static void InitGlobalStats() {
         stw->init("pgPhaseWindow", "Phases in the priced (ROI) window");
         zinfo->rootStat->append(stw);
     }
-    {   /* 1.12.18 (user ruling 2026-10-23): the run time (zsim.h roiWall) */
+    {   /* 1.12.18: the run time (zsim.h roiWall) */
         auto fr = []() -> uint64_t { return zinfo->roiWall.cycles(); };
         auto* sr = new LambdaStat<decltype(fr)>(fr);
         sr->init("roiWallCycles", "Run time: ROI elapsed wall clock, cycles (phase clock; 0 = not closed yet)");
@@ -2362,7 +2361,7 @@ static void InitGlobalStats() {
         sb->init("roiWallBalanceCycles", "Cycles of roiWallCycles that are the DRAM balance no barrier applied: the latest core end + its balance past the cores' ends (closed-loop DRAM replay; 0 = none)");
         zinfo->rootStat->append(sb);
     }
-    /* 1.11.51 (E17, closing the measure-first ruling): the devMC gap
+    /* 1.11.51 (E17, closing the measure-first rule): the devMC gap
      * histogram leaves the log and enters the stats stream, so the power
      * model can read it back. The 10,000-cycle phase residency above is
      * three orders of magnitude coarser than tXP-scale power-down windows
@@ -2372,7 +2371,7 @@ static void InitGlobalStats() {
      * buckets; the orchestrator applies the per-generation sourced tXP (and
      * the user's override), which is where that knowledge lives. NoC gaps
      * stay measurement-only: a logic clock-gating wake penalty has no
-     * source, and one is not invented (the E17 ruling). */
+     * source, and one is not invented (the E17 rule). */
     {
         static char nmC[GapHist::kBuckets][32], nmY[GapHist::kBuckets][32];
         for (int b = 0; b < GapHist::kBuckets; b++) {

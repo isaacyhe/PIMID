@@ -73,7 +73,7 @@ private:
         uint32_t banks;
         uint32_t read_write_ports;
         uint32_t tech_node_nm;
-        /* 1.11.56 (audit D054): NANOSECONDS, and named so. These were `Cycle`,
+        /* 1.11.56: NANOSECONDS, and named so. These were `Cycle`,
          * filled as `getReadLatency() * freq_hz` with freq_hz hardcoded to
          * 1e9 under the comment "Assume 1 GHz" -- but NVSim returns SECONDS
          * and this model is never given a clock, so the 1 GHz was the absence

@@ -1,4 +1,4 @@
-/* reduction.c — Streaming sum reduction: result = sum(a[i])
+/* reduction.c -- Streaming sum reduction: result = sum(a[i])
  * Serial baseline. */
 #include <stdio.h>
 #include <stdlib.h>

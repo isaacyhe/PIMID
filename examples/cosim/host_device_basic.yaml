@@ -10,10 +10,10 @@
 # host-device link and memory technology models.
 #
 # Run with:
-#   ./build/pimid --method exec --scope system \
+#   ./build/pimid --method exec \
 #       --config examples/cosim/host_device_basic.yaml \
-#       --workload benchmarks/pim_kernels/reduction/reduction_omp \
-#       --workload-type openmp --size 4096
+#       --workload benchmarks/pim_kernels/reduction/reduction_omp --size 4096 \
+#       --workload-type openmp
 #
 # Replace the workload with any pim_kernels binary (histogram, spmv_csr,
 # stream_triad, gemv, bfs, stencil_2d, vector_add ...) -- same config.

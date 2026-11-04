@@ -1,6 +1,6 @@
 /* PIMID 1.11.40 -- harness for CACTI-IO (external/cacti/extio.cc).
  *
- * WHY THIS EXISTS. The link surface was a table of DERIVED numbers: 7.0 pJ/bit,
+ * WHY THIS EXISTS. The link surface was a table of derived numbers: 7.0 pJ/bit,
  * 63.0 GB/s, 500 ns per transaction, and "UCIe PHY area is not sourceable".
  * Each was a single value standing where a model belongs. CACTI-IO is an
  * off-chip IO model that computes termination power, PHY static and dynamic
@@ -9,7 +9,7 @@
  * and area coefficients as a polynomial in impedance and frequency. It has been
  * vendored in this tree, compiled into the CACTI library, and called by nothing.
  *
- * WHAT IT COVERS -- MEASURED, not assumed (gate 1155, audit N8). CACTI-IO's
+ * WHAT IT COVERS -- MEASURED, not assumed. CACTI-IO's
  * Mem_IO_type spans DDR3, DDR4, LPDDR2, WideIO, Low_Swing_Diff and Serial. We
  * ran all of them:
  *
@@ -75,12 +75,12 @@
  * advanced 0.25-0.5) are the test set for whatever model eventually covers
  * serial links -- not the model itself.
  *
- * GLOBAL-STATE DISCIPLINE (audit E30, and 1.11.45's correction of it).
+ * GLOBAL-STATE DISCIPLINE (and 1.11.45's correction of it).
  * CACTI-IO reads g_ip -- num_dq, num_dqs, num_ca, num_clk, duty_cycle,
  * io_type, iostate -- the same global CACTIWrapper and the McPAT fork also
  * use, and E30 records that CACTIWrapper leaves it dangling.
  *
- * 1.11.56 (audit C025): this paragraph used to describe the SAVE/MUTATE/
+ * 1.11.56: this paragraph used to describe the SAVE/MUTATE/
  * RESTORE pattern ("SAVES the whole InputParameter ... and RESTORES it") --
  * that is exactly the pattern 1.11.45 removed, and the .cpp calls it a
  * use-after-free: saving *g_ip and later writing *g_ip = saved is a write
@@ -111,8 +111,8 @@ struct LinkIOResult {
     double io_power_dynamic_mw = 0.0;  // switching on dq/dqs/ca/clk
     double phy_power_mw = 0.0;         // static + dynamic PHY
     double phy_static_power_mw = 0.0;
-    std::string phy_static_source = "CACTI-IO parameter set: phase rotator + RX + PLL";   // (user ruling 2026-10-27)
-    /* (1.12.131) phy_static_power_mw is DERIVED from a published PHY measurement
+    std::string phy_static_source = "CACTI-IO parameter set: phase rotator + RX + PLL";
+    /* (1.12.131) phy_static_power_mw is derived from a published PHY measurement
      * although the CACTI-IO map is not exact (HBM3 -> WideIO), so it may be
      * charged. Per channel (num_dq DQ); the caller scales it to the channels. */
     bool   phy_static_sourced = false;
@@ -133,7 +133,7 @@ struct LinkIOResult {
      * the components separable is what lets the replacement be checked term by
      * term instead of as one aggregate that could hide a compensating error. */
     double energy_pj_per_bit_term = 0.0;
-    /* 1.11.63 (R7, read/write split): the field above is computed with
+    /* 1.11.63 (read/write split): the field above is computed with
      * CACTI-IO's iostate = WRITE (the wrapper's long-standing setting) and is
      * therefore the WRITE-direction termination. This one is a second pass of
      * extio_power_term() with iostate = READ over the same parameter set --
@@ -141,7 +141,7 @@ struct LinkIOResult {
      * and the split consumer charges each direction its own loop. */
     double energy_pj_per_bit_term_rd = 0.0;
     /* The DATA pins' share of the two termination figures above, at the
-     * formula's 0.5 low duty (user ruling 2026-10-25: measured termination
+     * formula's 0.5 low duty (measured termination
      * duty): the figure minus a second pass with the data pins never LOW.
      * Zero where the parameter set's termination does not depend on the
      * data (SSTL, the serial and wide-I/O sets). The caller scales it by
@@ -151,7 +151,7 @@ struct LinkIOResult {
     /* The strobes' and the command/address pins' shares (each: the figure minus a pass without those pins). */
     double energy_pj_per_bit_term_dqs = 0.0, energy_pj_per_bit_term_dqs_rd = 0.0;
     double energy_pj_per_bit_term_ca = 0.0, energy_pj_per_bit_term_ca_rd = 0.0;
-    /* (user ruling 2026-10-27) On an RDIMM the host drives the RCD inputs, not the
+    /* On an RDIMM the host drives the RCD inputs, not the
      * DRAMs: this is the command/address energy per data bit of that
      * network (host driver + pre-RCD series resistor + RCD input
      * termination), on the same basis as the CA share above. < 0 = no
@@ -168,7 +168,7 @@ struct LinkIOResult {
      * different interface and its absolute values are not trustworthy. */
     bool exact_map = false;
 
-    /* 1.11.60 (audit round 4, C009): DID THE MODEL REFUSE TO EXTRAPOLATE THE
+    /* 1.11.60: DID THE MODEL REFUSE TO EXTRAPOLATE THE
      * AREA? io_area_mm2 is deliberately set to 0.0 above the 3162 MHz
      * validity crossover (see computeDramIO), and until now the only record of
      * that decision was a sentence at the front of `not_modelled`. A consumer
@@ -205,11 +205,11 @@ public:
      * Returns valid=false with `source` naming the reason when the technology
      * has no CACTI-IO counterpart. The mapping is approximate for technologies
      * postdating the model and every approximation is named in `source`. */
-    /* (user ruling 2026-10-26) stub_ohm: the DQ/DQS series resistor between the
+    /* stub_ohm: the DQ/DQS series resistor between the
      * connector and the DRAM (CACTI-IO rs1_dq / rs2_dq) for the memory
      * node's topology; < 0 = the technology's default topology
      * (resolveDramTopology). */
-    /* (1.12.132) (user ruling 2026-10-28) HBM host memory-controller PHY energy per
+    /* (1.12.132) HBM host memory-controller PHY energy per
      * bit (pJ), read / write, with its source; false for other technologies. */
     static bool hbmHostPhyEnergyPJBit(const std::string& tech, double& rd, double& wr, std::string& src);
     static LinkIOResult computeDramIO(const std::string& tech,
@@ -217,7 +217,7 @@ public:
                                       double rate_mts,
                                       double activity,
                                       double stub_ohm = -1.0);
-    /* The memory topology of a DRAM node (user ruling 2026-10-26): requested
+    /* The memory topology of a DRAM node: requested
      * "" = the technology's default. Fills `out` (name, stub, the stub's
      * source, whether it was the default) and returns true, or returns false
      * with `err` saying why the request is refused. */
@@ -255,7 +255,7 @@ public:
      * only kind of single value that belongs in a table. <0 if unknown. */
     static double linkRateGTs(const std::string& link_type);
     static double linkEncodingEfficiency(const std::string& link_type);
-    /* (user ruling 2026-10-27: serial links calibrated) the data link layer's share (PCIe: 57.88/62.96, Neugebauer et al. SIGCOMM 2018). */
+    /* (serial links calibrated) the data link layer's share (PCIe: 57.88/62.96, Neugebauer et al. SIGCOMM 2018). */
     static double linkDllEfficiency(const std::string& link_type);
     /* the class's published lane (pair) count when it has one fixed by the product, else -1 */
     static int linkDefaultLanes(const std::string& link_type);

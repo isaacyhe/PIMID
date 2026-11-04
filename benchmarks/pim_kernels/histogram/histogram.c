@@ -1,4 +1,4 @@
-/* histogram.c — Histogram construction: random scatter into bins
+/* histogram.c -- Histogram construction: random scatter into bins
  * Serial baseline. */
 #include <stdio.h>
 #include <stdlib.h>

@@ -30,7 +30,7 @@
 #include "timing_event.h"
 #include "zsim.h"
 
-/* 1.11.40 (audit N7): the registry itself. Function-local static avoids any
+/* 1.11.40: the registry itself. Function-local static avoids any
  * static-init-order dependency; InitSystem is the only writer and it runs
  * single-threaded, so no lock is needed here. */
 g_vector<Cache*>& zsimAllCaches() {
@@ -45,7 +45,7 @@ const char* Cache::getName() {
     return name.c_str();
 }
 
-/* 1.11.57 (audit D001/D002/D003): measure and clean in ONE pass, under the
+/* 1.11.57: measure and clean in ONE pass, under the
  * cache's own coherence lock, reporting addresses so the caller can
  * de-duplicate across levels. See the declaration in cache.h for why each of
  * those three properties is required. The tag read has to happen INSIDE the
@@ -88,7 +88,7 @@ uint64_t Cache::access(MemReq& req) {
     /* 1.11.8 PG residency: mark the shared-cache tracker for L2+/LLC
      * instances only (private L1s ride their core's tracker). Name-based
      * level test matches this repo's cache naming (l2-*, l3-*, llc*).
-     * 1.11.17 (audit go-through): system-scope caches are named
+     * 1.11.17: system-scope caches are named
      * "<node>_l2-0" etc., which the bare prefix test could never match --
      * the 1.9.29 node-prefix parser bug, re-made here. Match the level
      * token anywhere after an optional node prefix.

@@ -1,4 +1,4 @@
-/* gemv_omp.c — General Matrix-Vector Multiply: y = A * x
+/* gemv_omp.c -- General Matrix-Vector Multiply: y = A * x
  * OpenMP parallel version. A is N*N, x and y are N-vectors. */
 #include <stdio.h>
 #include <stdlib.h>

@@ -70,7 +70,7 @@ void ALUCore::initStats(AggregateStat* parentStat) {
     // Report cycles/instrs RELATIVE to the ROI baseline (roi_begin), so serial
     // pre-ROI init/setup on the launcher PE is excluded from the kernel metric.
     // (roiBase* are 0 until roi_begin, so non-ROI workloads are unaffected.)
-    /* 1.12.18 (user ruling 2026-10-23, "sync to waker"): 'cycles' is BUSY,
+    /* 1.12.18 (sync to waker): 'cycles' is BUSY,
      * the PE's own ROI activity without the clock jumps a futex wake synced
      * it by (those are waiting; wakeSyncCycles below). */
     auto x = [this]() -> uint64_t { return roiBusyCycles(); };
@@ -150,7 +150,7 @@ void ALUCore::initStats(AggregateStat* parentStat) {
         auto protocolTailStat = makeLambdaStat(xt);
         protocolTailStat->init("protocolTail", "Post-ROI MPI inter-PE collective tail cycles (device-resident)");
         coreStat->append(protocolTailStat);
-        /* 1.12.3 (ruling 1 (a)): the kernel-window receipt beside the tail,
+        /* 1.12.3: the kernel-window receipt beside the tail,
          * in the SAME basis as 'cycles' (ROI-relative: the opener's pre-ROI
          * cycles are rebased out of its 'cycles' line, so the receipt is
          * derived from that line, not from the raw marker). For a marked
@@ -177,7 +177,7 @@ void ALUCore::contextSwitch(int32_t gid) {
 }
 
 void ALUCore::join() {
-    /* 1.12.18 (user ruling 2026-10-23, "sync to waker"): re-base the phase
+    /* 1.12.18 (sync to waker): re-base the phase
      * budget on the clock, do not grant one. This was phaseEndCycle +=
      * phaseLength on every join: a PE that left mid-phase came back with
      * its unused remainder PLUS a fresh full phase, so each wait handed it
@@ -196,7 +196,7 @@ uint64_t ALUCore::gridPhaseEnd(uint64_t c) {   // 1.12.18 (sync to waker), see a
     return (c / pl + 1) * pl;
 }
 
-/* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h: the
+/* 1.12.18 (model the lock word), see core.h: the
  * same re-base as syncToWaker -- the clock moves to the releaser's release
  * and the PE runs to the end of the grid phase that clock is in. The jump is
  * waiting, not activity: it is kept out of 'cycles' (roiBusyCycles). */
@@ -209,7 +209,7 @@ uint64_t ALUCore::syncToLock(uint64_t t) {
     return skip;
 }
 
-uint64_t ALUCore::syncToWaker(uint64_t t) {   // 1.12.18 (user ruling 2026-10-23), see core.h
+uint64_t ALUCore::syncToWaker(uint64_t t) {   // 1.12.18, see core.h
     uint64_t skip = 0;
     if (t > curCycle) {
         skip = t - curCycle;
@@ -231,7 +231,7 @@ inline void ALUCore::bbl(BblInfo* bblInfo) {
               pgAct.touch(_ph); zinfo->pgres.anyCore.touch(_ph); zinfo->pgres.hostUnion.touch(_ph); } }
         mixAdd(bblInfo);  // 1.11.10 measured instruction mix
         if (!coreHasFpu_ && coreFpEmulCycles_ &&
-            bblInfo->nFp) {   // 1.11.11 (#113): soft-float on an FPU-less element
+            bblInfo->nFp) {   // 1.11.11: soft-float on an FPU-less element
             curCycle += (uint64_t)bblInfo->nFp * coreFpEmulCycles_;
         }
 
@@ -240,7 +240,7 @@ inline void ALUCore::bbl(BblInfo* bblInfo) {
     // one step regardless of width, like a full-width ALU. So bit_serial = false
     // leaves compute cost independent of operand_width (backward-compatible).
     uint64_t steps = bitSerial ? (uint64_t)std::max(operandWidth, 1) : 1ull;
-    /* 1.11.94 (H04 x05-zsim-cores-2): carry the fraction across blocks
+    /* 1.11.94: carry the fraction across blocks
      * (chargeCompute in alu_core.h) instead of truncating per block. On the
      * defaults (computeFactor 1.0, throughputFactor 1.0, steps 1 or the
      * integer operandWidth) the product is an exact integer in double, the
@@ -299,10 +299,10 @@ void ALUCore::LoadFunc(THREADID tid, ADDRINT addr) {
     Address lineAddr = addr >> lineBits;
     if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
         // No MI, DMA window, or local address: direct array access cost
-        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+        core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
     } else {
         // Remote: PE overhead + hierarchy traversal via MI
-        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+        core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
         MESIState state = I;
         MemReq req = {lineAddr, GETS, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
         core->curCycle = core->mi_->access(req);
@@ -329,9 +329,9 @@ void ALUCore::StoreFunc(THREADID tid, ADDRINT addr) {
     }
     Address lineAddr = addr >> lineBits;
     if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
-        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+        core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
     } else {
-        core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+        core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
         MESIState state = I;
         MemReq req = {lineAddr, GETX, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
         core->curCycle = core->mi_->access(req);
@@ -359,9 +359,9 @@ void ALUCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred) {
         }
         Address lineAddr = addr >> lineBits;
         if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
-            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+            core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
         } else {
-            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+            core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
             MESIState state = I;
             MemReq req = {lineAddr, GETS, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
             core->curCycle = core->mi_->access(req);
@@ -390,9 +390,9 @@ void ALUCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred) {
         }
         Address lineAddr = addr >> lineBits;
         if (!core->mi_ || core->dmaWindow_ || core->mi_->isLocalAddress(lineAddr)) {
-            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+            core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
         } else {
-            core->curCycle += core->chargeAccess();  // 1.11.94 (H04): carried fraction
+            core->curCycle += core->chargeAccess();  // 1.11.94: carried fraction
             MESIState state = I;
             MemReq req = {lineAddr, GETX, 0, &state, core->curCycle, nullptr, state, core->srcId_, 0};
             core->curCycle = core->mi_->access(req);

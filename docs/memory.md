@@ -14,7 +14,7 @@ PIMID models 11 memory technologies through three production backends:
 array model of one bank unit (`memory.bank_kb`, default 64 KB): a read takes the array's access time, and a write
 takes the array's write time (NVSim's write latency; 1.12.90). Each bank serves one access at a time: it is busy
 for the access time (a write: the write time), and a request to a busy bank waits until it is free (the bank model,
-(1.12.111) release). The interface's own rate is its banks' aggregate (banks it covers x line / access time), so many
+1.12.111). The interface's own rate is its banks' aggregate (banks it covers x line / access time), so many
 requests spread over its banks overlap while requests to one bank serialise. A request also waits for the other
 elements' use of its bank, from the latest final epoch: the M/D/1 wait of that use, bounded by the bank's closed
 population (at most the other elements that used the bank in that epoch, each with the PE's in-flight window,
@@ -33,12 +33,12 @@ Per-technology JEDEC organization (channels, banks, timings) drives both the
 memory timing and the device-internal network shape -- see
 [dram_specs.md](dram_specs.md) and [network.md](network.md).
 
-**Both memories are replayed controllers (1.12.18, ruling 17).** The device
-memory's interfaces (since 1.11.98) and, in system scope, the host memory
+**Both memories are replayed controllers (1.12.18).** The device
+memory's interfaces (since 1.11.98) and, in a co-simulation, the host memory
 controller record every DRAM access per epoch and replay it through a
 Ramulator2 controller at the epoch boundary; each access is priced at an
 earlier epoch's measured service latency of its interface (the newest epoch at
-or before k-2 the controller has been fed, (1.12.145)). The host keeps its
+or before k-2 the controller has been fed; 1.12.145). The host keeps its
 calibrated host-path adder on top (no DRAM timing in it); the M/D/1 queue it
 used before prices only the first epoch, or everything with
 `system.hosts[].memory.dram_replay: false`. When the device is the host's
@@ -48,9 +48,9 @@ decoupled host memory has its own instance. The controller counters (row hits /
 misses / conflicts, activates, refresh commands, replayed and idle cycles,
 bank-open time) feed the energy model; see [power.md](power.md).
 
-**Under load the price follows the controller ((1.12.145), user ruling 2026-10-28).** A request's latency
+**Under load the price follows the controller (1.12.145).** A request's latency
 counts from the moment it reached the controller's door, so a wait at a full queue is latency. The replay has its own
-epoch (`simulation.dram_epoch_cycles`, 10 000 cycles, one phase at the default phase length; since (1.12.227) a shorter
+epoch (`simulation.dram_epoch_cycles`, 10 000 cycles, one phase at the default phase length; since 1.12.227 a shorter
 `simulation.phase_length` no longer shortens it), and an epoch still in flight is priced with its unfinished requests
 counted at their age, so the latency the cores pay follows what the controller measures on loaded multi-core cells as
 it already did on single-core ones.
@@ -67,6 +67,16 @@ takes the epoch two back like every message-passing read. A run whose ranks all 
 baseline) folds its epochs at the grid, phase by phase, and its run time is counted on the same grid (see
 [power.md](power.md)). An access a device interface priced at the replay and the replay then found outside the ROI
 leaves `replayPriced` / `replayLat`, as it leaves rd / wr, so the charged view counts the ROI's requests only.
+
+**A rank waiting on a peer does not hold the replay (1.12.176, 1.12.178).** Under thread-MPI the device replay folds an
+epoch only once every rank that can still record into it has passed it (the consistent cut, 1.12.17). A rank parked in
+a blocking wait -- a receive whose message has not been posted, a barrier whose last rank has not arrived -- announces
+the wait, and the cut holds it at the earliest time it can be released instead of at its own frozen clock: a receive
+from one source by the oldest message from that source already posted to it (or, with none, by that source's own
+bound); a receive from any source by the messages posted to it and the other ranks' bounds; a barrier by its latest
+arrival and, until it is released, the bounds of the ranks that have not arrived. A rank that is not waiting is bounded
+by its clock. The bounds are solved together at each phase end from the simulated state alone; a wait that cannot be
+bounded falls back to the rank's own clock.
 
 **The price is per request and per kind.** Each epoch of the price window weighs its mean latency by its request
 count, and an interface's reads, writes and prefetches are priced apart: a read at its reads' latency, a store at the
@@ -96,7 +106,7 @@ waited access past the window's close) and `ctrlRoiDrainTicks` (the last request
 after the cores). The closed loop holds a core's next access across the controller's channels, so the two-channel
 DDR5 replay runs as one instance.
 
-**Message-passing ranks on device PEs settle at the rendezvous ((1.12.216)).** The controller's clock follows the ranks'
+**Message-passing ranks on device PEs settle at the rendezvous (1.12.216).** The controller's clock follows the ranks'
 real time: a rank's real time is its clock plus the balance it has not paid yet (the shift its accesses are released
 at); every record reaches its core's queue as soon as it exists, and at each phase barrier the controller runs to the
 earliest time a PE can still release an access at -- a running PE's clock plus its shift, a rank waiting on a peer by
@@ -119,7 +129,21 @@ unbounded runs, the held PE-phases, the balance applied at the rendezvous, how f
 arrivals, and the accesses issued behind the controller's clock. A rank on a host core, and a rendezvous outside the
 ROI, keep the settling at message-passing entry.
 
-**So is a memory of type Ramulator ((1.12.147), user ruling 2026-10-28).** With
+**DDR5 host commands at bank-parallel placements (1.12.169, 1.12.173).** At `BANK` and
+`BANK_GROUP` placement the replayed controller is bank-parallel: a PE's data stays inside its
+chip, so the controller lifts the column-to-column constraints above the PE's tier. The host's
+requests (a host baseline, or the host of a co-simulation) go through the same controller, and
+on DDR5 they keep the standard's timing (JEDEC JESD79-5). A host column command holds its
+sub-channel's data bus for BL/2 clocks (nBL = 8 tCK for BL16), and between host column commands
+the controller keeps the same-bank-group column spacing (tCCD_L, tCCD_L_WR), the read/write
+turnaround (tWTR_S/L and the tCCD_S composites) and the rank switch; the chips of a lock-step
+rank count as one rank. Host reads and writes are batched as a controller batches them: write
+mode starts when more than 32 host writes are held in a 48-entry per-channel write queue
+(Chatterjee et al., HPCA 2012, Table 1) or no host read is held, and ends when fewer than 16
+are held while a host read waits. A PE's commands neither wait for the bus nor occupy it; the
+other standards keep their timing.
+
+**A memory of type Ramulator is a replayed controller too (1.12.147).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,
 which is built as one controller per channel of the memory (HBM3 16, DDR5 2).
 Each controller is one interface of a single replay instance of that memory --
@@ -144,7 +168,7 @@ charges its flat access cost), so its run has no DRAM traffic to replay.
 
 PEs attach inside the memory hierarchy via `pim.placement.level`. The levels,
 finest to coarsest, are `SUBARRAY`, `BANK`, `BANK_GROUP`, `RANK`, `CHANNEL`,
-`LOGIC_DIE`, plus `HOST_MC` (PEs share the host memory controller, a replayed controller since (1.12.147); see above). `CHIP`
+`LOGIC_DIE`, plus `HOST_MC` (PEs share the host memory controller, a replayed controller since 1.12.147; see above). `CHIP`
 exists as a virtual layer but is degenerate -- not a distinct placement tier.
 
 Which levels are valid is **per technology**: a tier must be real silicon in
@@ -158,7 +182,7 @@ in-package logic die.
 | DDR4, DDR5 | `SUBARRAY -> BANK -> BANK_GROUP -> RANK` |
 | LPDDR5, GDDR6 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL` |
 | HBM2, HBM3 | `SUBARRAY -> BANK -> BANK_GROUP -> CHANNEL -> LOGIC_DIE` |
-| SRAM | `SUBBANK -> BANK` (one die: at BANK each element and the banks of its slot are one local group under the die ((1.12.259)); there is no bank-group, chip, rank or channel tier to place at; `memory.local_path` chooses the group's path, its local bus, its router or its shared bus on the network) |
+| SRAM | `SUBBANK -> BANK` (one die: at BANK each element and the banks of its slot are one local group under the die (1.12.259); there is no bank-group, chip, rank or channel tier to place at; `memory.local_path` chooses the group's path, its local bus, its router or its shared bus on the network) |
 | STT_MRAM, PCM, RERAM | `MAT -> BANK` (as SRAM) |
 
 **Where an element's data lives on SRAM/NVM.** A page belongs to the element that touches it first
@@ -177,7 +201,7 @@ tier is the family's own, and each family has only one:
 | Family | Tier below the bank | What it is | Count and width come from |
 |---|---|---|---|
 | DRAM | `SUBARRAY` | the local-sense-amp row stripe (512 rows; 1024 on HBM) | the preset's `bank_rows` / the subarray height; width = the global sense-amp datapath of the architecture object |
-| SRAM | `SUBBANK` | CACTI's line of mats activated together to produce one data word; its width IS the bank's (`num_do_b_subbank = out_w`) | CACTI geometry: mats per access, `out_w` |
+| SRAM | `SUBBANK` | CACTI's line of mats activated together to produce one data word; its width is the bank's (`num_do_b_subbank = out_w`) | CACTI geometry: mats per access, `out_w` |
 | NVM | `MAT` | NVSim's mat, the unit it H-trees into a bank | NVSim: `numRowMat x numColumnMat`, `mat.numDataBit` (cached per part since 1.11.73) |
 
 `SUBARRAY` on SRAM/NVM is accepted as the legacy spelling (same level, the run
@@ -188,11 +212,11 @@ the `noc.levels` L0 key (`subarray` / `subbank` / `mat`) follow the same rule
 (1.11.74). NVSim itself defines bank, mat and subarray and nothing else, so no
 NVM has a subbank; CACTI defines the subbank for SRAM. Note that
 CACTI's and NVSim's *own* "subarray" is a smaller thing than the DRAM
-subarray -- it is the array slice below a mat -- and is deliberately NOT a
+subarray -- it is the array slice below a mat -- and is deliberately not a
 PIMID tier: there is one level below the bank, not two. An NVSim cache entry
 written before 1.11.73 carries no mat count or width; the run says the tier
 is not sourceable, keeps the tree shape it has as a stated count, and
-refuses to PLACE PEs at `MAT` until the cache is regenerated (or
+refuses to place PEs at `MAT` until the cache is regenerated (or
 `memory.subarrays_per_bank` states a count explicitly, which is then labelled
 as user-set exactly as on DRAM).
 
@@ -202,7 +226,7 @@ datapaths, so they contend more. The detailed model charges this contention for
 real -- including cross-rank contention under message-passing (see
 [network.md](network.md)).
 
-Access pricing is purely by data LOCATION: a PE's access to its own placement
+Access pricing is purely by data location: a PE's access to its own placement
 unit traverses zero network hops; anything else pays the real tiered tree
 distance to where the data lives (or to its region's abstract endpoint, for
 regions hosting no PE). Nothing is cached, migrated, or auto-prepped by the
@@ -223,16 +247,16 @@ initialises lives with that thread's PE, and data one thread initialises for
 all (a serial setup loop) lives with that one PE. Until 1.12.17 pages were
 placed by address, in blocks of `pages_per_unit` pages across all units,
 whoever used them; placement-dependent results of 1.12.17 and earlier are not
-comparable. A page no PE has touched is the host's own and is spread over all units page by page, as a host memory controller interleaves its pages ((1.12.146), user ruling 2026-10-28). Capacity is not enforced: a PE that touches more pages than its
+comparable. A page no PE has touched is the host's own and is spread over all units page by page, as a host memory controller interleaves its pages (1.12.146). Capacity is not enforced: a PE that touches more pages than its
 units hold wraps around within them, as the address map did. Each PE
 interface reports `ftPages`, the pages it first touched inside the ROI (pages
 claimed during setup are not counted there).
 
-When multiple PEs are placed at a level and no explicit `pim.pe_mem_map` is
+When multiple PEs are placed at a level and no explicit `pim.mapping` is
 given, PEs are distributed **distant/strided** across that level's units -- each
 PE local to its own evenly-spaced slice (e.g. 4 PEs over 512 banks land on banks
 0, 128, 256, 384), never clustered at the front. This keeps per-PE working sets
-disjoint and the load balanced; an explicit `pe_mem_map` overrides it.
+disjoint and the load balanced; an explicit `pim.mapping` overrides it.
 
 ## Characterization cache warehouse
 

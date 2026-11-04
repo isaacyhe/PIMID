@@ -2,7 +2,7 @@
  * Frequent Itemset Mining -- FP-growth algorithm (PARSEC freqmine)
  * Builds an FP-tree from synthetic transactions, then mines frequent
  * itemsets via recursive conditional FP-tree construction.
- * Pointer-heavy tree traversal — irregular memory access pattern.
+ * Pointer-heavy tree traversal -- irregular memory access pattern.
  *
  * Compile: g++ -std=c++11 -O2 -Wall -I<path-to-zsim/misc/hooks> -lpthread -lm freqmine.c -o freqmine
  */

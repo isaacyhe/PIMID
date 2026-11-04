@@ -25,7 +25,7 @@ class DDR5VRR : public IDRAM, public Implementation {
       // {"DDR5_64Gb_x16", {64<<10,  16, {1, 1, 4, 4, 1<<18, 1<<10}}},
     };
 
-    /* 1.11.63 (calibration): nRC 75/77/79 -> 76/78/80, DERIVED-FROM-IDENTITY.
+    /* 1.11.63 (calibration): nRC 75/77/79 -> 76/78/80, derived from the identity.
      * tRC is ACT-to-ACT on the SAME bank and cannot be shorter than ACT-to-PRE
      * plus the precharge period: tRC >= tRAS + tRP is definitional and needs
      * no speed-bin table. All three rows violated it by exactly one cycle:
@@ -33,7 +33,7 @@ class DDR5VRR : public IDRAM, public Implementation {
      *   3200BN  nRAS 52 + nRP 26 = 78, row said 77
      *   3200C   nRAS 52 + nRP 28 = 80, row said 79
      * JESD79-5 is NOT held by this tree, so nRC is set to the identity value
-     * computed from the row's OWN nRAS and nRP -- DERIVED-FROM-IDENTITY, not
+     * computed from the row's OWN nRAS and nRP -- derived from the identity, not
      * sourced, and no bin value is invented. Every other field in these rows
      * (rate, nBL, nCL, nRCD, nRP, nRAS, nWR, nRTP, nCWL, nPPD, nCCD*, nRRDS,
      * nFAW, the whole refresh block and nCS) stays as it is: UNCHECKABLE. */
@@ -468,7 +468,7 @@ class DDR5VRR : public IDRAM, public Implementation {
         }
       }(m_timing_vals("rate"));
 
-      /* 1.11.63 (calibration): nRRDL 5 -> 8, DERIVED-FROM-IDENTITY, not sourced.
+      /* 1.11.63 (calibration): nRRDL 5 -> 8, derived from the identity, not sourced.
        * nRRDL is ACT-to-ACT within one bank group and nRRDS the same across
        * bank groups; a same-bank-group activate cannot be issued sooner than a
        * different-bank-group one, so tRRD_L >= tRRD_S is definitional. Every
@@ -477,7 +477,7 @@ class DDR5VRR : public IDRAM, public Implementation {
        * JESD79-5 is NOT held by this tree (no DDR5 standard and no DDR5 part
        * datasheet exists anywhere in it), so no bin value is available and
        * none is invented: nRRDL is raised to exactly nRRDS, the definitional
-       * floor, and no further. It is marked DERIVED-FROM-IDENTITY rather than
+       * floor, and no further. It is marked derived from the identity rather than
        * sourced, and the real tRRD_L of a DDR5-3200 part is larger than this.
        * Revisit when JESD79-5 or a Micron MT60B datasheet is held. */
       constexpr int nRRDL_TABLE[3][1] = {
@@ -531,7 +531,7 @@ class DDR5VRR : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the three tabulated ones, and that -1 then indexed
        * tRFC_TABLE, tRFCsb_TABLE and tRRFsb_TABLE (the last one twice more in
        * the PRAC block below). An out-of-bounds read one element BEFORE a

@@ -1,4 +1,4 @@
-/* bfs.c — Breadth-First Search on random graph (adjacency list via CSR)
+/* bfs.c -- Breadth-First Search on random graph (adjacency list via CSR)
  * Serial baseline. Generates random graph with given vertex count and degree. */
 #include <stdio.h>
 #include <stdlib.h>

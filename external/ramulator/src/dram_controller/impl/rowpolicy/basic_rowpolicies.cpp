@@ -124,7 +124,7 @@ class ClosedRowPolicy : public IRowPolicy, public Implementation {
 };
 
 
-/* PIMID 1.12.18 (user ruling 2026-10-24, "DRAM row policy"; sources in docs/yaml_reference.md, memory.row_policy):
+/* PIMID 1.12.18 (DRAM row policy; sources in docs/yaml_reference.md, memory.row_policy):
  * THE ROW POLICY PER REQUEST SOURCE.
  *   PE traffic (source_id 0 in the ROI, 2 outside): OPEN page until a conflict, every technology -- SK hynix
  *     GDDR6-AiM, Hot Chips 34 (2022) memory-controller block (rows opened by ACT4/ACT16 and held across MAC
@@ -142,7 +142,7 @@ class ClosedRowPolicy : public IRowPolicy, public Implementation {
  *     host: open     -- open page (FR-FCFS closes on a conflict).
  * A PE access to a bank disarms the host timer (the row is then the PE's, open page). */
 class PimidSourceRowPolicy : public IRowPolicy, public Implementation {
-  RAMULATOR_REGISTER_IMPLEMENTATION(IRowPolicy, PimidSourceRowPolicy, "PimidSourceRowPolicy", "PIMID: open page for PE traffic, the ruled host policy for host traffic.")
+  RAMULATOR_REGISTER_IMPLEMENTATION(IRowPolicy, PimidSourceRowPolicy, "PimidSourceRowPolicy", "PIMID: open page for PE traffic, the host row policy for host traffic.")
   private:
     IDRAM* m_dram = nullptr;
     int m_PRE_req_id = -1;
@@ -180,10 +180,10 @@ class PimidSourceRowPolicy : public IRowPolicy, public Implementation {
         throw std::runtime_error("PimidSourceRowPolicy: host_closed_mode must be auto_precharge or explicit_pre");
       if (m_timeout < 1) throw std::runtime_error("PimidSourceRowPolicy: host_idle_timeout must be >= 1 memory clock");
       m_bank_level = m_dram->m_levels("bank");
-      /* 1.12.18 (AA10, gate 423393 tech_DDR3): every name this plugin needs is CHECKED before it is looked up, so a
-       * standard that lacks one gets a FATAL naming it (or the ruled fallback), never an uncaught
+      /* 1.12.18: every name this plugin needs is CHECKED before it is looked up, so a
+       * standard that lacks one gets a FATAL naming it (or the stated fallback), never an uncaught
        * unordered_map::at. Auto-precharge needs RDA/WRA; without them the closed host policy falls back to an
-       * explicit PRE after the access (= ClosedRowPolicy cap 1, the same ruling's stated alternative). The
+       * explicit PRE after the access (= ClosedRowPolicy cap 1, the same rule's stated alternative). The
        * timeout and explicit-PRE policies need the standard's close-row request (PRE). */
       if (m_host == "closed" && m_closed_mode == "auto_precharge" &&
           !(m_dram->m_commands.contains("RD") && m_dram->m_commands.contains("WR") &&

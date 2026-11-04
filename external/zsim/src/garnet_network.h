@@ -213,7 +213,7 @@ struct GarnetStats {
     uint64_t indie_grid_link_flit_traversals = 0;
     uint64_t link_traversals_unattributed = 0;
     uint64_t link_traversals_overattributed = 0;
-    /* 1.12.18 (user ruling, HBM TSV layout): flit x DIE-BOUNDARY crossings
+    /* 1.12.18 (HBM TSV layout): flit x DIE-BOUNDARY crossings
      * per level (the edge's child level, as above): a transfer from a PE on
      * core die a to the hub and up to core die b crosses a + b boundaries,
      * under the stated channel-to-die layout. tsv_dies_hist[n] = packets
@@ -580,7 +580,7 @@ public:
         nodeMap_[name] = nodeId;
     }
 
-    /* 1.11.94 (M-16 x02-zsim-garnet-htree-5): strict endpoint naming,
+    /* 1.11.94: strict endpoint naming,
      * selected by PIMID_NOC_STRICT_NODE_NAMES=1 (default OFF = the 1.11.93
      * binding, because the strict binding moves numbers -- see below).
      *
@@ -592,13 +592,13 @@ public:
      * (refusing an id outside the network) and REFUSES an unknown name with
      * no numeric index instead of handing it an arbitrary free node.
      *
-     * Why it is OFF by default (R1 parity): the corpus' thread-MPI cells
+     * Why it is OFF by default (results stay as they were): the corpus' thread-MPI cells
      * (165 MPI configs with noc.model detailed, 20 analytical) price every
      * message through these numeric names, so binding them to their own ids
      * changes the probed RTT whenever first-contact order differed from PE
      * order; and co-sim host caches resolve non-numeric parents ("host-xbar",
      * "mem-splitter") on the device network, which strict mode refuses until
-     * H06 detaches the host caches from it (main.cpp/init.cpp, R5). */
+     * the host caches are detached from it (main.cpp/init.cpp). */
     static bool strictNodeNames() {
         static const bool on = [] {
             const char* e = getenv("PIMID_NOC_STRICT_NODE_NAMES");
@@ -711,7 +711,7 @@ public:
         return rtt;
     }
 
-    /* 1.11.94 (M-16 x02-zsim-garnet-htree-9): an RTT PROBE for traffic that
+    /* 1.11.94: an RTT PROBE for traffic that
      * is already recorded elsewhere. The thread-MPI detailed path puts each
      * message's packets into the batch replay (recordBatchAccess) and then
      * asks getRTT for the latency; on a cycle-accurate network that query
@@ -726,7 +726,7 @@ public:
      * counters are re-snapped after the probe so its traversals are not
      * harvested. Default OFF = the 1.11.93 behaviour: removing the phantom
      * packets moves the NoC counters and NoC energy of every corpus MPI cell
-     * with noc.model detailed (165 configs), which is an R5 default change. */
+     * with noc.model detailed (165 configs), which needs a default change of its own. */
     static bool probeUncounted() {
         static const bool on = [] {
             const char* e = getenv("PIMID_NOC_PROBE_UNCOUNTED");
@@ -735,7 +735,7 @@ public:
         return on;
     }
 
-    /* 1.11.97 (x01-qemu-zsim-plugin-6): `uncounted` forces the uncounted
+    /* 1.11.97: `uncounted` forces the uncounted
      * probe regardless of PIMID_NOC_PROBE_UNCOUNTED. The MPI receiver passes
      * it: its message is injected by the sender alone, so its pricing probe
      * must add no packet in either knob setting (same latency either way). */
@@ -761,7 +761,7 @@ public:
         return 2 * latency;
     }
 
-    /* 1.11.97 (x01-qemu-zsim-plugin-6): the analytic-model RTT for a message
+    /* 1.11.97: the analytic-model RTT for a message
      * whose packets are counted elsewhere (by its sender), counting nothing.
      * Same endpoint binding and same latency cache as getRTT, so the MPI
      * receiver sees exactly the RTT its sender's getRTT priced and cached
@@ -913,7 +913,7 @@ public:
     }
 
 public:
-    /* 1.11.97 (x01-qemu-zsim-plugin-6): the one-way latency of a src->dst
+    /* 1.11.97: the one-way latency of a src->dst
      * packet priced by the hop + M/D/1 analytic model, counting NOTHING
      * (no countPacket_, no total_packets/total_latency) and touching no
      * Garnet state (no reset, no injection, no event processing). The
@@ -929,7 +929,7 @@ public:
     // -- Phase-level batch: record all PE remote accesses with their
     //    real ZSim cycle timestamps, then replay through Garnet.
     /* 1.11.92 (F2): `ctrl` selects MessageSizeType::Control (control_msg_bits)
-     * over Data (data_msg_bits) for the injection. (user ruling 2026-10-26: control messages): a
+     * over Data (data_msg_bits) for the injection. (control messages): a
      * remote PE access records its two messages -- a read: a control request
      * (src -> dst) + a data response (dst -> src); a write: a data request +
      * a control ack -- each flitised and counted at its own size. The MPI
@@ -939,12 +939,12 @@ private:
     std::vector<BatchAccess> phaseBatch_;
     // Published rolling one-way avg latency (lock-free read by all PE threads).
     std::atomic<uint32_t> batchAvgLatency_{0};
-    /* 1.11.97 (review H09 / x02-7): per source-destination pair smoothed one-way
+    /* 1.11.97: per source-destination pair smoothed one-way
      * latency (numNodes_ x numNodes_, 0 = no sample yet), published per batch
      * the same way batchAvgLatency_ is; read lock-free by the PE interfaces. */
     std::unique_ptr<std::atomic<uint32_t>[]> pairLat_;
     uint32_t pairLatN_ = 0;
-    /* (user ruling 2026-10-26: control messages): one plane per message class -- data (cells
+    /* (control messages): one plane per message class -- data (cells
      * 0 .. N^2-1, the table it always was) and control (N^2 .. 2 N^2-1) --
      * so a control message and a data message of one pair are priced at their
      * own measured latencies. Keys of the per-pair accumulators carry the
@@ -987,7 +987,7 @@ private:
     // made each barrier callback cost O(backlog) instead of O(new + folded).
     std::map<uint64_t, std::vector<BatchAccess>> pendingByPhase_;
 
-    /* 1.12.18 (user ruling 2026-10-24, "OMP NoC: epoch-frozen"): shared-memory
+    /* 1.12.18 (OMP NoC: epoch-frozen): shared-memory
      * (single-process) runs price NoC accesses from a table that changes ONLY at
      * the phase barrier. Their records are folded there (foldByCut, the barrier
      * fold thread-MPI uses), each drained phase accumulates into its epoch
@@ -1000,7 +1000,7 @@ private:
      * by whichever access thread drained first, over a batch whose membership
      * depended on host order (run-to-run spread, bfs_omp bimodal). */
     bool frozenPublish_ = false;
-    /* 1.12.18 (ruling 2026-10-24, full mechanism): after the ROI baseline the
+    /* 1.12.18 (full mechanism): after the ROI baseline the
      * records carry the core's ROI-relative clock and are folded at the
      * consistent cut; each published epoch keeps a SNAPSHOT of the pair table
      * (cumulative: an unsampled pair keeps its last value), read by epoch key
@@ -1105,8 +1105,8 @@ public:
     uint32_t getBatchAvgLatency() const {
         return batchAvgLatency_.load(std::memory_order_relaxed);
     }
-    /* 1.11.97 (H09): this pair's smoothed latency; 0 when no packet of this pair has been replayed yet. */
-    uint32_t getPairLatency(uint32_t src, uint32_t dst, bool ctrl = false) const {   // ctrl: the control-message plane (user ruling 2026-10-26: control messages)
+    /* 1.11.97: this pair's smoothed latency; 0 when no packet of this pair has been replayed yet. */
+    uint32_t getPairLatency(uint32_t src, uint32_t dst, bool ctrl = false) const {   // ctrl: the control-message plane (control messages)
         if (!pairLat_ || src >= pairLatN_ || dst >= pairLatN_) return 0;
         return pairLat_[pairIdx_(src, dst, ctrl)].load(std::memory_order_relaxed);
     }
@@ -1183,10 +1183,10 @@ public:
             runBatchDrain_(std::move(kv.second), kv.first);
     }
 
-    /* 1.12.18 (ruling 2026-10-24): see frozenPublish_. Set once by the plugin
+    /* 1.12.18: see frozenPublish_. Set once by the plugin
      * for single-process runs (no thread-MPI, no shared NoC). */
     void setEpochFrozenPublish(bool on) { frozenPublish_ = on; }
-    /* 1.12.18 (ruling 2026-10-24): switch to the ROI-relative axis at the
+    /* 1.12.18: switch to the ROI-relative axis at the
      * first barrier after the ROI baseline (before its fold). */
     bool cutAxis() const { return cutAxis_; }
     void enterCutAxis() {
@@ -1242,7 +1242,7 @@ public:
         futex_unlock(&epochLock_);
         return v;
     }
-    uint32_t frozenPairLatency(int64_t e, uint32_t src, uint32_t dst, bool ctrl = false) {   // ctrl: the control plane (user ruling 2026-10-26: control messages)
+    uint32_t frozenPairLatency(int64_t e, uint32_t src, uint32_t dst, bool ctrl = false) {   // ctrl: the control plane (control messages)
         futex_lock(&epochLock_);
         const FrozenSnap* s = snapFor_(e);
         uint32_t v = 0;
@@ -1261,7 +1261,7 @@ public:
     }
     bool epochFrozenPublish() const { return frozenPublish_; }
     uint64_t frozenEpochsPublished() const { return frozenEpochsPublished_; }
-    /* 1.12.18 (ruling 2026-10-24): publish every epoch whose phases are all
+    /* 1.12.18: publish every epoch whose phases are all
      * <= lastCompletePhase (called single-threaded at the phase barrier, after
      * foldByCut). Order-free integer means => deterministic. */
     void publishCompletedEpochs(uint64_t lastCompletePhase) {
@@ -1447,8 +1447,8 @@ private:
         uint64_t tag = 1;
         std::unordered_map<uint64_t, uint64_t> tagToInjectTick;
         std::unordered_map<uint64_t, uint32_t> tagToSrc;  // epoch-dump attribution
-        std::unordered_map<uint64_t, uint32_t> tagToDst;  // 1.11.97 (H09): per-pair attribution
-        std::unordered_map<uint64_t, uint8_t> tagToCtrl;  // the message class (user ruling 2026-10-26: control messages)
+        std::unordered_map<uint64_t, uint32_t> tagToDst;  // 1.11.97: per-pair attribution
+        std::unordered_map<uint64_t, uint8_t> tagToCtrl;  // the message class (control messages)
         std::map<uint64_t, std::pair<uint64_t,uint32_t>> perPairLat;   // (src<<32|dst) -> {latSum, cnt}
         std::map<uint32_t, std::pair<uint64_t,uint32_t>> perSrcLat;  // src->{latSum,cnt}
         std::unordered_set<uint32_t> dstSet;
@@ -1521,7 +1521,7 @@ private:
                         msg, gem5::curTickRef(), uint64_t(1));
                     tagToInjectTick[tag] = gem5::curTickRef();
                     tagToSrc[tag] = acc.src;
-                    tagToDst[tag] = acc.dst;   // 1.11.97 (H09)
+                    tagToDst[tag] = acc.dst;   // 1.11.97
                     if (acc.ctrl) tagToCtrl[tag] = 1;
                     tag++;
                 }
@@ -1549,9 +1549,9 @@ private:
                         if (st != tagToSrc.end()) {
                             auto& ps = perSrcLat[st->second];
                             ps.first += lat; ps.second += 1;
-                            auto dt = tagToDst.find(pktTag);   // 1.11.97 (H09)
+                            auto dt = tagToDst.find(pktTag);   // 1.11.97
                             if (dt != tagToDst.end()) {
-                                const uint64_t ck = tagToCtrl.count(pktTag) ? kPairCtrlKey : 0;   // the class plane (user ruling 2026-10-26: control messages)
+                                const uint64_t ck = tagToCtrl.count(pktTag) ? kPairCtrlKey : 0;   // the class plane (control messages)
                                 auto& pp = perPairLat[ck | ((uint64_t)st->second << 32) | dt->second];
                                 pp.first += lat; pp.second += 1;
                             }
@@ -1577,7 +1577,7 @@ private:
             uint32_t newAvg = (uint32_t)(totalLat / delivered);
             uint32_t oldAvg = batchAvgLatency_.load(std::memory_order_relaxed);
             uint32_t next = (oldAvg == 0) ? newAvg : (oldAvg + newAvg) / 2;
-            if (frozenPublish_) {   // 1.12.18 (ruling 2026-10-24): accumulate into the epoch; published at the barrier
+            if (frozenPublish_) {   // 1.12.18: accumulate into the epoch; published at the barrier
                 next = oldAvg;
                 uint64_t ep = phaseNum / (detEpochPhases_ > 0 ? detEpochPhases_ : 1);
                 futex_lock(&epochLock_);
@@ -1590,7 +1590,7 @@ private:
                 futex_unlock(&epochLock_);
             } else
             batchAvgLatency_.store(next, std::memory_order_relaxed);
-            /* 1.11.97 (H09): publish every sampled pair the same way. */
+            /* 1.11.97: publish every sampled pair the same way. */
             ensurePairTable_();
             if (pairLat_ && !frozenPublish_) {
                 for (const auto& kv : perPairLat) {
@@ -1849,7 +1849,7 @@ public:
             __atomic_fetch_add(&stats_.level_link_flit_traversals[level], flits, __ATOMIC_RELAXED);
     }
 
-    void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94 (H17): rung 7 = HOST_MC, no on-die router (not counted below)
+    void recordTierWalk(const uint32_t perLevel[8], uint32_t links,   // 1.11.94: rung 7 = HOST_MC, no on-die router (not counted below)
                         bool ctrl = false,
                         uint32_t tsvDies = 0, bool stackLayout = false,   // 1.12.18: die boundaries this walk crossed
                         uint32_t gridEdges = 0, int gridLevel = -1,   // (1.12.143): in-die node links crossed, and the tier the grid sits at
@@ -2057,11 +2057,11 @@ public:
         }
         if (stats_.total_packets > 0) {
             info("  Avg latency: %lu cycles", stats_.total_latency / stats_.total_packets);
-            if (pairLat_) {   /* 1.11.97 (H09): the per-pair table the pricing used */
+            if (pairLat_) {   /* 1.11.97: the per-pair table the pricing used */
                 uint32_t mn = 0, mx = 0; uint64_t sum = 0, n = 0;
                 for (size_t i = 0; i < (size_t)pairLatN_ * pairLatN_; ++i) { uint32_t v = pairLat_[i].load(std::memory_order_relaxed); if (!v) continue; if (!n || v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
-                info("  Per-pair latency (H09): %lu source-destination pairs sampled; min %u, max %u, mean %.1f cycles (unsampled pairs take the ladder cost of their distance)", (unsigned long)n, mn, mx, n ? (double)sum / n : 0.0);
-                mn = mx = 0; sum = n = 0;   // the control-message plane (user ruling 2026-10-26: control messages)
+                info("  Per-pair latency: %lu source-destination pairs sampled; min %u, max %u, mean %.1f cycles (unsampled pairs take the ladder cost of their distance)", (unsigned long)n, mn, mx, n ? (double)sum / n : 0.0);
+                mn = mx = 0; sum = n = 0;   // the control-message plane (control messages)
                 for (size_t i = (size_t)pairLatN_ * pairLatN_; i < pairCells_(); ++i) { uint32_t v = pairLat_[i].load(std::memory_order_relaxed); if (!v) continue; if (!n || v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
                 if (n) info("  Per-pair latency, control messages: %lu pairs sampled; min %u, max %u, mean %.1f cycles", (unsigned long)n, mn, mx, (double)sum / n);
             }
@@ -2191,7 +2191,7 @@ public:
         double clockMhz = 1000.0;
         double injectionRate = 0.0;
 
-        /* 1.11.94 (H25 support): router flit traversals MEASURED over the
+        /* 1.11.94: router flit traversals MEASURED over the
          * post-warmup window -- the sum over every router of the change in
          * its crossbar activity count (Router::getCrossbarActivityCount, one
          * per flit through the switch), the same per-router counter the exec
@@ -2258,7 +2258,7 @@ public:
         double avgInterval = 1.0 / injectionRate;
         double uniformRange = avgInterval * 2.0;  // uniform [0, 2*mean] for mean=avgInterval
 
-        /* 1.11.94 (H25 support): crossbar-traversal baseline for the
+        /* 1.11.94: crossbar-traversal baseline for the
          * post-warmup window (see SyntheticResult::routerFlitTraversals). */
         double xbarAtWindowOpen = (warmupPackets <= 0) ? sumRouterXbar_() : -1.0;
 
@@ -2473,7 +2473,7 @@ public:
                         if (warmupDelivered < (uint64_t)warmupPackets) {
                             warmupDelivered++;
                             if (warmupDelivered == (uint64_t)warmupPackets)
-                                xbarAtWindowOpen = sumRouterXbar_();   // 1.11.94 (H25)
+                                xbarAtWindowOpen = sumRouterXbar_();   // 1.11.94
                         } else {
                             delivered++;
                             totalLat += lat;
@@ -2532,7 +2532,7 @@ public:
         result.flitSizeBits = flitSizeBits_;
         result.clockMhz = clockMhz_;
         result.injectionRate = injectionRate;
-        if (xbarAtWindowOpen >= 0.0) {   // 1.11.94 (H25): window opened
+        if (xbarAtWindowOpen >= 0.0) {   // 1.11.94: window opened
             double d = sumRouterXbar_() - xbarAtWindowOpen;
             result.routerFlitTraversals = d > 0.0 ? (uint64_t)(d + 0.5) : 0;
         }
@@ -2843,7 +2843,7 @@ private:
                          ? rtrPortsPriced_[i] : (uint32_t)r->get_num_inports();
         }
     }
-    /* 1.11.94 (H25 support): the routers' cumulative crossbar activity
+    /* 1.11.94: the routers' cumulative crossbar activity
      * (flits switched), summed -- the counter harvestRouterCountersLocked_
      * folds into rtrXbarTot_. Read-only. */
     double sumRouterXbar_() const {

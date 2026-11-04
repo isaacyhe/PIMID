@@ -12,7 +12,7 @@
 
 #define DEFAULT_INPUT 16384
 #define LEARNING_RATE 0.3
-/* 1.11.94 (b02-suites-a-4, ruling H46): Rodinia's backprop has a fixed 16
+/* 1.11.94: Rodinia's backprop has a fixed 16
  * hidden units. This port used n_input/16, so w_ih grew as n_input^2/16:
  * 32 GiB at the large tier (--input 262144, malloc failed) and an int index
  * i*n_hidden+j that overflowed past INT_MAX. */
@@ -44,7 +44,7 @@ int main(int argc, char* argv[]) {
     }
 
     /* Allocate arrays */
-    /* index arithmetic below is size_t (1.11.94, ruling H46) */
+    /* index arithmetic below is size_t (1.11.94) */
     double* input       = (double*)malloc((size_t)n_input * sizeof(double));
     double* hidden      = (double*)malloc(n_hidden * sizeof(double));
     double* output      = (double*)malloc(n_output * sizeof(double));

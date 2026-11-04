@@ -1,4 +1,4 @@
-/* reduction_omp.c — Streaming sum reduction: result = sum(a[i])
+/* reduction_omp.c -- Streaming sum reduction: result = sum(a[i])
  * OpenMP parallel version. Uses reduction clause. */
 #include <stdio.h>
 #include <stdlib.h>

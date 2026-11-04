@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
-#include <iomanip>      // 1.11.94 (l04-robustness-security-15): full-precision store
+#include <iomanip>      // 1.11.94: full-precision store
 #include <cstdlib>
 #include <cmath>
 #include <cctype>       // 1.11.57 (latent D027): cell-file name sanitising
@@ -378,13 +378,13 @@ void NVSimWrapper::loadCellParameters() {
 namespace {
     struct NVMCacheKey {
         int nvm_type; uint64_t capacity_bytes; int process_node_nm; uint32_t word_width_bits;
-        /* 1.11.52 (audit D055 + the D-series cache-key findings): TEMPERATURE
+        /* 1.11.52 (+ the D-series cache-key findings): TEMPERATURE
          * is a key axis now that power.temperature_k exists. It was safe to
          * omit only while every call site passed 350 K; wiring the knob into
          * the array queries makes two reachable configurations differ in it,
          * which is exactly the LSTP-served-an-HP-entry failure that put
          * device_corner in the key in 1.11.49. */
-        /* 1.11.49 (gate 1159H X1): the DEVICE CORNER is part of the result's
+        /* 1.11.49: the DEVICE CORNER is part of the result's
          * identity. Without it, an LSTP query silently served the pre-generated
          * HP entry -- the L77 fix compiled and did nothing, and the gate
          * caught it: LSTP leakage == HP leakage exactly. */
@@ -557,8 +557,7 @@ namespace {
     static bool nvsimDiskLoad(const NVMCacheKey& k, NVMCacheVal& v) {
         std::string path = nvsimCachePath(k);
         std::ifstream f(path);
-        /* 1.12.5 (ruling F5, user 2026-10-15: "no wrong folders and old cache
-         * files"): the warehouse is the only store. From 1.11.52 to 1.12.4 a miss
+        /* 1.12.5: the warehouse is the only store. From 1.11.52 to 1.12.4 a miss
          * consulted the pre-1.11.52 per-user location (~/.cache/pimid/nvsim) and
          * copied a passing entry forward (1.12.2 checked before copying). That
          * read is gone: a miss is characterized and stored in the warehouse. */
@@ -617,7 +616,7 @@ namespace {
             out = xml.substr(a, b - a);
             return true;
         };
-        /* 1.11.60 (audit round 4, C013): THE PRODUCING VERSION IS READ, so the
+        /* 1.11.60: THE PRODUCING VERSION IS READ, so the
          * stamp stops being a line of manifest text nobody consults.
          *
          * 1.11.57 bumped cache::kToolVersion to close its own C014, whose note
@@ -638,7 +637,7 @@ namespace {
          * onwards carry their version and a mismatch refuses them. Entries
          * older than that still ride on their filename (the legacy copy-forward
          * that imported such entries on a name match is gone since 1.12.5,
-         * ruling F5: the warehouse is the only store).
+         * the warehouse is the only store).
          */
         {
             std::string ver;
@@ -698,7 +697,7 @@ namespace {
             }
         }
 
-        /* 1.11.94 (l04-robustness-security-15): THE VALUE FORMAT IS READ.
+        /* 1.11.94: THE VALUE FORMAT IS READ.
          * nvsimDiskStore used to stream the doubles at the default ostream
          * precision (6 significant digits), so a warm run priced every NVSim
          * quantity with values rounded at ~1e-6 relative while the cold run
@@ -708,7 +707,7 @@ namespace {
          * which round-trips every double exactly, so warm == cold.
          *
          * An entry WITHOUT the marker was written at 6 digits. It is read
-         * exactly as before (R1 parity: the corpus' PCM/ReRAM/STT-MRAM cells
+         * exactly as before (the corpus' PCM/ReRAM/STT-MRAM cells
          * load such entries from the shipped cache, and recharacterizing them
          * would move their numbers) and the load says so in one line, so the
          * two formats are never mixed silently. PIMID_NVSIM_CACHE_REQUIRE_FULL=1
@@ -800,12 +799,12 @@ namespace {
          * says. Adding fields is backward-compatible in both directions: an
          * older reader ignores what it does not look for, and the newer reader
          * treats an absent field as "not stated" rather than as a mismatch. */
-        /* 1.11.60 (audit round 4, C013): the producing version is part of the
+        /* 1.11.60: the producing version is part of the
          * record now. cache::kToolVersion existed since 1.11.52 and moved at
          * 1.11.57 to close a finding about staleness, but it was written only
          * into the manifest and read by nothing, so it could not refuse a
          * single entry. Written here, it is checked by nvsimDiskLoad(). */
-        /* 1.11.94 (l04-robustness-security-15): 17 significant digits
+        /* 1.11.94: 17 significant digits
          * round-trip every IEEE double through std::stod exactly, so a warm
          * run reads back the very values the cold run computed. The marker
          * tells nvsimDiskLoad which format it is reading. */
@@ -1500,7 +1499,7 @@ std::string NVSimWrapper::getErrorMessage() const {
 // Subarray-Level Characteristics
 //=============================================================================
 
-/* 1.11.56 (audit D031): THE BREAKDOWN IS NVSIM'S OWN, NOT A PERCENTAGE SPLIT.
+/* 1.11.56: THE BREAKDOWN IS NVSIM'S OWN, NOT A PERCENTAGE SPLIT.
  *
  * These six accessors used to return fixed fractions of mat.readLatency
  * (0.10 / 0.20 / 0.45 / 0.15 / 0.05 / 0.05). Nothing about a particular array

@@ -15,16 +15,17 @@
 
 Additionally:
 - `benchmarks/host/` -- host-side variants of the core kernels.
+- `benchmarks/hostphase/` -- the host phases (input generation, result handling) of the core kernels, without device computation.
 
-Co-simulation has NO separate workload family: any ordinary ROI-marked
-workload runs in co-sim (a configuration with `system.hosts[]`). Its ROI region executes on the
+Co-simulation has no separate workload family: any ordinary ROI-marked
+workload runs in co-simulation (a configuration with `system.hosts[]`). Its ROI region executes on the
 device PEs, the out-of-ROI code on the host, and the boundary costs (launch,
 coherence flush, and the two-layer host<->device bridge) are charged
 explicitly (see [cosim.md](cosim.md)).
 
-### Co-sim experiment shape (fig5)
+### The paper's co-simulation experiment (Fig. 5)
 
-The co-sim figure compares PIM offload against conventional multicore
+The co-simulation figure compares PIM offload against conventional multicore
 scaling, both measured over the **task region** ("inputs ready in host mem"
 -> "results visible in host mem"), never kernel-only or whole-process:
 
@@ -35,16 +36,16 @@ scaling, both measured over the **task region** ("inputs ready in host mem"
 - **Kernels (5):** `stream_triad`, `gemv`, `bfs`, `stencil_2d`, `histogram`
   (the near-data-prep sweep set; see below).
 - **APIs (2):** OMP and MPI (the 1.6 thread-MPI stack; MPI cells run coupled).
-- **Co-sim cells:** single OoO@2GHz host + device (8 `alu_core` PEs @ BANK,
+- **Co-simulation cells:** single OoO@2GHz host + device (8 `alu_core` PEs @ BANK,
   same tech) -> 2 techs x 5 kernels x 2 APIs = 20 cells.
-- **Baseline cells:** host-only, **same tech as the paired co-sim cell** (no
+- **Baseline cells:** host-only, **same tech as the paired co-simulation cell** (no
   host-tech confound), 1/4/16 OoO cores x {OMP, MPI}, via
   `PIMID_COSIM_NO_OFFLOAD=1` on the same binary -> 2 x 5 x 3 x 2 = 60 cells.
   1-core cells subsume the old serial baseline; 1-core MPI = a single rank on
   the thread-MPI runtime.
 
 The three baseline configs are `examples/cosim/baseline_host_{1,4,16}core.yaml`
-(see [examples.md](examples.md)); the sweep runner overrides
+(see [examples.md](examples.md)); the experiment sets
 `memory.technology` per cell.
 
 ```bash
@@ -60,10 +61,13 @@ Per-benchmark run configs live with each suite: `pim_kernels/<k>/*.yaml`
 
 ```
 benchmarks/
-|-- pim_kernels/   # device kernels (run on PIM PEs): bfs, gemv, histogram,
-|                  #   reduction, spmv_csr -- each as <k>, <k>_omp, <k>_mpi
+|-- pim_kernels/   # device kernels (run on PIM PEs): stream_triad, vector_add, gemv,
+|                  #   spmv_csr, bfs, histogram, reduction, stencil_2d, pointer_chase
+|                  #   -- each as <k>, <k>_omp, <k>_mpi
 |-- host/          # host-side variants of the core kernels:
 |                  #   <k>_serial, <k>_shared_memory, <k>_message_passing
+|-- hostphase/     # host phases of the core kernels (no device computation)
+|-- include/       # shared headers: zsim hooks, pimid_devorg.h, pimid_spm.h
 |-- babelstream/   # BabelStream (OpenMP)
 |-- rodinia/       # 10 Rodinia kernels (OpenMP)
 |-- classic/       # serial classics (dhrystone, whetstone, sha256, ...)
@@ -89,30 +93,13 @@ The core kernels come in **three data-model variants**:
 
 ### How each variant is realized
 
-The realization differs between standalone programs (`pim_kernels/`, `host/`)
-and `cosim/` (host-offloads-to-device), because the offload model is
-single-process:
-
 | folder | `shared_memory` | `message_passing` |
 |--------|-----------------|-------------------|
-| **pim_kernels**, **host** | OpenMP threads over one address space (`#pragma omp`, `g++ -fopenmp`) | **forked ranks** + POSIX shm-mailbox transport (PIMID forks N QEMU children; `libpimid_mpi.so`), built with `mpicxx` |
-| **cosim** | offload region spawns one pthread **per PE**, all reading/writing the host's buffers via shared pointers (zero-copy) | offload region spawns one pthread per PE in a **full-DMA** model: each PE `pimid_pe_recv`s its input chunk from host into a **private** buffer, computes on the copy, then `pimid_pe_send`s its result back -- both transfers charged on the host-device link |
+| **pim_kernels**, **host** | OpenMP threads over one address space (`#pragma omp`, `g++ -fopenmp`) | MPI ranks, built with `mpicxx`. Under `--method exec` the ranks run as threads of one process with `libpimid_mpi.so` loaded in place of the host's MPI library and a shared-memory mailbox transport (thread-MPI); the trace method runs them as processes. |
 
-**Why cosim/message_passing is in-process, not forked:** the host-to-device
-offload (`pimid_offload_sync` + WORK_BEGIN/END domain switching) operates within
-a single process. A forked MPI rank is a separate process with no host to
-offload from, so forking is incompatible with the offload model. cosim therefore
-expresses message-passing as explicit in-process **DMA copies** -- `pimid_pe_recv`
-/ `pimid_pe_send` in `cosim_pe_message.h`, each calling `zsim_work_begin_sized`
-so the link's M/D/1 cost tracks the real payload -- same *data model* (no shared
-pointers; data moves by value across a costed link), different mechanism than the
-forked ranks.
-
-> **Build note.** The `message_passing` variants in `pim_kernels`/`host` need
-> an MPI C++ wrapper for `<mpi.h>`; the Makefile auto-discovers `mpicxx` and
-> skips those targets with a note if none is found. `serial`/`shared_memory`
-> build with `g++`. The `cosim` variants need no MPI toolchain -- all build
-> with `g++` alone (in-process pthreads + DMA).
+> **Build note.** The `message_passing` variants need an MPI C++ wrapper for
+> `<mpi.h>`; the Makefile auto-discovers `mpicxx` and skips those targets with a
+> note if none is found. `serial`/`shared_memory` build with `g++`.
 
 ## Random inputs
 
@@ -135,7 +122,10 @@ marks a neighbour in its own block at once and sends every other neighbour to th
 per-owner counts by `MPI_Alltoall`, the vertices by one `MPI_Sendrecv` per rank pair); the owner keeps the
 vertices it has not visited yet, and an `MPI_Allreduce` of the frontier sizes ends the search. A rank needs about 28 ints per owned
 vertex at degree 8 (its rows, its dist, two frontiers, the send buckets and a receive buffer sized by the edges into
-its block); on a device the whole set goes in the rank's PE slot.
+its block); on a device the whole set goes in the rank's PE slot. A set larger than the slot is refused at data
+preparation, and the message names the largest `--vertices` that fits. That size is computed from the mean number of
+in-edges per block, while the check uses the rank's own receive buffer, so a size within about 0.02% of the named one
+can still be refused.
 
 ## Running
 
@@ -143,17 +133,17 @@ its block); on a device the whole set goes in the rank's PE slot.
   `--workload-type {serial|openmp|mpi}` (openmp -> shared_memory binary,
   mpi -> message_passing binary). Host vs device is chosen by the config's
   core type + placement (`ooo_core`/`HOST_MC` vs `alu_core`/`BANK`).
-- **cosim**: a host+device configuration; the binary already
-  encodes the device-side data model (the `_sm` / `_mp` suffix).
+- **co-simulation**: the same binaries under a configuration with `system.hosts[]`:
+  the ROI runs on the device PEs and the rest on the host.
 
-See [cosim.md](cosim.md) for the host-device link model used by cosim.
+See [cosim.md](cosim.md) for the host-device link model.
 
 ## Reading the cycle metric
 
-A parallel (OMP or MPI) run leaves ONE `cycles: N # Simulated cycles` line per
+A parallel (OMP or MPI) run leaves one `cycles: N # Simulated cycles` line per
 device PE in `zsim.out`. **The first such line is core 0 only** -- a PE's
 per-core count reflects only its own active cycles, and the kernel finishes
-when the LAST PE finishes. **Never use the first `cycles:` line as the kernel
+when the last PE finishes. **Never use the first `cycles:` line as the kernel
 metric**: latching onto it (`grep cycles | head -1`, and the older
 `parseZSimOutputFile()`) is the pre-1.8.8 defect that manufactured a spurious
 bfs HBM3 32-PE cycle spike -- core 0 happened to be a low outlier at 16/64 PEs
@@ -170,7 +160,7 @@ Use the **critical-path max** across PEs instead:
 - **The kernel metric is the `(max: N)` value** on either path, not the first
   per-PE line. Harnesses must read `(max: N)`, not `grep cycles | head -1`.
 
-Since 1.12.18 the run's cycles are its RUN TIME, the ROI's elapsed wall-clock
+Since 1.12.18 the run's cycles are its run time, the ROI's elapsed wall-clock
 time, and every time-based power term uses the same window. An OpenMP device
 run prints `OMP busy cycles: <max> (mean, min, pes, per-PE activity; busy
 max)`, then `Run time: <W> cycles = <source>; busy max <max>`, then
@@ -223,7 +213,7 @@ the memory simulator's own mean (`dramReplay` `hostLatencySum / hostRequests`,
 
 ## Parallel runtime on PEs (PIM runtime primitives)
 
-1.12.18 (user rulings 2026-10-23). On a device PE the OpenMP and MPI runtimes
+1.12.18. On a device PE the OpenMP and MPI runtimes
 are priced "the PIM way": the runtime's own code is not executed on the PE,
 and each runtime event is charged the PIM primitive a PIM device would use
 (UPMEM's measured primitives: lock acquire/release, handshake, and the barrier
@@ -264,21 +254,22 @@ runtime executed and priced like kernel code).
 
 ## Device-organization-aware data prep (near-data placement)
 
-The simulator prices each PE access purely by data LOCATION (own unit = fast,
+The simulator prices each PE access purely by data location (own unit = fast,
 elsewhere = network distance) and never moves data itself -- placing data
 near its PE is the benchmark's job, exactly as it is the programmer's job on
-real PIM hardware. The harness passes the device organization on the command
-line (`--placement --pes --total-units --pages-per-unit`), and
+real PIM hardware. PIMID appends the device organization to the workload's
+command line (`--placement --pes --total-units --pages-per-unit`; a kernel that
+does not read them ignores them), and
 `benchmarks/include/pimid_devorg.h` gives kernels the address math to
-relocate each PE's working set into that PE's own placement unit BEFORE the
+relocate each PE's working set into that PE's own placement unit before the
 ROI (plain untimed setup; the measured kernel arithmetic is byte-identical).
-All 5 sweep kernels (`stream_triad`, `gemv`, `bfs`, `stencil_2d`,
-`histogram`) do this: partitioned data goes to the owner's slot, read-shared
+The five kernels of the co-simulation experiment (`stream_triad`, `gemv`,
+`bfs`, `stencil_2d`, `histogram`) do this: partitioned data goes to the owner's slot, read-shared
 data is replicated, and genuinely cross-PE traffic (stencil halos, bfs edge
 scatter) stays remote -- so it pays real network distance, which is the
 point. Coarse/host-shared placements (`CHANNEL`, `LOGIC_DIE`) need no prep
 and run the original path; a working set too large for a PE slot falls back
-to host layout with a loud note. MPI variants need no prep for rank
+to host layout with a note. MPI variants need no prep for rank
 locality: each rank touches its own data first, so its pages live in its own
 PE's memory (first-touch placement, [memory.md](memory.md#pe-placement-levels)).
 
@@ -326,7 +317,8 @@ the stack span it touched in the ROI as `stackSpanBytes`, which is what the
 reserve must hold. The default reserve holds the ROI stack of every shipped
 kernel (at most 3,736 bytes, a message-passing rank's).
 
-All 8 PIM kernels, in their serial, shared-memory and message-passing forms,
+The eight PIM kernels other than `pointer_chase`, in their serial, shared-memory
+and message-passing forms,
 go through one tiled routine per kernel (the same text in all three forms).
 Data read once streams through the RAM in tiles; data that is reused stays in
 it (gemv's x tile, histogram's bins when they fit). Irregular gathers --

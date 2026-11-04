@@ -1,26 +1,26 @@
 # PE Core Models
 
-Four core models are available for PIM device PEs (`pim.pe.type`) and, in
-system scope, for hosts (`hosts[].core_type`) and devices (`devices[].pe_type`).
+Four core models are available for PIM device PEs (`pim.pe.type`) and, in a
+co-simulation, for hosts (`system.hosts[].core_type`) and devices (`system.devices[].pe_type`).
 The in-order model also runs as the scalar single-issue PE (`issue_width: 1`,
 `branch_predictor: none`; see below), which replaced `simple_core` in 1.12.1.
 
 | Value | ZSim engine | What it models |
 |---|---|---|
-| `compute_unit` | ALU | A datapath, not a processor: a register file, arithmetic units, a result bus and a resident instruction store, with no caches and no speculation. Sized by `pim.pe.lanes` / `operand_width` / `floating_point` / `imem_bytes` and shaped by the scaling factors below. The default device element. Alias: `alu_core` (which the entire existing sweep corpus names, so it is permanent). |
+| `compute_unit` | ALU | A datapath, not a processor: a register file, arithmetic units, a result bus and a resident instruction store, with no caches and no speculation. Sized by `pim.pe.lanes` / `operand_width` / `floating_point` / `imem_bytes` and shaped by the scaling factors below. The default device element. Alias: `alu_core`, kept permanently (most configurations, the examples included, name it). |
 | `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW-dependency stalls, functional-unit latencies, and issue in program order (no reordering; `pim.pe.issue_width`, default 2), plus the cross-PE memory-contention weave (`CoreRecorder`). Branch prediction per `pim.pe.branch_predictor`: `pag` (default, from the core record) or `none`. Aliases: `InOrder`, `in-order`, `in_order`. |
 | `ooo_core` | Out-of-order | Out-of-order superscalar, 4-issue. A processing element's window is Westmere-class (128-entry ROB); a host core's window is the core record's `ooo_host` (Golden Cove: 512-entry ROB, see below). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
 | `null_core` | Null | No timing model: counts instructions (cycles == instrs, IPC = 1) and drops all memory accesses (empty load/store handlers, so no NoC traffic). An IPC = 1 control/upper-bound baseline. Aliases: `Null`, `null`. |
 
 Any other value is rejected with an error listing the valid names.
 
-**Retired: `simple_core` (1.12.1, ticket #114).** `simple_core` and its aliases
+**Retired: `simple_core` (1.12.1).** `simple_core` and its aliases
 `Simple` / `simple` are refused, with a message naming the replacement:
 `in_order_core` with `pim.pe.issue_width: 1` and `pim.pe.branch_predictor: none`
-(system scope: `devices[].pe_type: in_order_core` with
-`devices[].pim.pe.issue_width: 1` and `devices[].pim.pe.branch_predictor: none`;
-a host: `hosts[].core_type: in_order_core` with `hosts[].issue_width: 1` and
-`hosts[].branch_predictor: none`).
+(for a device node: `system.devices[].pe_type: in_order_core` with
+`system.devices[].pim.pe.issue_width: 1` and `system.devices[].pim.pe.branch_predictor: none`;
+for a host: `system.hosts[].core_type: in_order_core` with `system.hosts[].issue_width: 1` and
+`system.hosts[].branch_predictor: none`).
 Its IPC = 1 bound modelled no real PE class -- on the 1.11.x corpus it sat
 between 0.77x and 1.13x of `in_order_core` in cycles depending on the kernel,
 a bound rather than an element. For an IPC = 1 control bound without memory
@@ -28,7 +28,7 @@ traffic, `null_core` remains.
 
 ## What every model shares, and what none of them are
 
-All four consume the SAME host instruction stream: the emulator executes the real
+All four consume the same host instruction stream: the emulator executes the real
 guest binary and reports retired instruction counts and load/store addresses.
 There is no processing-element instruction set anywhere in the simulator.
 
@@ -161,7 +161,7 @@ McPAT prices `none` with no predictor (prediction_width 0, no BTB, RAS or
 pattern table). With issue width 1 it is the **scalar PE profile**: 1 issue,
 1 ALU, 1 MUL, 1 FPU (the FPU goes when `floating_point: false`), no predictor,
 at the in-order refill depth (`in_order.mispredict_penalty_cycles`, 7) -- the
-cell `simple_core` was priced with, except that cell's depth was 5. The run
+profile `simple_core` was priced with, except that its depth was 5. The run
 prints `[power] in_order_core: scalar PE profile (...)`.
 `PIMID_INORDER_NOBRANCH=1` removes the branch feed in this mode too, which makes
 every branch free; do not combine it with `none`.
@@ -182,7 +182,7 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
 - **Wrong-path effects are front-end only, and only on `ooo_core`**: no
   wrong-path uop executes and no wrong-path data access is made on any core.
   `in_order_core` charges its flush/refill bubble and fetches no wrong path.
-  `ooo_core` DOES fetch the wrong path of a conditional mispredict into the
+  `ooo_core` does fetch the wrong path of a conditional mispredict into the
   L1I until the branch resolves (at most ceil(penalty x fetch width / line
   size) lines: 5 at the core record's 17 cycles x 16 B over a 64 B line), so
   wrong-path lines occupy the L1I and count in its accesses and in the
@@ -205,7 +205,7 @@ formerly-pulled OOO+MPI cell class is fully supported since that release.
 
 ### The host core's out-of-order window
 
-A host `ooo_core` (system scope: `hosts[]`, and the host of a co-sim run) is sized from the `ooo_host` section of the core
+A host `ooo_core` (system scope: `hosts[]`, and the host of a co-simulation run) is sized from the `ooo_host` section of the core
 record `params/core/default.yaml`, as the 4th Gen Xeon Scalable core (Intel Golden Cove) is built:
 
 | Structure | Entries | Source |
@@ -275,7 +275,7 @@ configuration) and see every L1D request that goes to the L2, loads and stores:
 
 ### The host's caches
 
-A host (system scope: `hosts[]`, and the host of a co-sim run) has the caches of the same Golden Cove core, from the `host`
+A host (system scope: `hosts[]`, and the host of a co-simulation run) has the caches of the same Golden Cove core, from the `host`
 section of the cache record `params/cache/default.yaml`. A host with no `cache:` block has exactly this hierarchy (the run prints
 it: `host caches (cache record, host core)`), and so does a run without a host node where it needs one. A size, associativity or
 latency the configuration gives replaces the record's for that host and the rest comes from the record: a level given a size keeps
@@ -351,7 +351,7 @@ as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0
 
 ## Notes
 
-- `null_core` issues NO memory or network traffic -- its load/store handlers are
+- `null_core` issues no memory or network traffic -- its load/store handlers are
   empty, so it drops every access. It therefore cannot drive memory- or
   network-only studies (use `alu_core` with `access_factor`/`compute_factor`).
   Its role today is an IPC = 1 control/upper-bound baseline. Note: PIMID does not
@@ -372,12 +372,12 @@ as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0
   conditional mispredict and an indirect jmp/call or return target miss charge
   the execute-depth flush bubble (the target is known only at execute); a taken
   direct branch (jcc, call rel) that misses the BTB charges the shorter
-  decode-depth resteer bubble (1.11.98 ruling (a); 7 and 4 cycles
+  decode-depth resteer bubble (1.11.98; 7 and 4 cycles
   from the core record `params/core/default.yaml`, set per run with
   `core.in_order.mispredict_penalty_cycles` / `core.in_order.resteer_penalty_cycles`;
   env overrides `PIMID_INORDER_MISPRED_PENALTY` / `PIMID_INORDER_RESTEER_PENALTY`;
   disable all branch modeling with `PIMID_INORDER_NOBRANCH=1`). (1.11.44: the legacy IPC = 1
-  `PIMID_INORDER_NODECODE` escape hatch is REMOVED -- its A/B purpose ended
+  `PIMID_INORDER_NODECODE` escape hatch is removed -- its A/B purpose ended
   with the 1.4.x validation, and release-vs-release builds are the baseline
   method. The in-order core has exactly one timing model.) The issue width is configurable via `pim.pe.issue_width`
   (default 2, valid 1-6 -- the core's six issue ports; any other width is
@@ -392,7 +392,8 @@ as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0
   into ZSim `DynUop`s (register read/write sets, latency class, functional-unit
   port, load/store markers) with a minimal in-tree x86-64 decoder
   (`external/zsim/src/x86_decoder.h`). This drives the out-of-order core's
-  dependency-driven pipeline (128-entry ROB, 4-wide issue, port contention,
+  dependency-driven pipeline (the core record's window: a 128-entry ROB on a
+  processing element, 512 entries on a host core; 4-wide issue, port contention,
   load/store queues, register scoreboard) instead of the old synthetic 1-CPI
   path, so `ooo_core` now models ILP and memory-level parallelism: on
   compute-bound kernels it retires faster than `in_order_core` (typical gaps
@@ -419,7 +420,7 @@ as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0
   and indirect jmp/call targets and returns are predicted by a 512-entry
   direct-mapped BTB (last-seen-target) plus a 16-entry return-address stack --
   wrong targets pay the same front-end redirect as a conditional mispredict.
-  The redirect is resolution-bound and its TOTAL cost is the core record's
+  The redirect is resolution-bound and its total cost is the core record's
   `ooo.mispredict_penalty_cycles` (17 cycles, Westmere-class; set per run
   with `core.ooo.mispredict_penalty_cycles`, at least 9): fetch restarts
   after the mispredicted branch uop completes (execute-complete, not ROB
@@ -436,7 +437,7 @@ as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0
   `indirBranches`, `indirMispreds`, `rasReturns`, `rasMispreds`,
   `repDrainedLoads/Stores`,
   `memMismatchLoads/Stores`. Env toggles: `PIMID_OOO_NODECODE=1` forces the legacy
-  synthetic path; `PIMID_OOO_NOBRANCH=1` disables ALL branch modeling (direction, BTB, RAS);
+  synthetic path; `PIMID_OOO_NOBRANCH=1` disables all branch modeling (direction, BTB, RAS);
   `PIMID_OOO_DUMP=1` profiles which opcodes hit the generic fallback (weighted by
   dynamic count); `PIMID_OOO_DEBUG=1` traces the first decoded BBLs. Other core
   types ignore the decoded uops and never receive branch callbacks, so their

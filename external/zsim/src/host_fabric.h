@@ -47,7 +47,7 @@
 #include "memory_hierarchy.h"
 #include "stats.h"
 #include "noc_wire_data.h"
-extern uint32_t lineBits;   // (user ruling 2026-10-25: measured wire activity)
+extern uint32_t lineBits;   // (measured wire activity)
 
 class HostFabric : public GlobAlloc {
     public:
@@ -61,7 +61,7 @@ class HostFabric : public GlobAlloc {
         volatile uint64_t busFree;
         Counter profDataMsgs, profDataHops, profReqMsgs, profBusWait;
         bool statsDone;
-        NocWireData wire;                  // measured data-path activity (user ruling 2026-10-25: measured wire activity)
+        NocWireData wire;                  // measured data-path activity (measured wire activity)
         NocWireData::Stream* wireStreams;  // one per stop: the sender's last flit
 
         uint32_t dist(uint32_t a, uint32_t b) const {
@@ -166,7 +166,7 @@ class HostFabric : public GlobAlloc {
             profDataHops.init("hostFabDataHops", "Sum of the data messages' hops (ring: stops travelled; crossbar: 1 each; bus: 0)"); s->append(&profDataHops);
             profReqMsgs.init("hostFabReqMsgs", "Fabric accesses (one command each)"); s->append(&profReqMsgs);
             profBusWait.init("hostFabBusWait", "Bus: cycles accesses waited for the bus"); s->append(&profBusWait);
-            wire.initStats(s, "hostFabWire", "Measured host data-path wire activity (256-bit flits, per sending stop) (user ruling 2026-10-25: measured wire activity)");
+            wire.initStats(s, "hostFabWire", "Measured host data-path wire activity (256-bit flits, per sending stop) (measured wire activity)");
             parentStat->append(s);
             return s;
         }

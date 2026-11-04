@@ -95,7 +95,7 @@ void ParseXML::parse(char* filepath)
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"dram_periph_pitch")==0) {sys.dram_periph_pitch=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"dram_periph_dyn")==0) {sys.dram_periph_dyn=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"dram_periph_leak")==0) {sys.dram_periph_leak=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
-		/* PIMID 1.11.56 (audit C010): the dram_periph_scope parse hook is
+		/* PIMID 1.11.56: the dram_periph_scope parse hook is
 		 * GONE. Nothing emitted the parameter (the wrapper stopped writing
 		 * it) and nothing read the field (processor.cc records that the
 		 * mask was removed), so this line parsed an attribute no XML
@@ -110,18 +110,18 @@ void ParseXML::parse(char* filepath)
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"opt_area")==0) {sys.opt_area=(bool)atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"Embedded")==0) {sys.Embedded=(bool)atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_network")==0) {sys.pimid_clock_network=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 */
-		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_layout_energy_overhead")==0) {sys.pimid_layout_energy_overhead=atoi(xNode2.getChildNode("param",i).getAttribute("value")); pimid_layout_energy_overhead_g=sys.pimid_layout_energy_overhead; continue;} /* PIMID 1.12.18 (ruling 2026-10-24) */
-		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fu_base_energy")==0) {sys.pimid_fu_base_energy=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #1) */
-		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fpu_published")==0) {sys.pimid_fpu_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #2) */
-		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_int_alu_published")==0) {sys.pimid_int_alu_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #3) */
-		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fu_area_published")==0) {sys.pimid_fu_area_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.29: (ruling 2026-10-25) */
-		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_core")==0) {sys.pimid_clock_pg_core=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 (ruling #4) */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_layout_energy_overhead")==0) {sys.pimid_layout_energy_overhead=atoi(xNode2.getChildNode("param",i).getAttribute("value")); pimid_layout_energy_overhead_g=sys.pimid_layout_energy_overhead; continue;} /* PIMID 1.12.18 */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fu_base_energy")==0) {sys.pimid_fu_base_energy=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fpu_published")==0) {sys.pimid_fpu_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_int_alu_published")==0) {sys.pimid_int_alu_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_fu_area_published")==0) {sys.pimid_fu_area_published=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.29: */
+		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_core")==0) {sys.pimid_clock_pg_core=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;} /* PIMID 1.12.18 */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_cache")==0) {sys.pimid_clock_pg_cache=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_noc")==0) {sys.pimid_clock_pg_noc=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_pg_mc")==0) {sys.pimid_clock_pg_mc=atof(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_split")==0) {sys.pimid_clock_split=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_clock_leaf_sinks")==0) {sys.pimid_clock_leaf_sinks=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
-		/* PIMID 1.12.18 (user rulings: idle halt, per-die process, per-die clock trunk) */
+		/* PIMID 1.12.18 (idle halt, per-die process, per-die clock trunk) */
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_idle_halt")==0) {sys.pimid_idle_halt=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_logic_die_node")==0) {sys.pimid_logic_die_node=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
 		if (strcmp(xNode2.getChildNode("param",i).getAttribute("name"),"pimid_logic_die_device_type")==0) {sys.pimid_logic_die_device_type=atoi(xNode2.getChildNode("param",i).getAttribute("value"));continue;}
@@ -197,7 +197,7 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"fetch_width")==0) {sys.core[i].fetch_width=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"number_instruction_fetch_ports")==0) {sys.core[i].number_instruction_fetch_ports=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"pimid_dma_engine")==0) {sys.core[i].pimid_dma_engine=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
-							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"pimid_ib_entries")==0) {sys.core[i].pimid_ib_entries=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.12.18 (ruling #3) */
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"pimid_ib_entries")==0) {sys.core[i].pimid_ib_entries=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.12.18 */
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"decode_width")==0) {sys.core[i].decode_width=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"issue_width")==0) {sys.core[i].issue_width=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"peak_issue_width")==0) {sys.core[i].peak_issue_width=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
@@ -286,17 +286,17 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"fp_instructions")==0) {sys.core[i].fp_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"branch_instructions")==0) {sys.core[i].branch_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"branch_mispredictions")==0) {sys.core[i].branch_mispredictions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
-							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"predictor_l1_writes")==0) {sys.core[i].predictor_l1_writes=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}   /* PIMID 1.11.97 (R2476) */
-							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"predictor_l2_writes")==0) {sys.core[i].predictor_l2_writes=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}   /* PIMID 1.11.97 (R2476) */
+							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"predictor_l1_writes")==0) {sys.core[i].predictor_l1_writes=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}   /* PIMID 1.11.97 */
+							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"predictor_l2_writes")==0) {sys.core[i].predictor_l2_writes=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}   /* PIMID 1.11.97 */
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"committed_instructions")==0) {sys.core[i].committed_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"committed_int_instructions")==0) {sys.core[i].committed_int_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"committed_fp_instructions")==0) {sys.core[i].committed_fp_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"load_instructions")==0) {sys.core[i].load_instructions=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("stat",k).getAttribute("name"),"pimid_dma_lines")==0) {sys.core[i].pimid_dma_lines=atof(xNode3.getChildNode("stat",k).getAttribute("value"));continue;}
-							{   /* PIMID 1.12.18 (ruling #2): pimid_fp_ins_<Cat> / pimid_fp_lanes_<Cat> */
+							{   /* PIMID 1.12.18: pimid_fp_ins_<Cat> / pimid_fp_lanes_<Cat> */
 								const char* nm = xNode3.getChildNode("stat",k).getAttribute("name");
 								bool hit = false;
-								if (strncmp(nm, "pimid_int_ops_", 14) == 0)   /* PIMID 1.12.18 (ruling #3) */
+								if (strncmp(nm, "pimid_int_ops_", 14) == 0)   /* PIMID 1.12.18 */
 									for (int q = 0; q < 9 && !hit; q++)
 										if (strcmp(nm + 14, pimid_ic_name[q]) == 0) { sys.core[i].pimid_int_ops[q] = atof(xNode3.getChildNode("stat",k).getAttribute("value")); hit = true; }
 								if (strncmp(nm, "pimid_fp_", 9) == 0)
@@ -1222,9 +1222,9 @@ void ParseXML::parse(char* filepath)
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_parent_regions")==0) {sys.NoC[i].link_parent_regions=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_span_processor")==0) {sys.NoC[i].link_span_processor=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* 1.12.23 */
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"bus_arbiter_ports")==0) {sys.NoC[i].bus_arbiter_ports=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* (1.12.259) */
-							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_io_pj_per_bit")==0) {sys.NoC[i].link_io_pj_per_bit=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
-							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tsv_vdd")==0) {sys.NoC[i].tsv_vdd=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
-							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_activity")==0) {sys.NoC[i].link_activity=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* user ruling 2026-10-25 */
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_io_pj_per_bit")==0) {sys.NoC[i].link_io_pj_per_bit=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tsv_vdd")==0) {sys.NoC[i].tsv_vdd=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
+							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_activity")==0) {sys.NoC[i].link_activity=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"tech_node")==0) {sys.NoC[i].tech_node=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"router_stages")==0) {sys.NoC[i].router_stages=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 							if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"clock_root_shared")==0) {sys.NoC[i].clock_root_shared=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
@@ -1469,8 +1469,8 @@ void ParseXML::parse(char* filepath)
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"phy_pj_per_bit")==0) {sys.pcie.phy_pj_per_bit=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_energy_end")==0) {sys.pcie.link_energy_end=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_node_nm")==0) {sys.pcie.link_node_nm=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID 1.12.18: two-node UCIe rows */
-				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_idle_l0")==0) {sys.pcie.link_idle_l0=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (user ruling 2026-10-27) */
-				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_ctrl_published")==0) {sys.pcie.link_ctrl_published=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (user ruling 2026-10-28: link controller logic priced) */
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_idle_l0")==0) {sys.pcie.link_idle_l0=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID */
+				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_ctrl_published")==0) {sys.pcie.link_ctrl_published=atoi(xNode3.getChildNode("param",k).getAttribute("value"));continue;}   /* PIMID (link controller logic priced) */
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_l0_idle_s")==0) {sys.pcie.link_l0_idle_s=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_l1_exits")==0) {sys.pcie.link_l1_exits=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
 				if (strcmp(xNode3.getChildNode("param",k).getAttribute("name"),"link_l1_exit_s")==0) {sys.pcie.link_l1_exit_s=atof(xNode3.getChildNode("param",k).getAttribute("value"));continue;}
@@ -1594,10 +1594,10 @@ void ParseXML::initialize() //Initialize all
 		sys.core[i].fetch_width=1;
 		sys.core[i].number_instruction_fetch_ports=1;
 		sys.core[i].pimid_dma_engine=0;   /* PIMID 1.12.18: absent unless described */
-		sys.core[i].pimid_ib_entries=0;   /* PIMID 1.12.18 (ruling #3): absent = McPAT's instruction_buffer_size */
+		sys.core[i].pimid_ib_entries=0;   /* PIMID 1.12.18: absent = McPAT's instruction_buffer_size */
 		sys.core[i].pimid_running_fraction = sys.core[i].pimid_running_fraction_max = -1;   /* PIMID 1.12.18 (idle halt): not measured */
-		for (int q = 0; q < 9; q++) { sys.core[i].pimid_fp_ins[q] = 0; sys.core[i].pimid_fp_lanes[q] = 0; }   /* PIMID 1.12.18 (ruling #2) */
-		for (int q = 0; q < 9; q++) sys.core[i].pimid_int_ops[q] = 0;   /* PIMID 1.12.18 (ruling #3) */
+		for (int q = 0; q < 9; q++) { sys.core[i].pimid_fp_ins[q] = 0; sys.core[i].pimid_fp_lanes[q] = 0; }   /* PIMID 1.12.18 */
+		for (int q = 0; q < 9; q++) sys.core[i].pimid_int_ops[q] = 0;   /* PIMID 1.12.18 */
 		sys.core[i].decode_width=1;
 		sys.core[i].issue_width=1;
 		sys.core[i].peak_issue_width=1;
@@ -1633,7 +1633,7 @@ void ParseXML::initialize() //Initialize all
 		sys.core[i].fp_instructions=1;
 		sys.core[i].branch_instructions=1;
 		sys.core[i].branch_mispredictions=1;
-		sys.core[i].predictor_l1_writes=-1;   /* PIMID 1.11.97 (R2476): -1 = not measured, upstream estimate */
+		sys.core[i].predictor_l1_writes=-1;   /* PIMID 1.11.97: -1 = not measured, upstream estimate */
 		sys.core[i].predictor_l2_writes=-1;
 		sys.core[i].committed_instructions=1;
 		sys.core[i].load_instructions=1;
@@ -1977,7 +1977,7 @@ void ParseXML::initialize() //Initialize all
 	 * `new ParseXML()`, i.e. by accident. Stated explicitly, matching its two
 	 * siblings; PIMID always emits the parameter, so no run moves. */
 	sys.mc.withPHY = false;   /* PIMID 1.11.57 (E014) */
-	sys.mc.background_fraction = 0.1;   /* PIMID 1.11.98 (row 28): McPAT's convention unless the XML measures it */
+	sys.mc.background_fraction = 0.1;   /* PIMID 1.11.98: McPAT's convention unless the XML measures it */
 	sys.mc.phy_class=0;   /* PIMID 1.11.19: off-package DDR unless said otherwise */
 	sys.mc.phy_pj_bit_rd = -1.0; sys.mc.phy_pj_bit_wr = -1.0;   /* PIMID (1.12.132): McPAT's own PHY energy unless given */
 	sys.mc.phy_static_external = false;   /* PIMID (1.12.209): McPAT prices the PHY's leakage unless told it is priced elsewhere */
@@ -2010,13 +2010,13 @@ void ParseXML::initialize() //Initialize all
 	sys.l3_replicated_slices=1;
 	sys.core_pitch_factor=1.0;   /* PIMID 1.11.51 (N1) */
 	sys.pimid_clock_network=1;   /* PIMID 1.12.18: the clock network is priced unless the input says otherwise */
-	sys.pimid_layout_energy_overhead=1; pimid_layout_energy_overhead_g=1;   /* PIMID 1.12.18 (ruling 2026-10-24): upstream unless the input says otherwise */
-	sys.pimid_fu_base_energy=1;  /* PIMID 1.12.18 (ruling #1): upstream behaviour unless the input says otherwise */
-	sys.pimid_fpu_published=0;   /* PIMID 1.12.18 (ruling #2): McPAT's per-op FPU energy unless the input says otherwise */
-	sys.pimid_int_alu_published=0;   /* PIMID 1.12.18 (ruling #3): McPAT's per-op ALU/MUL energy unless the input says otherwise */
-	sys.pimid_fu_area_published=0;   /* PIMID 1.12.29: (ruling 2026-10-25) McPAT's FU area literals unless the input says otherwise */
-	sys.pimid_clock_pg_core = sys.pimid_clock_pg_cache = sys.pimid_clock_pg_noc = sys.pimid_clock_pg_mc = 0;   /* PIMID 1.12.18 (ruling #4): always powered */
-	sys.pimid_clock_split = 1;   /* PIMID 1.12.18 (ruling #4) */
+	sys.pimid_layout_energy_overhead=1; pimid_layout_energy_overhead_g=1;   /* PIMID 1.12.18: upstream unless the input says otherwise */
+	sys.pimid_fu_base_energy=1;  /* PIMID 1.12.18: upstream behaviour unless the input says otherwise */
+	sys.pimid_fpu_published=0;   /* PIMID 1.12.18: McPAT's per-op FPU energy unless the input says otherwise */
+	sys.pimid_int_alu_published=0;   /* PIMID 1.12.18: McPAT's per-op ALU/MUL energy unless the input says otherwise */
+	sys.pimid_fu_area_published=0;   /* PIMID 1.12.29: McPAT's FU area literals unless the input says otherwise */
+	sys.pimid_clock_pg_core = sys.pimid_clock_pg_cache = sys.pimid_clock_pg_noc = sys.pimid_clock_pg_mc = 0;   /* PIMID 1.12.18: always powered */
+	sys.pimid_clock_split = 1;   /* PIMID 1.12.18 */
 	sys.pimid_clock_leaf_sinks = 30;   /* PIMID (1.12.30, F2) */
 	/* PIMID 1.12.18: upstream behaviour unless the input says otherwise. */
 	sys.pimid_idle_halt = 0;
@@ -2046,7 +2046,7 @@ void ParseXML::initialize() //Initialize all
 	 * consumer's `> 0.0` guard falls back to, stated explicitly. */
 	sys.dram_periph_pitch=1.0;   /* PIMID 1.11.57 (E007) */
 	sys.dram_periph_dyn=1.0;  sys.dram_periph_leak=1.0;
-	/* PIMID 1.11.56 (audit C010): dram_periph_scope's default is gone with
+	/* PIMID 1.11.56: dram_periph_scope's default is gone with
 	 * the field itself -- see the parse loop above. */
 	sys.pcie.link_pj_per_bit=0;
 	/* PIMID 1.12.18: UCIe link class off by default -- an unmodified XML
@@ -2060,8 +2060,8 @@ void ParseXML::initialize() //Initialize all
 	sys.pcie.phy_pj_per_bit=-1.0;
 	sys.pcie.link_energy_end=1;
 	sys.pcie.link_node_nm=0;   /* PIMID 1.12.18: 0 = the run's node (iocontrollers.cc) */
-	sys.pcie.link_idle_l0=0;   /* PIMID (user ruling 2026-10-27: serial links calibrated) */
-	sys.pcie.link_ctrl_published=0;   /* PIMID (user ruling 2026-10-28: link controller logic priced) */
+	sys.pcie.link_idle_l0=0;   /* PIMID (serial links calibrated) */
+	sys.pcie.link_ctrl_published=0;   /* PIMID (link controller logic priced) */
 	sys.pcie.link_l0_idle_s=0; sys.pcie.link_l1_exits=0; sys.pcie.link_l1_exit_s=0;
 	//system_flash_controller
 	sys.flashc.mc_clock =1;

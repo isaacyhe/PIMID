@@ -98,7 +98,7 @@ class RoutingUnit
                           int inport,
                           PortDirection inport_dirn);
 
-    // 1.11.94 (x03-garnet-custom-3, ruling H33): the direction XY, DOR or
+    // 1.11.94: the direction XY, DOR or
     // SHORTEST picks at router my_id for a packet bound to router dest_id.
     // A pure function of the ids and the grid, shared by the per-hop routing
     // below and by GarnetNetwork::validateDirectionRouting(), which walks
@@ -111,7 +111,7 @@ class RoutingUnit
                                       int num_rows, int num_cols,
                                       int num_routers, bool ring_cw_only);
 
-    // 1.11.94 (H33): non-inserting port lookup. hasOutDirection() answers;
+    // 1.11.94: non-inserting port lookup. hasOutDirection() answers;
     // outportForDirection() refuses (fatal, naming router, direction and
     // topology) when the router has no port by that name.
     bool hasOutDirection(const PortDirection& dirn) const

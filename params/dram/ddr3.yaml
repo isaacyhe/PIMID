@@ -7,7 +7,7 @@
 # To model another part: copy this file, change every field with its own source,
 # and point PIMID_PARAMS at the directory holding it. Partial records are refused.
 technology: DDR3
-# 1.12.25: user rulings 2026-10-24: the DDR3 DEFAULT is ONE consistent 4 Gb x8 die at 1.5 V. The currents are the
+# 1.12.25:: the DDR3 DEFAULT is ONE consistent 4 Gb x8 die at 1.5 V. The currents are the
 # Micron 4 Gb die Rev E x8 DDR3-1600 column of Table 20, titled "IDD Maximum Limits Die Rev. E for 1.35/1.5V
 # Operation" (Micron MT41K 4 Gb DDR3L (4Gb_DDR3L.pdf Rev. R 09/18) p.44), the same column the 1.5 V sheet prints
 # (Micron MT41J 4 Gb automotive DDR3 (4gb_automotive_ddr3_sdram.pdf Rev. B 04/13) Table 20 Die Rev E p.44: IDD0 55, IDD2P1 32, IDD2N 32,
@@ -19,13 +19,13 @@ technology: DDR3
 # for timing and refresh energy; memory.dram.trfc_basis: jedec selects JESD79-3E's 300 ns.
 part: "4 Gb x8 DDR3-1600 at 1.5 V (currents: Micron MT41K/MT41J 4 Gb die Rev E; density part: SK hynix H5TQ4G83xFR-class 23 nm 4 Gb, ISSCC 2012 paper 2.3)"
 vendor: "SK hynix"
-generation: "3x/2x"            # vendor generation label of the DENSITY part (sweep-94 row 13)
+generation: "3x/2x"            # vendor generation label of the DENSITY part
 feature_nm: 25.0                  # mid-value of the published range for this generation
 cell_factor_f2: 6                  # buried-wordline cell, area = 6 F^2 (bitline pitch 2 F)
 density_mb_per_mm2: 16.569579288025892  # measured FULL-DIE density, user capacity basis (D11)
 density_source: "SK hynix 23 nm 4 Gb DDR3 SDRAM, 30.9 mm^2 die (ISSCC 2012 paper 2.3, 6F2 open-bitline): 4 Gb / 30.9 mm^2 x 128"
 organization_preset: "DDR3_4Gb_x8"   # Ramulator org preset the run instantiates (default knobs); 1.12.25: the 4 Gb die the currents describe (was DDR3_8Gb_x8)
-timing_preset: "DDR3_1600K"         # Ramulator timing preset (default knobs); 1.12.38 (user ruling 2026-10-25): 1600K 11-11-11 = Micron MT41K -125 (Rev Q p.1 Table 1, 13.75 ns), the part the currents and tRFC 260 ns come from (was DDR3_1600H 9-9-9, a JEDEC bin no Micron 4 Gb part ships)
+timing_preset: "DDR3_1600K"         # Ramulator timing preset (default knobs); 1.12.38: 1600K 11-11-11 = Micron MT41K -125 (Rev Q p.1 Table 1, 13.75 ns), the part the currents and tRFC 260 ns come from (was DDR3_1600H 9-9-9, a JEDEC bin no Micron 4 Gb part ships)
 channels: 1                   # channels the preset instantiates
 channel_width_bits: 64   # 1.11.101 (step 2): JESD79-3F 2.x: a 64-bit data channel; one rank = 64 / device width devices
 refresh_ladder:                    # JEDEC JESD79-3 extended temperature range: 2x refresh (tREFI/2) above 85 C
@@ -43,9 +43,9 @@ idd:
   idd4r: 157.0
   idd4w: 125.0
   idd5: 235.0
-  # 1.12.18 (user ruling 2026-10-23): refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
+  # 1.12.18: refresh energy per REF = VDD x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC where an IPP row exists): IDD2N baseline, the refresh interrupts the state
   idd2p: 32.0
-  # (1.12.48) (user ruling 2026-10-25): the x16 device of the same die prices its OWN column (memory.dram.device_width: x16
+  # (1.12.48): the x16 device of the same die prices its OWN column (memory.dram.device_width: x16
   # selects it); the columns Table 20 prints as "All" (IDD2N, IDD2P1, IDD5B) are inherited from the row above. Before this the
   # x16 organisation was priced on the x8 currents.
   by_width:
@@ -65,9 +65,9 @@ component_factors:   # typical / maximum per component; applied by typicalFromSp
   burst_rd: 0.736
   burst_wr: 0.542
   refresh: 0.829
-  pd: 0.29224   # (1.12.47) (user ruling 2026-10-25): standby 0.566 x the measured fast power-down ratio IDD2P1/IDD2N 0.51633 (three-vendor mean of 1 - 0.658 / 1 - 0.306 / 1 - 0.487 = 0.342 / 0.694 / 0.513, Ghose et al. Sec. 4.5; the mean, as every other factor of this set). This sheet prints IDD2P1 = IDD2N = 32 mA, so IDD2P_t = 0.29224 x 32 = 9.352 mA = 0.51633 x IDD2N_t 18.112 mA. Band (vendor A..B): 0.194 .. 0.393 (IDD2P_t 6.19 .. 12.57 mA). Was 0.566 (power-down = precharged standby, no saving)
-  source: "[G] Ghose et al. per-component typical/maximum ratios, DDR3 set (measured on DDR3L-1600 modules; 1.12.25: applied unchanged at 1.5 V -- the ratios are typical/maximum of the same current, and Table 20 publishes one maximum for both voltages); pd ((1.12.47), user ruling 2026-10-25): the standby factor x the measured fast power-down ratio IDD2P1/IDD2N, three-vendor mean 0.51633 (Ghose et al. Sec. 4.5: power-down cuts the measured IDD2N by 65.8/30.6/48.7% for vendors A/B/C), because this sheet IDD2P1 equals its IDD2N"
-# (1.12.61) (user ruling 2026-10-25): the data-dependent column-burst energy, priced from the run's MEASURED line data
+  pd: 0.29224   # (1.12.47): standby 0.566 x the measured fast power-down ratio IDD2P1/IDD2N 0.51633 (three-vendor mean of 1 - 0.658 / 1 - 0.306 / 1 - 0.487 = 0.342 / 0.694 / 0.513, Ghose et al. Sec. 4.5; the mean, as every other factor of this set). This sheet prints IDD2P1 = IDD2N = 32 mA, so IDD2P_t = 0.29224 x 32 = 9.352 mA = 0.51633 x IDD2N_t 18.112 mA. Band (vendor A..B): 0.194 .. 0.393 (IDD2P_t 6.19 .. 12.57 mA). Was 0.566 (power-down = precharged standby, no saving)
+  source: "[G] Ghose et al. per-component typical/maximum ratios, DDR3 set (measured on DDR3L-1600 modules; 1.12.25: applied unchanged at 1.5 V -- the ratios are typical/maximum of the same current, and Table 20 publishes one maximum for both voltages); pd (1.12.47): the standby factor x the measured fast power-down ratio IDD2P1/IDD2N, three-vendor mean 0.51633 (Ghose et al. Sec. 4.5: power-down cuts the measured IDD2N by 65.8/30.6/48.7% for vendors A/B/C), because this sheet IDD2P1 equals its IDD2N"
+# (1.12.61): the data-dependent column-burst energy, priced from the run's MEASURED line data
 # (1.12.58 counters: the 1 bits of every line). Relative form, normalised at uniform-random data (1s fraction 0.5), so
 # the record's IDD4R/IDD4W excess is the uniform-random value: E_burst = E_record x (1 + k x (f_ones - 0.5)).
 data_pattern:

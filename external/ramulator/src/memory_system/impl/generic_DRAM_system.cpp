@@ -81,7 +81,7 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
     };
 
     bool pimid_bank_open_totals(uint64_t& unit_cycles,
-                                uint64_t& open_unit_cycles) override {   // PIMID 1.11.91 (R8-7)
+                                uint64_t& open_unit_cycles) override {   // PIMID 1.11.91
       if (!m_dram || !m_dram->m_pimid_bank_open_tracked) return false;
       unit_cycles = m_dram->m_pimid_unit_cycles;
       open_unit_cycles = m_dram->m_pimid_open_unit_cycles;
@@ -94,7 +94,7 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       return true;
     }
 
-    bool pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits, uint64_t& caCmds, uint64_t& caActs) override {   // PIMID 1.12.18 (user ruling 2026-10-24)
+    bool pimid_chip_totals(uint64_t& shadowActs, uint64_t& caWaits, uint64_t& caCmds, uint64_t& caActs) override {   // PIMID 1.12.18
       shadowActs = caWaits = caCmds = caActs = 0;
       for (auto controller : m_controllers) controller->pimid_chip_totals(shadowActs, caWaits, caCmds, caActs);
       return true;
@@ -115,13 +115,13 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       return true;
     }
 
-    bool pimid_src_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates) override {   // PIMID 1.12.18 (R0605)
+    bool pimid_src_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates) override {   // PIMID 1.12.18
       hits = misses = conflicts = activates = 0;
       for (auto controller : m_controllers) controller->pimid_src_totals(hits, misses, conflicts, activates);
       return true;
     }
 
-    bool pimid_out_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates, uint64_t& hostActs) override {   // PIMID 1.12.18 (R1)
+    bool pimid_out_totals(uint64_t& hits, uint64_t& misses, uint64_t& conflicts, uint64_t& activates, uint64_t& hostActs) override {   // PIMID 1.12.18
       hits = misses = conflicts = activates = hostActs = 0;
       for (auto controller : m_controllers) controller->pimid_out_totals(hits, misses, conflicts, activates, hostActs);
       return true;

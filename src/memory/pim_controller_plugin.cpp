@@ -154,7 +154,7 @@ void PIMControllerPlugin::update(bool request_found, Ramulator::ReqBuffer::itera
         double bw_GBps = 0.0;
         double clock_GHz = 0.0;
         if (dram_arch_) {
-            // 1.11.57 (audit C003): derived from this object's serialization
+            // 1.11.57: derived from this object's serialization
             // width and core clock, no longer a stored per-technology literal.
             bw_GBps  = dram_arch_->getBankEffectiveBW();
             clock_GHz = dram_arch_->timing.clock_freq_mhz / 1000.0;

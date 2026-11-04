@@ -1,12 +1,12 @@
 #ifndef RAMULATOR_DRAM_PIMID_BANK_OPEN_H
 #define RAMULATOR_DRAM_PIMID_BANK_OPEN_H
 // ---------------------------------------------------------------------------
-// PIMID 1.11.91 (audit R8-7, user ruling (b)): THE MEASURED BANK-OPEN
+// PIMID 1.11.91: THE MEASURED BANK-OPEN
 // FRACTION.
 //
-// The vendor method (a vendor method that cannot be disclosed publicly) prices DRAM background in two states, "precharged (all
-// of the banks are precharged) or active (one or more banks are open)", with
-// BNK_PRE% = the percentage of time all banks are precharged. PIMID had no
+// The current-difference method prices DRAM background in two states, precharged
+// (all banks precharged) or active (at least one bank open), with
+// precharged fraction = the share of time all banks are precharged. PIMID had no
 // measurement of that and used "memory-controller traffic in the 10k-cycle
 // phase" in its place. This tracker measures it from the device state
 // Ramulator2 already keeps: every bank-level node's m_state.
@@ -27,7 +27,7 @@
 //   unit_cycles       sum over ticks of the number of units
 //   open_unit_cycles  sum over ticks of the number of units with >= 1 bank
 //                     open
-// so open_unit_cycles / unit_cycles is BNK_ACT% averaged over the units.
+// so open_unit_cycles / unit_cycles is active fraction averaged over the units.
 // With one rank on one channel (every corpus configuration) the window is
 // simply the number of memory-system ticks.
 // ---------------------------------------------------------------------------

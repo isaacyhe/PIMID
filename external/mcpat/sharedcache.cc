@@ -107,8 +107,8 @@ SharedCache::SharedCache(ParseXML* XML_interface, int ithCache_, InputParameter*
 	  interface_ip.num_search_ports    = 0;
 	  if (cachep.dir_ty==SBT)
 	  {
-		  /* PIMID 1.12.18 (user ruling "sharer bits from the real child
-		   * count"): the sharer list of a line has one bit per CHILD the
+		  /* PIMID 1.12.18 (sharer bits from the real child
+		   * count): the sharer list of a line has one bit per CHILD the
 		   * directory tracks -- the caches directly below it (zsim's
 		   * MESITopCC keeps one sharer bit per child cache). Upstream sizes
 		   * it from number_of_cores, which is the child count only for a
@@ -927,11 +927,10 @@ void SharedCache::computeEnergy(bool is_tdp)
 			const double e_cyc  = clockNetwork.e_tree_cycle + clockNetwork.n_sinks*clockNetwork.e_pin_reg;
 			const double cycles = cachep.executionTime * cachep.clockRate;
 			const double e = e_cyc * cycles * clk_instances;
-			/* Gated by the cache's measured utilisation (user ruling
-			 * 2026-10-23; Wattch cc2): the duty_cycle stat, which PIMID
+			/* Gated by the cache's measured utilisation (Wattch cc2): the duty_cycle stat, which PIMID
 			 * emits as measured accesses per cycle of this cache. */
 			const double a = clockNetwork.gate(cachep.duty_cycle, "duty_cycle = measured accesses / cycles");
-			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered
+			/* PIMID 1.12.18: global part every powered
 			 * cycle, local part + pins gated (logic.h ClockNetwork). */
 			clockNetwork.set_powered(XML->sys.pimid_clock_pg_cache,
 			                         "1 - measured shared-cache power-gated residency (pimid_clock_pg_cache)");

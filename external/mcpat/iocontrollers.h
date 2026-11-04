@@ -63,7 +63,7 @@ class PCIeController : public Component {
     PCIeParam  pciep;
     powerDef power_t;
     uca_org_t local_result;
-    /* PIMID 1.11.54 (audit E008): the SerDes DYNAMIC term McPAT computed, kept
+    /* PIMID 1.11.54: the SerDes DYNAMIC term McPAT computed, kept
      * so the runtime basis can remove it when PIMID supplies the measured
      * SerDes energy (bytes x pJ/bit) for the same silicon. Area and leakage
      * keep their SerDes share; only switching would be double-counted. */
@@ -85,14 +85,14 @@ class PCIeController : public Component {
     double ucie_phy_joules = 0.0;
     double ucie_phy_w = 0.0;
     double ctrl_dyn_per_cycle = 0.0;
-    /* PIMID (user ruling 2026-10-28: link controller logic priced): the published node ratio for logic
+    /* PIMID (link controller logic priced): the published node ratio for logic
      * energy from 16 nm to this McPAT run's node (pimid_logic_op_scale), set at construction */
     double pimid_ctrl_scale = 1.0;
     bool   pimid_ctrl_scale_silicon = false;
     double ctrl_dyn_excluded_w = 0.0;
     double clock_mhz = 0.0;
     bool   clock_derived = false;
-    /* PIMID 1.12.18 (user rulings 2026-10-23, two-node UCIe rows; sources in
+    /* PIMID 1.12.18 (two-node UCIe rows; sources in
      * iocontrollers.cc set_pcie_param):
      *   ucie_node_nm      process node of the row applied (22 or 3)
      *   ucie_analog_pj    analog PHY pJ/bit applied

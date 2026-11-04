@@ -10,8 +10,8 @@ into PIMID.
 - **Purpose**: User-mode emulation that drives execution-based simulation; PIMID's
   zsim-derived timing model attaches as a QEMU TCG plugin (`libzsim_qemu.so`)
 - **Location**: `qemu/`
-- **Build**: see [build.md](build.md) (a system `qemu-x86_64` with plugin
-  support also works)
+- **Patches**: `qemu-patches/` (all required; see [build.md](build.md))
+- **Build**: see [build.md](build.md); a stock `qemu-x86_64` lacks the patches PIMID requires
 
 ### 2. ZSim (Timing Model)
 - **Repository**: https://github.com/s5z/zsim (heavily modified)
@@ -49,7 +49,7 @@ into PIMID.
 - **Purpose**: Integrated power, area, and timing modeling
 - **Components**: Cores, caches, NoCs, memory controllers
 - **Location**: `mcpat/`
-- **Note**: Uses **bundled CACTI 6.5-P** (API compatibility with McPAT internals)
+- **Note**: links PIMID's CACTI 7.0 (`external/cacti/`, library `cacti7`)
 - **Build**: Integrated via CMake (auto-built with PIMID)
 
 ### 7. Garnet (Network-on-Chip Simulator)
@@ -91,15 +91,11 @@ cmake --build build -j$(nproc)
 See [build.md](build.md) for prerequisites, the custom QEMU build, and
 HPC/no-root notes.
 
-## CACTI Version Notes
+## CACTI version
 
-PIMID uses **two versions of CACTI**:
-
-1. **CACTI 7.0** (`external/cacti/`): Used by PIMID's `cacti_wrapper` for standalone SRAM/subarray characterization. Modern API with improved accuracy.
-
-2. **CACTI 6.5-P** (`external/mcpat/cacti/`): Bundled with McPAT. Required for McPAT's internal power calculations due to API dependencies (`TechnologyParameter::DeviceType`, etc.).
-
-This separation avoids API conflicts while leveraging the strengths of both versions.
+PIMID uses one CACTI, **CACTI 7.0** (`external/cacti/`): PIMID's `cacti_wrapper` uses it for
+standalone SRAM/subarray characterization, and the McPAT fork links the same library
+(`cacti7`) for its internal array models.
 
 ## Licensing
 

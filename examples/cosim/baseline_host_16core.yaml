@@ -1,22 +1,24 @@
-# Host-only baseline: 16 OOO host cores (co-sim 1.7 fig5 baseline cell).
+# Host-only baseline: 16 OOO host cores (the host baseline of the paper's
+# co-simulation experiment).
 #
-# System-scope config run under PIMID_COSIM_NO_OFFLOAD=1: the ROI/WORK magic
-# ops become STAT-ONLY (no device migration, no transfer charged), so the
-# unmodified OMP/MPI kernel runs on the 16 host OOO cores end to end against
-# the host memory technology. The device block below is REQUIRED by the
-# system-scope parser but is INERT under the knob -- no thread migrates to it.
+# A co-simulation config run under PIMID_COSIM_NO_OFFLOAD=1: the ROI/WORK magic
+# ops become statistics markers only (no device migration, no transfer charged),
+# so the unmodified OMP/MPI kernel runs on the 16 host OOO cores end to end against
+# the host memory technology. The device block below is required by the
+# configuration but is inert under the knob -- no thread migrates to it.
 #
-# The sweep runner overrides memory.technology per cell (host tech = device
-# tech of the paired co-sim cell). DDR5 is a placeholder default only.
+# The experiment sets memory.technology per cell (host tech = device tech of
+# the paired co-simulation cell -- no host-tech confound). DDR5 is a
+# placeholder default only.
 #
 # Run with:
-#   PIMID_COSIM_NO_OFFLOAD=1 ./build/pimid --method exec --scope system \
+#   PIMID_COSIM_NO_OFFLOAD=1 ./build/pimid --method exec \
 #       --config examples/cosim/baseline_host_16core.yaml \
-#       --workload benchmarks/pim_kernels/gemv/gemv_omp \
-#       --workload-type openmp --size 512
+#       --workload benchmarks/pim_kernels/gemv/gemv_omp --size 512 \
+#       --workload-type openmp
 #
 # 16 cores: the host fabric is a crossbar (uniform one-hop; contention at
-# ports, not hops) -- the ISSUE-5-ADDENDUM host-side default topology.
+# ports, not hops).
 
 system:
   hosts:
@@ -30,7 +32,7 @@ system:
         l1i_kb: 32
         l2_kb: 256
       memory:
-        technology: DDR5      # sweep runner overrides per cell
+        technology: DDR5      # set per cell by the experiment
                               # per-channel BW + channel count auto-derived from
                               # tech (DDR5 c=1 x 25.6 GB/s; HBM3 c=16 x 51.2)
       noc:                    # multi-core host: analytic crossbar fabric

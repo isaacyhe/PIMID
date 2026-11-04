@@ -59,7 +59,7 @@ static void stencil_row(pimid_spm_t* s, const float* up, const float* mid, const
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of [cur][next]. */
+/* 1.11.94: per-PE need of [cur][next]. */
 static size_t stencil_2d_omp_need(long n, const void* c) {
     long P = *(const int*)c;
     return 2ull * (size_t)((n + P - 1) / P) * (size_t)n * sizeof(float);
@@ -102,7 +102,7 @@ int main(int argc, char* argv[]) {
     size_t slot_bytes = 0;
     char* base = NULL;
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+        /* 1.11.94: a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {

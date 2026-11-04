@@ -47,7 +47,7 @@ RingRouter::init()
     m_port_requests.resize(m_num_inports, -1);
     m_vc_winners.resize(m_num_inports, -1);
 
-    // 1.11.94 (H35): resolve dateline directions to outport indices.
+    // 1.11.94: resolve dateline directions to outport indices.
     for (int o = 0; o < m_num_outports; o++) {
         PortDirection d = getOutportDirection(o);
         for (const auto& dd : m_dateline_dirns) {
@@ -126,7 +126,7 @@ RingRouter::getClassRange(int vnet, int vc_class,
     }
 }
 
-// 1.11.94 (H35): X = East/West, Y = North/South, -1 = anything else
+// 1.11.94: X = East/West, Y = North/South, -1 = anything else
 // (Local, tree ports).
 int
 RingRouter::dimensionOf(const PortDirection& dirn)
@@ -278,7 +278,7 @@ RingRouter::vc_allocate(int outport, int inport, int invc)
     auto output_unit = getOutputUnit(outport);
     auto input_unit = getInputUnit(inport);
 
-    // Determine the target VC class (1.11.94 H35: one rule, targetClass)
+    // Determine the target VC class (1.11.94: one rule, targetClass)
     int target_class = targetClass(inport, invc, outport);
 
     int lo, hi;

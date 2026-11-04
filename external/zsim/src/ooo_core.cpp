@@ -51,7 +51,7 @@
 #define ISSUE_STAGE 7
 #define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
 
-/* 1.12.0 (#50, user ruling (b) 2026-10-05): R, the refill the stage
+/* 1.12.0: R, the refill the stage
  * constants above already charge between a fetch restart and the earliest
  * dispatch of the first uop fetched there (bbl(), front end then the next
  * call's uop loop):
@@ -70,7 +70,7 @@
  * adds its latency on top, as it would in hardware. */
 #define REDIRECT_REFILL_CYCLES ((uint32_t)((DECODE_STAGE - FETCH_STAGE) + (DISPATCH_STAGE - ISSUE_STAGE)))
 
-/* 1.11.99 (user ruling 2026-10-04): the L1D hit latency the out-of-order core
+/* 1.11.99: the L1D hit latency the out-of-order core
  * adds on top of the filter cache's availability cycle is the CONFIGURED one
  * (FilterCache::getHitLatency: the CACTI-derived value, or the cache
  * override), as the in-order core charges since 1.11.97. Through 1.11.98 it
@@ -79,7 +79,7 @@
  * MHz for the same array; the L1I fetch stays as it was on both cores (a hit
  * returns the line's availability, the fetch latency hidden by the
  * pipeline). */
-/* 1.11.97 (R2355 (b)): FETCH_BYTES_PER_CYCLE 16 is gone; its only use (the
+/* 1.11.97: FETCH_BYTES_PER_CYCLE 16 is gone; its only use (the
  * wrong-path throughput step) reads the core record's ooo.fetch_width_bytes
  * (fetchBytesPerCycle, ooo_core.h). The record carries the 16 and why. */
 #define ISSUES_PER_CYCLE 4
@@ -94,12 +94,12 @@ OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name,
     rob.setSize(sizes.rob); loadQueue.setSize(sizes.lq); storeQueue.setSize(sizes.sq); insWindow.setSize(sizes.window);
     fillBuffers.setSize(sizes.fillBuffers ? sizes.fillBuffers : 1); fillBufferN = sizes.fillBuffers; storesDrainAfterRetire = sizes.storeBuffer;
     lqEntries_ = sizes.lq; sqEntries_ = sizes.sq;   // (1.12.189)
-    /* 1.11.97 (R2355 (b)): the wrong-path depth, derived from the core
+    /* 1.11.97: the wrong-path depth, derived from the core
      * record (see ooo_core.h). A zero fetch width cannot fetch; refuse. */
     if (_fetchBytesPerCycle == 0) panic("%s: fetchBytesPerCycle must be >= 1 (core record ooo.fetch_width_bytes)", _name.c_str());
     fetchBytesPerCycle = _fetchBytesPerCycle;
     wrongPathBytes = _mispredPenalty * _fetchBytesPerCycle;
-    /* 1.12.0 (#50, user ruling (b) 2026-10-05): the same record value is the
+    /* 1.12.0: the same record value is the
      * TOTAL redirect cost of a mispredict, counted from the branch's
      * resolution; the fetch restart is placed penalty - R cycles after it
      * (REDIRECT_REFILL_CYCLES above, R = 9). A total below the refill the
@@ -269,7 +269,7 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zrr)>* roiRasStat = new LambdaStat<decltype(zrr)>(zrr);
     roiRasStat->init("roiRasReturns", "Returns resolved against the RAS (ROI)");
     coreStat->append(roiRasStat);
-    /* 1.11.97 (R2476) / 1.11.98 (ruling (a)): measured predictor table writes (one per update,
+    /* 1.11.97 / 1.11.98: measured predictor table writes (one per update,
      * updates, BranchPredictorPAg::predict), ROI-windowed -- McPAT's
      * level-1 / level-2 local predictor write counts. */
     auto zbh = [this]() -> uint64_t { return branchPred.histWrites - roiBaseBpHist; };
@@ -700,15 +700,15 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
          * (28 uops), IW (36 uops), and 16B instr length predecoder buffer. At
          * ~3.5 bytes/instr, 1.2 uops/instr, this is about 5 64-byte lines.
          *
-         * PIMID 1.11.97 (R2355 (b)): the bound is no longer that literal
-         * (5*64/lineSize). It is DERIVED: the bytes the front end fetches
+         * PIMID 1.11.97: the bound is no longer that literal
+         * (5*64/lineSize). It is derived: the bytes the front end fetches
          * during one mispredict penalty, penalty cycles x fetch bytes per
          * cycle, rounded up to whole lines (a partly-used line is still
          * fetched) -- both from the core record (ooo.mispredict_penalty_cycles
          * 17, ooo.fetch_width_bytes 16: ceil(272 / 64) = 5 lines, the old
          * count at 64 B). The early exit at lastCommitCycle is unchanged.
          *
-         * PIMID 1.12.0 (#50, user ruling (b) 2026-10-05): the same penalty is
+         * PIMID 1.12.0: the same penalty is
          * now also the redirect's TOTAL cost (the fetchCycle placement after
          * this loop). The wrong-path depth and its early exit at the
          * branch's resolution (lastCommitCycle) are unchanged.
@@ -731,7 +731,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
             reqCycle = respCycle + lineSize/fetchBytesPerCycle;
         }
 
-        /* 1.12.0 (#50, user ruling (b) 2026-10-05): resolution-bound
+        /* 1.12.0: resolution-bound
          * redirect whose TOTAL cost is the core record's penalty. Fetch
          * restarts redirectGap = penalty - R cycles after the branch
          * resolves, and the stage model adds its own R = 9-cycle refill
@@ -828,7 +828,7 @@ void OOOCore::heldPhase() {   /* (1.12.216), see core.h */
     phaseEndCycle += zinfo->phaseLength;
 }
 
-uint64_t OOOCore::syncToWaker(uint64_t t) {   /* 1.12.21 (user ruling 2026-10-24), see core.h */
+uint64_t OOOCore::syncToWaker(uint64_t t) {   /* 1.12.21, see core.h */
     if (t <= curCycle) return 0;
     const uint64_t skip = t - curCycle;
     advance(t);   // as syncToLock: window and decode cursor move together
@@ -846,7 +846,7 @@ uint64_t OOOCore::syncToLock(uint64_t t) {   /* 1.12.18 (model the lock word), s
     return skip;
 }
 
-void OOOCore::addDelay(uint32_t cycles) {   /* 1.11.97 (H05) */
+void OOOCore::addDelay(uint32_t cycles) {   /* 1.11.97 */
     if (cycles == 0) return;
     advance(curCycle + cycles);
 }

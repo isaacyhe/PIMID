@@ -2,7 +2,7 @@
 #define PIMID_RAMULATOR_WRAPPER_H
 
 #include "common/types.h"
-#include "power/cacti_io_wrapper.h"   // (user ruling 2026-10-26): CactiIOWrapper::DramTopology
+#include "power/cacti_io_wrapper.h"   // CactiIOWrapper::DramTopology
 #include <string>
 #include <memory>
 #include <functional>
@@ -22,7 +22,7 @@ namespace Ramulator {
 
 namespace pimid {
 
-/* 1.11.61 (rulings R2/R4): THE SIMULATED PRESET'S OWN ORGANISATION.
+/* 1.11.61: THE SIMULATED PRESET'S OWN ORGANISATION.
  *
  * The Ramulator2 org preset the wrapper names is the authority for what part
  * this tree simulates -- it fixes the density, the bank count and the row
@@ -77,11 +77,11 @@ struct PresetOrganization {
     uint64_t rowBytes() const { return cols_per_row * static_cast<uint64_t>(dq_bits) / 8; }
 };
 
-/* 1.11.63 (R6): THE SIMULATED TIMING PRESET'S OWN ROW, on the same terms.
+/* 1.11.63: THE SIMULATED TIMING PRESET'S OWN ROW, on the same terms.
  *
  * Companion of PresetOrganization above, and it exists for the same reason
- * ruling R6 gives: PIMID provides no numbers of its own, so a PIMID-side ns
- * literal that paraphrases a Ramulator timing preset must be DERIVED from that
+ * gives: PIMID provides no numbers of its own, so a PIMID-side ns
+ * literal that paraphrases a Ramulator timing preset must be derived from that
  * preset instead. The architecture objects carried four such literals per
  * technology (tRCD/tCAS/tRP/tRAS) and two of them described a different SPEED
  * BIN from the preset the run counts cycles against -- DDR5 the 4800 bin's ns
@@ -93,7 +93,7 @@ struct PresetOrganization {
  * they cannot be read at runtime from here; this is a TRANSCRIPTION of the
  * selected rows, each naming its source file.
  *
- * TWO THINGS ARE DERIVED RATHER THAN TRANSCRIBED, because upstream derives
+ * TWO THINGS ARE derived RATHER THAN TRANSCRIBED, because upstream derives
  * them too:
  *   tCK_ps         every impl OVERWRITES the row's tCK_ps column before
  *                  anything reads it, as `ck_divisor_e6 * 1E6 / rate`. The
@@ -131,7 +131,7 @@ struct PresetTiming {
     int nWTR = 0;
     int table_tCK_ps = 0;           // the row's own tCK_ps column
     int ck_divisor_e6 = 2;          // the impl's own tCK = ck_divisor_e6 * 1E6 / rate
-    int tCK_ps = 0;                 // DERIVED, exactly as the impl derives it
+    int tCK_ps = 0;                 // derived, exactly as the impl derives it
     bool ck_consistent = false;     // table_tCK_ps == tCK_ps
     bool valid = false;
 
@@ -154,7 +154,7 @@ public:
     explicit RamulatorWrapper(const std::string& config_path, const std::string& dram_type = "DDR4");
     ~RamulatorWrapper();
 
-    /* 1.11.61 (gate 1171A D4): mark this wrapper as a REFERENCE ANCHOR --
+    /* 1.11.61: mark this wrapper as a REFERENCE ANCHOR --
      * constructed only to read one bandwidth number (the B012 REF anchors),
      * never to size anything. Anchor wrappers suppress the capacity and
      * speed-bin provenance WARNINGS, which would otherwise misattribute an
@@ -216,7 +216,7 @@ public:
     // bank energy (array) + a per-tech JEDEC IDD/VDD table (interface, background).
     // Override the IDD-derived array energy with a fixed pJ/byte (0 = use IDD default).
     void setBankEnergyOverridePJPerByte(double v) { energy_bank_override_pJ_per_byte_ = v; }
-    /* 1.11.59 (audit C018): this used to store the width and stop there, so
+    /* 1.11.59: this used to store the width and stop there, so
      * the JEDEC device width priced the ARRAY ENERGY (4/8/16 devices per
      * access) and changed nothing on the WIDTH side -- chip_io_bits stayed at
      * the architecture object's fixed 8 for every DDR-class part, and the
@@ -227,17 +227,17 @@ public:
      * that set the width before initialize() and callers that set it after are
      * both correct. */
     void setDeviceWidth(const std::string& w);  // 1.11.46; 1.11.59 (C018)
-    /* 1.11.66 (round 5 F6, user ruling R8 #9): DDR5 SPEED GRADE as a
+    /* 1.11.66: DDR5 SPEED GRADE as a
      * setting -- 3200, 4800 or 5600 MT/s (default = the part record's
-     * grade: 4800 since 1.12.19, user ruling 2026-10-24). The grade selects ONE
+     * grade: 4800 since 1.12.19). The grade selects ONE
      * PART: timing preset (DDR5_3200AN / DDR5_4800B / DDR5_5600B), org (the
      * 16 Gb Micron MT60B die at every grade; 8 Gb at 3200 until (1.12.141)), IDD
-     * row (Rev A = 4800B, Rev D = 5600B, 3200 DERIVED from Rev A), the
+     * row (Rev A = 4800B, Rev D = 5600B, 3200 derived from Rev A), the
      * data rate the energy/bandwidth basis uses, and every transcription.
      * Must be called before initialize(); ignored for other technologies. */
     void setDdr5SpeedGrade(int mtps);
     /* 1.11.72: stamp the preset's bank grouping (banks per group, groups per
-     * chip) onto the architecture object, beside the R1 density stamp. The
+     * chip) onto the architecture object, beside the density stamp. The
      * object literals for DDR5 described the 8 Gb part (2 banks/BG) while
      * the default grade has simulated the 16 Gb part (4 banks/BG) since
      * 1.11.66; every oracle that read getBanksPerBankGroup() -- power
@@ -286,7 +286,7 @@ public:
      * CactiIOWrapper::dramRateMTs() table is no longer a second authority:
      * it is retained only as the cross-check this function warns against. */
     double modelledRateMTs() const;
-    /* 1.11.66 (round 5 A6): FATAL if the transcribed org (banks/rows/cols)
+    /* 1.11.66: FATAL if the transcribed org (banks/rows/cols)
      * disagrees field-by-field with the device Ramulator instantiates from
      * the preset. PIMID_ORG_BREAK=1 forces the mismatch for gates. */
     void checkTranscribedOrganizationShape();
@@ -294,7 +294,7 @@ public:
      * (pimid_energy.h refreshTempFactor). Default 358 K = 85 C = top of the
      * nominal range, i.e. the pre-1.11.66 behaviour. */
     void setTemperatureK(int k) { temperature_k_ = k; }
-    /* 1.12.18 (user ruling 2026-10-24, row policy): THE ONE EMITTER of the controller's RowPolicy block, used by
+    /* 1.12.18 (row policy): THE ONE EMITTER of the controller's RowPolicy block, used by
      * main.cpp's co-sim/zsim YAML and by this wrapper's own config (makeConfig), so the two cannot disagree.
      * PE traffic: open page, every technology. Host traffic: DDR5 closed page (auto-precharge by default);
      * DDR4 and DDR3 adaptive open page with an idle timeout (default 128 memory clocks); every other technology
@@ -302,7 +302,7 @@ public:
     static std::string rowPolicyYaml(const std::string& tech, int host_idle_timeout_clocks = 128,
                                      const std::string& host_closed_mode = "auto_precharge");
     static const char* hostRowPolicyName(const std::string& tech);   // "closed" | "timeout" | "open"
-    /* 1.12.18 (user ruling 2026-10-24, write drain): the controller's
+    /* 1.12.18 (write drain): the controller's
      * write-drain watermarks, fractions of the write queue in use. Default:
      * the published 32/16 of a 48-entry queue per channel (Chatterjee et al.,
      * "Staged Reads", HPCA 2012, Table 1 p.2, p.6). */
@@ -316,7 +316,7 @@ public:
     }
     int  getTemperatureK() const { return temperature_k_; }
     double getRefreshTempFactor() const;   // 1.11.66: the ladder multiplier in force
-    /* 1.11.52 (audit D003): the MEASURED row-buffer miss fraction from the
+    /* 1.11.52: the MEASURED row-buffer miss fraction from the
      * run (PE-MI rowHits/rowMisses). <0 = not measured, and the array energy
      * then uses the stated 0.5 fallback while the caller says so. */
     void setRowMissFraction(double f) { row_miss_frac_ = f; }
@@ -325,25 +325,25 @@ public:
     double getArrayReadEnergyNJ() const;     // array rd (act+col, amortized) per 64B
     double getArrayWriteEnergyNJ() const;    // array wr per 64B
     double getActivatePrechargeEnergyNJ() const;   // 1.12.18: one ACT+PRE (Ramulator2 energy model)
-    /* 1.11.63 (R7): direction-aware. Reads price the DRAM driver into the
+    /* 1.11.63: direction-aware. Reads price the DRAM driver into the
      * RX termination (RTT_NOM class); writes price the controller driver
      * into the DRAM write termination (RTT_WR class). Both the CACTI-IO
      * exact-map path and the scheme-table fallback carry the split. */
     double getTerminationEnergyNJ(bool is_write) const;   // ODT/termination per 64B
-    /* (user ruling 2026-10-26) the memory node's topology (memory.topology; "" = the
+    /* the memory node's topology (memory.topology; "" = the
      * technology's default). Refused requests stop the run with the reason. */
     void setTopology(const std::string& requested);
     PIMID::CactiIOWrapper::DramTopology topology() const;
-    /* (user ruling 2026-10-27) RDIMM: the command/address path into the RCD, as
+    /* RDIMM: the command/address path into the RCD, as
      * charged (pJ/bit) and the DIMM-side CA network it replaces; "" when
      * not an RDIMM or no model. */
     std::string rdimmCaNote() const;
-    /* (user ruling 2026-10-27) the RDIMM register (RCD), DDR4/DDR5 rdimm only (0
+    /* the RDIMM register (RCD), DDR4/DDR5 rdimm only (0
      * otherwise): its static power (PLL and output clocks, mW, one RCD) and
      * its output drive into the DRAMs per 64 B access (nJ). *src says how. */
     double getRcdStaticMW(std::string* src = nullptr) const;
     double getRcdDriveEnergyNJ(std::string* src = nullptr) const;
-    /* User ruling 2026-10-25 (measured termination duty): the same energy
+    /* measured termination duty: the same energy
      * with the data pins' termination duty MEASURED (data_duty, from
      * measuredDataDuty) in place of the formula's 0.5. data_duty < 0 is
      * the one-argument form exactly. The user override
@@ -361,14 +361,14 @@ public:
      * measured or the scheme's termination does not depend on the data
      * (SSTL, unterminated); *how says which and why. */
     struct DqDataCounts { uint64_t lines = 0, unread = 0, ones = 0, low_pod_dbi = 0, high_lvstl_dbi = 0; };
-    /* (1.12.61) (user ruling 2026-10-25): the data-dependent factor on the column-burst energy of one direction,
+    /* (1.12.61): the data-dependent factor on the column-burst energy of one direction,
      * from the measured 1s fraction and DQ pin-transition rate (< 0: not measured); 1 when the part record carries no
      * data_pattern block or the input it needs was not measured (*how says which). */
     double dataPatternFactor(bool is_write, double f_ones, double f_dq_toggle, std::string* how) const;
     double measuredDataDuty(const DqDataCounts& c, bool is_write, bool dbi_switch,
                             int line_bytes, std::string* how) const;
     /* Does data bus inversion apply to this technology's simulated part in
-     * this direction (user ruling 2026-10-25: ON where the standard
+     * this direction (ON where the standard
      * supports it; dbi_switch = power.models.dram_dbi)? *why carries the
      * source. */
     bool dbiApplies(bool is_write, bool dbi_switch, std::string* why) const;
@@ -389,9 +389,9 @@ public:
                                     std::string& provenance) const;
     double getInterfaceDynamicEnergyNJ() const;
     double getInterfaceAreaMM2() const;
-    std::string getInterfacePhyStaticSource() const;   // (user ruling 2026-10-27) where the PHY static figure comes from
+    std::string getInterfacePhyStaticSource() const;   // where the PHY static figure comes from
     bool getInterfacePhyStaticMeasured() const;         // (1.12.209) the PHY static is a measured PHY idle (leakage included)
-    /* 1.11.60 (audit round 4, C009): true when the last getInterfaceAreaMM2()
+    /* 1.11.60: true when the last getInterfaceAreaMM2()
      * returned 0.0 because CACTI-IO REFUSED to extrapolate its area
      * polynomial above 3162 MHz -- as distinct from returning 0.0 because the
      * technology has no exact parameter set. GDDR6 is the only live case (its
@@ -404,13 +404,13 @@ public:
     void setTerminationOverridePJPerBit(double v) { energy_term_override_pJ_per_bit_ = v; }
     double getBackgroundPowerMW() const;     // per-unit active standby + refresh
     double getRefreshPowerMW() const;        // per-unit refresh component only
-    double getRefreshEnergyPerCommandNJ() const;   // 1.11.98 (row 28, ruling (c)): vdd x (IDD5 - IDD2N) x tRFC (+ VPP) per unit per REF command (1.12.18: IDD2N baseline)
+    double getRefreshEnergyPerCommandNJ() const;   // 1.11.98: vdd x (IDD5 - IDD2N) x tRFC (+ VPP) per unit per REF command (1.12.18: IDD2N baseline)
     double getTckNs() const;                       // 1.11.98: the preset's clock period
-    /* 1.12.18 (ruling 17 / R0605): the energy of COUNTED controller commands,
+    /* 1.12.18: the energy of COUNTED controller commands,
      * computed by the energy model (pimid_energy.h); see there. */
     double getActivateEnergyNJ() const;                       // one ACT + its precharge, whole access
     double getCountedActivatesNJ(uint64_t activates) const;   // activates x the above
-    /* 1.12.18 (user ruling 2026-10-24): PE placement at the chip tier or below on a rank-level DRAM: the
+    /* 1.12.18: PE placement at the chip tier or below on a rank-level DRAM: the
      * replay keeps every chip's banks apart, so each counted ACT and REF command is ONE chip's (devices 1);
      * a host access's lock-step copies are counted per chip. 1 = off (the rank's devices per command). */
     void setPeChipSplit(int chips) { pe_chip_split_ = (chips > 1) ? chips : 1; }
@@ -420,17 +420,17 @@ public:
                                      int ranks_per_channel, int channels) const;   // <0 = no span
     double getRefreshDutySystemMW(const std::string& device_width,
                                   int ranks_per_channel, int channels) const;
-    /* 1.12.18 (user ruling 2026-10-23): the same counted refresh over a span
+    /* 1.12.18: the same counted refresh over a span
      * the caller owns (the run window), in ns. <0 = no span. */
     double getCountedRefreshSystemMWOverNs(uint64_t refreshes, double span_ns,
                                            const std::string& device_width,
                                            int ranks_per_channel, int channels) const;
-    double getInterfacePhyStaticMW(int channels = 1) const;   // 1.11.98 (row 28, ruling (c)): CACTI-IO PHY static power of the channel interface (0 = no exact map); (1.12.131) HBM3: DERIVED, over the memory's channels (the background's population for `channels`)
+    double getInterfacePhyStaticMW(int channels = 1) const;   // 1.11.98: CACTI-IO PHY static power of the channel interface (0 = no exact map); (1.12.131) HBM3: derived, over the memory's channels (the background's population for `channels`)
     /* 1.11.20 (D13+D15): the memory system's background. Population-scaled
      * (one DDR chip / one HBM channel is the IDD unit) and state-aware
      * (IDD3N busy, IDD2N idle, IDD2P idle-with-pg). device_width is the
      * JEDEC x4/x8/x16 string; "" means the x8 default. */
-    /* 1.11.52 (audit A015): population = devices/rank x ranks x channels, the
+    /* 1.11.52: population = devices/rank x ranks x channels, the
      * same basis memorySystemDieCount() uses for AREA, so the Power and Area
      * lines of one report describe the same memory system. */
     int    getBackgroundUnits(const std::string& device_width = "",
@@ -439,8 +439,8 @@ public:
                                  const std::string& device_width = "",
                                  int ranks_per_channel = 1,
                                  int channels = 1) const;   // 1.11.52 (A015)
-    /* 1.11.91 (audit R8-7): the same background, state-split by a MEASURED
-     * bank-open fraction (vendor-method BNK_ACT% = 1 - BNK_PRE%): IDD3N for
+    /* 1.11.91: the same background, state-split by a MEASURED
+     * bank-open fraction (current-difference active fraction = 1 - precharged fraction): IDD3N for
      * active_frac, IDD2N/IDD2P (the existing descent, with r_pd as the
      * power-down residency, capped at the precharged share) for the rest.
      * *r_pd_used returns the residency actually applied. */
@@ -450,14 +450,14 @@ public:
                                        int ranks_per_channel = 1,
                                        int channels = 1,
                                        double* r_pd_used = nullptr) const;
-    /* 1.11.91 (audit R8-8): the VPP rail's standby (IPP2N precharged, IPP3N
+    /* 1.11.91: the VPP rail's standby (IPP2N precharged, IPP3N
      * active, x VPP) over the same population, split by the same active
      * fraction. < 0 when the technology's row has no IPP values. */
     double getIppSystemMW(double active_frac,
                           const std::string& device_width = "",
                           int ranks_per_channel = 1,
                           int channels = 1) const;
-    /* 1.11.91 (audit R8-8): the DQ output rail per 64 B access that crosses
+    /* 1.11.91: the DQ output rail per 64 B access that crosses
      * the DQ (the caller applies crossesOffPackageDQ): (IDDQ4R|IDDQ4W -
      * IDDQ3N) x VDDQ x getAccessBurstNs() x getDevicesPerAccess(), or the
      * HBM band's midpoint. < 0 when the row publishes no IDDQ. band_lo/hi
@@ -474,14 +474,14 @@ public:
     static void setIddqWriteTerminationOnce(bool on);
     /* (1.12.142): power.models.dram_vpp_standby_ratio (record idd.vpp_standby, HBM). */
     static void setVppStandbyRatio(bool on);
-    /* 1.11.91 (audit R8-2): the IDD3N basis word of this technology's row:
+    /* 1.11.91: the IDD3N basis word of this technology's row:
      * ALL_BANKS, ONE_BANK or UNVERIFIED (pimid_energy::Idd3nBasis). */
     const char* getIdd3nBasisName() const;
-    /* 1.11.91 (item 11): the one-word provenance of this technology's IDD
-     * row -- MEASURED, DERIVED or CALIBRATED (pimid_energy::
-     * iddRowProvenance) -- or nullptr for a row the ruling has not reached. */
+    /* 1.11.91: the one-word provenance of this technology's IDD
+     * row -- MEASURED, derived or CALIBRATED (pimid_energy::
+     * iddRowProvenance) -- or nullptr for a row the rule has not reached. */
     const char* getIddRowProvenance() const;
-    /* 1.11.91 (item 12): the per-STACK static floor of an HBM memory system,
+    /* 1.11.91: the per-STACK static floor of an HBM memory system,
      * mW (pimid_energy::stackFloorSystemMW) -- already INCLUDED in
      * getBackgroundSystemMW / getBackgroundSystemStatesMW; < 0 = none. */
     double getStackFloorSystemMW(int channels) const;
@@ -511,7 +511,7 @@ public:
      * and had no callers. */
     double getTRC() const;                    // Row cycle time
     double getTBurst() const;                 // Burst transfer time (ONE burst)
-    /* 1.11.91 (audit R8-1/R8-3/R8-4): the data path ONE 64 B access travels,
+    /* 1.11.91: the data path ONE 64 B access travels,
      * from pimid_energy::accessPathFor() -- the single rule the array energy,
      * the burst time and the PE memory interface's row stride all read.
      *   getBeatsPerBurst()   nBL x the family's CK divisor of the simulated
@@ -525,7 +525,7 @@ public:
     int getBeatsPerBurst() const;
     int getDevicesPerAccess() const;
     int getBurstsPerAccess() const;
-    /* 1.11.96 (review H01/H02, x09-6): the bytes ONE Ramulator column command
+    /* 1.11.96: the bytes ONE Ramulator column command
      * moves for this technology = the impl's internal prefetch x the
      * channel_width the generated config carries / 8 (DDR3/DDR4 64, DDR5 64,
      * LPDDR5 32, GDDR6 32, HBM2 32 -- a pseudo-channel BL4 at 64 bits, which
@@ -533,13 +533,13 @@ public:
      * 128-bit legacy-mode path is a separate rule -- HBM3 64). The controller
      * issues lineSize / this many column commands per cache line. */
     static int ramulatorColumnBytes(const std::string& dram_impl);
-    /* 1.11.96 (x09-6): the channel_width (bits) the generated Ramulator config
+    /* 1.11.96: the channel_width (bits) the generated Ramulator config
      * carries for an impl; the zsim-side emitter (main.cpp) writes the same. */
     static int ramulatorChannelWidthBitsFor(const std::string& dram_impl);
     double getAccessBurstNs() const;
     std::string describeAccessPath() const;
     std::string getAccessPathLabel() const;   // "32-bit sub-channel / 8-bit device"
-    /* 1.11.91 (R8-1): system bytes one ACT makes resident = the preset's
+    /* 1.11.91: system bytes one ACT makes resident = the preset's
      * per-device page (cols x dq / 8) x getDevicesPerAccess(). The row stride
      * main.cpp emits to the PE memory interface. 0 if no preset. */
     uint64_t getRowStrideBytes() const;
@@ -557,14 +557,14 @@ public:
     uint64_t getBankSizeMB() const;
     uint64_t getChipSizeMB() const;
 
-    /* 1.11.61 (rulings R2/R4): the organisation of the Ramulator org preset
+    /* 1.11.61: the organisation of the Ramulator org preset
      * this wrapper names -- the part whose cycles the timing model counts.
      * Resolved from dram_type_ and the configured device width; always valid
      * for the seven DRAM technologies PIMID supports (an unrecognised type
      * falls back to DDR4_8Gb_x8, the same substitution the architecture object
      * makes and announces). */
     const PresetOrganization& getPresetOrganization() const { return preset_org_; }
-    /* 1.11.63 (R6): the timing row of the same preset pair -- the speed bin
+    /* 1.11.63: the timing row of the same preset pair -- the speed bin
      * whose cycles this run counts. See PresetTiming. */
     const PresetTiming& getPresetTiming() const { return preset_timing_; }
     // Rows per bank of the simulated preset. 0 only if the preset is unknown.
@@ -590,7 +590,7 @@ public:
     int getRankDataBits() const;
     int getChannelDataBits() const;   // ONE channel, every family (1.11.57 C007)
 
-    /* 1.11.57 (audit C004): the technology the architecture object actually
+    /* 1.11.57: the technology the architecture object actually
      * describes, which is NOT always the technology this wrapper was
      * constructed for -- DDR3, LPDDR5 and GDDR6 have no object and read
      * DDR4-2400's. Empty when there is no object at all. */
@@ -667,7 +667,7 @@ private:
     // never incremented, and unincrementable without a Ramulator2 instance.
 
     // Energy tracking
-    /* 1.11.60 (audit round 4, C009): the withheld-area record and its
+    /* 1.11.60: the withheld-area record and its
      * say-it-once latch. See getInterfaceAreaMM2(). */
     mutable bool io_area_withheld_ = false;
     mutable bool warned_io_area_withheld_ = false;
@@ -678,7 +678,7 @@ private:
     double energy_bank_override_pJ_per_byte_ = 0.0;  // 0 = IDD default; >0 = user override
     double energy_term_override_pJ_per_bit_ = -1.0;  // <0 = model default; >=0 = user override
     /* 1.11.65 refresh-ladder input. Two defaults exist by design and agree
-     * in effect (round 5 C2): the RUN default is config.temperature_k = 350 K
+     * in effect: the RUN default is config.temperature_k = 350 K
      * (77 C), which every oracle receives via applyDramKnobs(); this member's
      * 358 K (85 C) is the fallback for a wrapper nobody configured, chosen as
      * the top of the nominal range so an unconfigured wrapper reproduces the
@@ -686,10 +686,10 @@ private:
      * <= 85 C rung, so no result differs between them. */
     int temperature_k_ = 358;
     int pe_chip_split_ = 1;   // 1.12.18
-    int row_idle_timeout_ = 128;   // 1.12.18 (row policy ruling)
+    int row_idle_timeout_ = 128;   // 1.12.18 (row policy rule)
     double wr_high_ = kWriteHighWatermark, wr_low_ = kWriteLowWatermark;   // 1.12.18 (write drain)
     std::string row_closed_mode_ = "auto_precharge";
-    int ddr5_grade_mtps_ = 0;    // 1.11.66 (R8 #9): 3200 | 4800 | 5600; 1.12.18: 0 = the part record's grade (4800 since 1.12.19, user ruling 2026-10-24)
+    int ddr5_grade_mtps_ = 0;    // 1.11.66: 3200 | 4800 | 5600; 1.12.18: 0 = the part record's grade (4800 since 1.12.19)
     // 1.11.67: the run-wide values setRunWideKnobs() recorded; consulted by
     // the constructor when s_run_knobs_set_ is true.
     static bool        s_run_knobs_set_;
@@ -713,22 +713,22 @@ private:
     // PIM Support Components
     bool pim_enabled_;
     std::string dram_type_;
-    std::string topology_req_;   // (user ruling 2026-10-26) memory.topology as given ("" = default)
+    std::string topology_req_;   // memory.topology as given ("" = default)
     bool anchor_quiet_ = false;   // 1.11.61 (D4): reference anchor, no provenance warnings
     double row_miss_frac_ = -1.0;   // 1.11.52 (D003): measured; <0 = unmeasured
     /* 1.11.46 (L181): device width for the whole-rank array-energy basis.
      * Empty = x8 default (the same convention backgroundUnits uses). */
     std::string device_width_;
-    /* 1.11.59 (audit C018): which device width is currently STAMPED on
+    /* 1.11.59: which device width is currently STAMPED on
      * dram_arch_, in bits. 0 = the factory object's own organization. It is
      * reset to 0 wherever a fresh architecture object is built, so applying a
      * width twice is a no-op and applying it to a rebuilt object is not. */
     int arch_device_width_bits_ = 0;
-    /* 1.11.61 (rulings R1/R2/R4): the simulated org preset's organisation.
+    /* 1.11.61: the simulated org preset's organisation.
      * Resolved in initialize() (and by parseConfiguration on the default
      * path) before anything reads a density or a row count off it. */
     PresetOrganization preset_org_;
-    /* 1.11.63 (R6): the simulated TIMING preset's row. Resolved beside
+    /* 1.11.63: the simulated TIMING preset's row. Resolved beside
      * preset_org_ and on the same schedule. */
     PresetTiming preset_timing_;
     std::shared_ptr<pimid::memory::DRAMArchitectureV2> dram_arch_;
@@ -745,29 +745,29 @@ private:
     void handleRequestCompletion(Ramulator::Request& req);
     void updateEnergyMetrics() const;
     void initializePIMComponents();
-    // 1.11.59 (audit C018): stamp the configured JEDEC device width onto the
+    // 1.11.59: stamp the configured JEDEC device width onto the
     // architecture object (chip DQ pins, devices per rank, and the JEDEC
     // organization coupled to them). No-op when no width is configured.
     void applyDeviceWidthToArchitecture();
-    /* 1.11.61 (rulings R1/R2/R4): resolve preset_org_ from dram_type_ and the
+    /* 1.11.61: resolve preset_org_ from dram_type_ and the
      * configured device width. Idempotent; safe to call again after the width
      * changes. */
     void resolvePresetOrganization();
-    /* 1.11.61 (ruling R1) + 1.11.63 (R6-2): stamp the SIMULATED PRESET's
+    /* 1.11.61 + 1.11.63: stamp the SIMULATED PRESET's
      * density onto the architecture object -- chip_size_mb, bank_size_mb and
      * the derived rank_size_gb. EVERY family now: the DDR family reads
      * chip_size_mb as one DEVICE, HBM as one CORE DIE (the preset's per-channel
      * density x the two channels a core die fronts), which is the reading
-     * ruling R2 fixed and R6 makes derived rather than transcribed. */
+     * fixed and the preset-authority rule makes derived rather than transcribed. */
     void applyPresetDensityToArchitecture();
-    /* 1.11.63 (R6): resolve preset_timing_ from dram_type_. Idempotent. */
+    /* 1.11.63: resolve preset_timing_ from dram_type_. Idempotent. */
     void resolvePresetTiming();
-    /* 1.11.63 (R6-5): stamp the simulated TIMING preset's bin onto the
+    /* 1.11.63: stamp the simulated TIMING preset's bin onto the
      * architecture object's four JEDEC ns timings. Only where the preset row
      * carries ONE clock (see PresetTiming::derivable) and only for the
-     * technologies R6 rules on; refuses loudly rather than choosing a clock. */
+     * technologies the preset-authority rule covers; refuses loudly rather than choosing a clock. */
     void applyPresetTimingsToArchitecture();
-    /* 1.11.63 (R6-3): capacity_ and bandwidth_ DERIVED from the preset pair
+    /* 1.11.63: capacity_ and bandwidth_ derived from the preset pair
      * (org x timing) instead of the per-technology literals the else-if chain
      * in parseConfiguration() used to carry. Called after that chain has set
      * channels_/ranks_per_channel_, and again when the device width moves. */

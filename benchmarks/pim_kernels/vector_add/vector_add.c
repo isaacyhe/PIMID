@@ -1,4 +1,4 @@
-/* vector_add.c — Vector Addition: c[i] = a[i] + b[i]
+/* vector_add.c -- Vector Addition: c[i] = a[i] + b[i]
  * Serial baseline. Standalone, no shared headers. */
 #include <stdio.h>
 #include <stdlib.h>

@@ -46,7 +46,7 @@ class PEMemoryInterface;  // forward declaration
 
 class ALUCore : public Core {
     private:
-        /* 1.11.43 (audit E23): per-core FPU capability. Was the GLOBAL
+        /* 1.11.43: per-core FPU capability. Was the GLOBAL
          * zinfo->hierarchy.peHasFpu/fpEmulCycles, which applied the device
          * PE's soft-float penalty to every core in the simulation -- a co-sim
          * host with a real FPU included. Set per group by init.cpp. */
@@ -70,7 +70,7 @@ class ALUCore : public Core {
         uint64_t roiBaseInstrs = 0;
         uint64_t roiBaseCycle  = 0;
 
-        /* 1.12.18 (user ruling 2026-10-23, "sync to waker"): curCycle is this
+        /* 1.12.18 (sync to waker): curCycle is this
          * PE's TIMELINE: busy cycles plus the forward jumps a futex wake
          * synced it by (syncToWaker). The jumps are waiting, not activity:
          * syncSkip_ keeps them, and the 'cycles' stat (busy, what the power
@@ -96,7 +96,7 @@ class ALUCore : public Core {
         // PE memory interface (nullptr = simple model only, no hierarchy)
         PEMemoryInterface* mi_;
         uint32_t srcId_;           // global core index for MemReq.srcId
-        /* 1.11.94 (H04 x05-zsim-cores-2): fractional carries. The compute
+        /* 1.11.94: fractional carries. The compute
          * cost instrs*computeFactor*steps/throughputFactor and the per-access
          * accessFactor are real-valued; each used to be truncated to an
          * integer per charge with no remainder kept, so a block (or access)
@@ -186,10 +186,10 @@ class ALUCore : public Core {
         void contextSwitch(int32_t gid);
         virtual void join();
 
-        /* 1.12.18 (user ruling 2026-10-23, "sync to waker"), see core.h */
+        /* 1.12.18 (sync to waker), see core.h */
         bool wakeStampable() const override { return true; }
         uint64_t syncToWaker(uint64_t t) override;   // alu_core.cpp
-        /* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h */
+        /* 1.12.18 (model the lock word), see core.h */
         uint32_t lockClockDomain() const override { return 2; }
         uint64_t lockClock() const override { return curCycle; }
         uint64_t syncToLock(uint64_t t) override;    // alu_core.cpp

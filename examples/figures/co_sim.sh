@@ -7,7 +7,7 @@
 # There are NO co-sim-specific workloads -- an ordinary pim_kernels binary is
 # launched; its ROI offload region executes on the DEVICE model (PEs + the
 # device's own in-memory network + memory technology, identical to a
-# standalone device-scope run), while the out-of-ROI code (input generation,
+# standalone device run), while the out-of-ROI code (input generation,
 # result handling) executes on the HOST model (cores + caches + host memory).
 # Boundary crossings are charged with the host-device link and memory models.
 #
@@ -86,7 +86,7 @@ YAML
     chost=$(awk '/host_cores-0:/{f=1} f&&/cycles:/{print $2; exit}' "$clog")
     ccsum=$(grep -oE 'BENCH_CHECKSUM: [-0-9]+' "$clog" | head -1 | grep -oE '[-0-9]+$')
 
-    # ---- standalone device-scope run of the same kernel (parity baseline) ----
+    # ---- standalone device run of the same kernel (parity baseline) ----
     dcfg="$OUT/cfg/dev_${t}_${k}.yaml"
     cat > "$dcfg" <<YAML
 workload:

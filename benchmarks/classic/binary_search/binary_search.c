@@ -1,5 +1,5 @@
 /*
- * Binary Search — sorted array + random lookups
+ * Binary Search -- sorted array + random lookups
  * Single-threaded benchmark for cache/branch-prediction stress.
  *
  * Compile: g++ -O2 -I<path-to-zsim/misc/hooks> binary_search.c -o binary_search
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     int size    = parse_int_arg(argc, argv, "--size", 65536);
     int lookups = parse_int_arg(argc, argv, "--lookups", 10000);
 
-    printf("Binary Search — size=%d  lookups=%d\n", size, lookups);
+    printf("Binary Search -- size=%d  lookups=%d\n", size, lookups);
 
     /* Build sorted array: 0, 2, 4, 6, ..., 2*(size-1) */
     int* arr = (int*)malloc((size_t)size * sizeof(int));

@@ -22,7 +22,7 @@
 // 9 (type x corner) combinations the fleet can ask for were unwarmable and
 // would each pay a full search inside a simulation job. Now settable.
 //
-// 1.11.57 (audit C013): TEMPERATURE is the other key axis, added to the key by
+// 1.11.57: TEMPERATURE is the other key axis, added to the key by
 // the same release that added the corner (1.11.52, since power.temperature_k
 // became a real resolved knob), and this tool could not set it either -- so it
 // could only ever produce the 350 K entries and every non-350 K NVM cell paid a
@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[nvsim_warm] corner must be 0 (HP), 1 (LSTP) or 2 (LOP)\n");
         return 2;
     }
-    /* 1.11.57 (audit C013): the SAME range the simulator's validator enforces
+    /* 1.11.57: the SAME range the simulator's validator enforces
      * (main.cpp, power.temperature_k). NVSim indexes a 300..400 K table with no
      * bounds check of its own, so warming an out-of-range entry would be an
      * out-of-bounds read, and warming an off-step one would produce a cache
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
                      type, argv[2], argv[3], argv[4], corner, temp_k);
         return 1;
     }
-    /* 1.11.94 (review H48 s06-nvsim-cacti-cache-2): getSubarrayLatency() was
+    /* 1.11.94: getSubarrayLatency() was
      * removed in 1.11.74 (the NVM tier below the bank is the MAT); print the
      * accessors that exist. */
     std::printf("[nvsim_warm] t%d c%s n%s w%s dc%d t%d: read=%.6e s  "

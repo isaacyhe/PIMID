@@ -45,7 +45,7 @@ ReRAMModel::ReRAMModel(const std::string& config_path)
     reram_config_.banks = 16;
     reram_config_.read_write_ports = 1;
     reram_config_.tech_node_nm = 32;
-    /* 1.11.56 (audit D054): nanoseconds, not cycles. Placeholders that the
+    /* 1.11.56: nanoseconds, not cycles. Placeholders that the
      * NVSim path overwrites on every reachable run; the model refuses when
      * that binding fails, so they never reach a result. */
     reram_config_.read_latency_ns = 7.0;      // ns (moderate)
@@ -137,7 +137,7 @@ void ReRAMModel::initialize() {
     }
 
     // Use architecture energy values (may have been extracted from NVSim)
-    /* 1.11.58 (audit D022/D043, the gated unit change memory_model.h asked
+    /* 1.11.58 (the gated unit change memory_model.h asked
      * for): this member is NANOJOULES PER ACCESS, the contract's unit.
      *
      * It used to hold two different quantities depending on which path ran.
@@ -159,7 +159,7 @@ void ReRAMModel::initialize() {
     std::cout << "  Capacity: " << (reram_config_.capacity / (1024.0 * 1024)) << " MB" << std::endl;
     std::cout << "  Banks: " << reram_config_.banks << std::endl;
     std::cout << "  Technology: " << reram_config_.tech_node_nm << " nm" << std::endl;
-    /* 1.11.56 (audit D054): printed as NANOSECONDS, which is what NVSim
+    /* 1.11.56: printed as NANOSECONDS, which is what NVSim
      * reported and what these fields hold. They were labelled "cycles" while
      * carrying a 1 GHz product, so the number was right only at 1 GHz. */
     std::cout << "  Read Latency: " << reram_config_.read_latency_ns << " ns" << std::endl;
@@ -168,7 +168,7 @@ void ReRAMModel::initialize() {
               << " cycles" << std::endl;
     std::cout << "  Endurance: " << reram_config_.endurance << " writes" << std::endl;
     std::cout << "  Analog Capable: " << (reram_config_.analog_capable ? "Yes" : "No") << std::endl;
-    /* 1.11.60 (audit round 4, C001): nJ PER ACCESS, the unit the assignments
+    /* 1.11.60: nJ PER ACCESS, the unit the assignments
      * above produce since 1.11.58 re-based them. The label was left on the
      * retired pJ/byte basis, so the printed number was 15.6x below what it
      * claimed at the 512-bit configured line and 125x below it at the 64-bit
@@ -196,7 +196,7 @@ void ReRAMModel::loadConfig(const std::string& config_path) {
     std::cout << "[ReRAMModel] Using default 256MB ReRAM configuration" << std::endl;
 }
 
-/* 1.11.56 (audit D054): THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
+/* 1.11.56: THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
  *
  * MemoryModel's legacy access()/getLatency() return Cycle, and this model is
  * handed no clock -- the simulator drives it through getTierLatencyNs(), which
@@ -212,7 +212,7 @@ static inline Cycle legacyNsAsCycles(double ns) {
     return static_cast<Cycle>(std::ceil(ns));   // 1 GHz: no clock is supplied
 }
 
-/* 1.11.60 (audit round 4, C001): READ THE PARAGRAPH BELOW AS HISTORY, NOT AS
+/* 1.11.60: READ THE PARAGRAPH BELOW AS HISTORY, NOT AS
  * A STATEMENT OF THE PRESENT UNIT. It was written at 1.11.57 and it was true
  * then; 1.11.58 re-based read_energy_/write_energy_ to NANOJOULES PER ACCESS
  * at assignment (see the note beside the assignments in initialize()), and
@@ -331,7 +331,7 @@ void ReRAMModel::tick() {
 
 Cycle ReRAMModel::getLatency(MemoryRequestType type) const {
     switch (type) {
-        // 1.11.56 (audit D054): see legacyNsAsCycles above.
+        // 1.11.56: see legacyNsAsCycles above.
         case MemoryRequestType::READ:
             return legacyNsAsCycles(reram_config_.read_latency_ns);
         case MemoryRequestType::WRITE:
@@ -349,7 +349,7 @@ Cycle ReRAMModel::getLatency(MemoryRequestType type) const {
 }
 
 double ReRAMModel::getTotalEnergy() const {
-    /* 1.11.58 (audit D022/D043): NANOJOULES, as MemoryModel documents.
+    /* 1.11.58: NANOJOULES, as MemoryModel documents.
      *
      * Two errors lived on these three lines. The dynamic term multiplied a
      * pJ/byte density by an access count and called the product picojoules
@@ -404,7 +404,7 @@ void ReRAMModel::printStats() const {
     }
 
     std::cout << "\nEnergy Consumption:" << std::endl;
-    /* 1.11.60 (audit round 4, C002): THE SECOND MULTIPLY IS GONE.
+    /* 1.11.60: THE SECOND MULTIPLY IS GONE.
      *
      * These lines multiplied read_energy_/write_energy_ by bytes-per-access.
      * That was right at 1.11.57, when the members were an energy DENSITY;
@@ -421,7 +421,7 @@ void ReRAMModel::printStats() const {
      * product was 0 x wrong.
      *
      * The per-access figures are now the members themselves, and the per-byte
-     * line is DERIVED from them rather than being the stored quantity, so the
+     * line is derived from them rather than being the stored quantity, so the
      * two can no longer drift apart again. */
     const double bpa = bytesPerAccess(access_width_bits_);
     std::cout << "  Access Width: " << (bpa * 8.0) << " bits (" << bpa << " B)" << std::endl;
@@ -615,7 +615,7 @@ void ReRAMModel::initializeNVSim() {
 
         // Extract NVSim results if valid
         if (nvsim_wrapper_->isValid()) {
-            /* 1.11.56 (audit D054): NVSim reports SECONDS. Carry them as
+            /* 1.11.56: NVSim reports SECONDS. Carry them as
              * nanoseconds. The old code truncated the ns figure into a `Cycle`
              * field the printout labelled "cycles", so a run at 2 GHz reported
              * half the cycles it would really spend -- and sub-nanosecond
@@ -755,7 +755,7 @@ uint64_t ReRAMModel::getBandwidth() const {
     static bool announced = false;
     if (!announced) {
         announced = true;
-        std::cerr << "[ReRAMModel] getBandwidth() returns 0 = NOT SOURCED. This model "
+        std::cerr << "[ReRAMModel] getBandwidth() returns 0 (no sourced value). This model "
                      "characterizes latency, energy and area through its tool; "
                      "it has no sustained-bandwidth model, and the literal that "
                      "used to stand here (capacity_ / 50) was fabricated. Compose a "

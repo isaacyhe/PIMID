@@ -78,7 +78,7 @@ private:
         uint32_t banks;
         uint32_t read_write_ports;
         uint32_t tech_node_nm;
-        /* 1.11.56 (audit D054): NANOSECONDS, and named so. These three used to
+        /* 1.11.56: NANOSECONDS, and named so. These three used to
          * be `Cycle`, filled from NVSim under a comment reading "assumes 1 GHz:
          * 1 ns = 1 cycle" -- but NVSim returns SECONDS and this model has no
          * clock to convert them with (nothing here ever reads a frequency).
@@ -96,7 +96,7 @@ private:
 
     PCMConfig pcm_config_;
 
-    /* 1.11.56 (audit D045): true when NVSim did not resolve
+    /* 1.11.56: true when NVSim did not resolve
      * FunctionUnit::resetLatency and reset_write_latency_ns therefore HOLDS
      * THE SET PATH. The old code filled the gap with write * 0.3 and printed
      * the product as a RESET measurement; the substitution is now recorded so
@@ -130,7 +130,7 @@ private:
 
     // Energy and area from NVSim
     double read_energy_;
-    /* 1.11.60 (audit round 4, C015): nJ per access, and it is the SET energy,
+    /* 1.11.60: nJ per access, and it is the SET energy,
      * not the SET/RESET average this comment used to claim. Every write is
      * charged as a SET -- the counter above, the latency in access(), and now
      * the energy -- because MemoryRequestType has no RESET to separate them

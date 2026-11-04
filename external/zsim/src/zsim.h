@@ -184,9 +184,9 @@ struct GlobSimInfo {
 
     // Garnet network for device NoC simulation (PIMID integration)
     GarnetNetwork* garnetNetwork;
-    class NocWireData* nocWire;   // measured device-fabric wire activity (user ruling 2026-10-25: measured wire activity)
-    class DramEpochReplay* dramReplay;   // 1.11.98 (ruling 4 (c)): the device DRAM controller, replayed per epoch (nullptr = off)
-    class DramEpochReplay* hostDramReplay;   // 1.12.18 (ruling 17 / R0605): the decoupled host memory's own replay (nullptr = none, or the host shares dramReplay)
+    class NocWireData* nocWire;   // measured device-fabric wire activity (measured wire activity)
+    class DramEpochReplay* dramReplay;   // 1.11.98: the device DRAM controller, replayed per epoch (nullptr = off)
+    class DramEpochReplay* hostDramReplay;   // 1.12.18: the decoupled host memory's own replay (nullptr = none, or the host shares dramReplay)
     /* 1.12.18: (bug 7) the host memory controllers the coherence flush's
      * writebacks are sent to (sys.mem.flushWritebacksToMC); nullptr = not
      * routed (the array-side charge in the power report stands). */
@@ -229,7 +229,7 @@ struct GlobSimInfo {
         // technologies stay unsaturated under load. A proper N-parallel-Garnet-
         // trees model is future work; this scalar is a stop-gap. 1 = no effect.
         uint32_t dramChannels = 1;
-        /* 1.12.18 (user ruling, HBM TSV layout): channels per stack core die
+        /* 1.12.18 (HBM TSV layout): channels per stack core die
          * under the stated layout (0 = not a stacked part); places the
          * chip-slot routers on dies for the TSV die-crossing count. */
         uint32_t stackChannelsPerDie = 0;
@@ -246,7 +246,7 @@ struct GlobSimInfo {
         // wall-dependent PRE-ROI length (rank spawning, init) cannot shift the
         // ROI's epoch boundaries run-to-run. Pre-ROI traffic is not recorded.
         volatile uint64_t mpiNocRoiBasePhase = 0;
-        // 1.12.18 (R2, B3): every core's wall-free clock (Core::getCycles())
+        // 1.12.18: every core's wall-free clock (Core::getCycles())
         // at the ROI baseline snapshot (the first ROI barrier in thread-MPI),
         // indexed by core id; host cores keep no roiBaseCycle of their own.
         uint64_t* mpiRoiBaseCyc = nullptr;
@@ -261,7 +261,7 @@ struct GlobSimInfo {
         uint64_t nocAggBandwidthMBs = 0;
         // 1.10.6: time to reverse the shared channel DQ bus, ns x100 (0 = off)
         uint32_t dqTurnNsX100 = 0;
-        /* 1.11.11 (#113): extra cycles charged per FP-class instruction when
+        /* 1.11.11: extra cycles charged per FP-class instruction when
          * the element has NO floating-point unit (pim.pe.floating_point:
          * false). Until 1.11.10 the timing model could not see an opcode, so
          * an integer-only element ran floating-point code at full speed --
@@ -283,7 +283,7 @@ struct GlobSimInfo {
         // standalone device-scope result. 0 => fall back to zinfo->freqMHz
         // (legacy / non-system paths where freqMHz already IS the device clock).
         uint32_t nocBandwidthFreqMHz = 0;
-        /* 1.11.94 (review H17, user: "isn't host mc also a level of placements?"):
+        /* 1.11.94:
          * HOST_MC is the TOP RUNG, index 7 -- the PE beside the host memory
          * controller reaches the DRAM through the channel the way the host does.
          * levelLatency[7] carries the host-path split (fabric + coherence +
@@ -291,7 +291,7 @@ struct GlobSimInfo {
          * old -1 sentinel, read as 0xFFFFFFFF and then used as a signed index,
          * is gone: zsim refuses a placement above 7. */
         uint32_t levelLatency[8] = {};
-        uint32_t indieFabric = 0, indieGridW = 0, indieGridH = 0;   // 1.11.103 (ruling 9): the in-die fabric below the chip router (0 = the tree)
+        uint32_t indieFabric = 0, indieGridW = 0, indieGridH = 0;   // 1.11.103: the in-die fabric below the chip router (0 = the tree)
         uint32_t bridgeLatency[7] = {};
         /* (1.12.234): the tree nodes built as links (linkNode[r] = 1) and the level
          * latency the walk charges at them (no router stages). */
@@ -306,12 +306,12 @@ struct GlobSimInfo {
         uint32_t totalUnits = 128;        // total units at placement level
         uint32_t pagesPerUnit = 32;       // contiguous block (4KB-pages) per unit (device-local addressing)
         uint32_t slotRowBytes = 0;        // (1.12.256): SRAM/NVM row-interleaved element layout (0 = whole-unit blocks)
-        /* 1.11.52 (audit D003): the DRAM ROW (page) size in bytes, so the
+        /* 1.11.52: the DRAM ROW (page) size in bytes, so the
          * memory interface can MEASURE the row-buffer hit rate instead of
          * the energy model assuming one. 0 = unknown -> no measurement is
          * claimed and the consumer says so. */
         uint32_t dramRowBytes = 0;
-        /* 1.11.91 (audit R8-1): system bytes one ACT makes resident -- the
+        /* 1.11.91: system bytes one ACT makes resident -- the
          * per-device page x the devices that open a row together -- computed
          * by the emitter from the same rule the array energy uses. 0 = not
          * sent -> the row model claims no measurement. */
@@ -332,7 +332,7 @@ struct GlobSimInfo {
         double writeSlotCycles = 0.0;     // (1.12.114): memory.nvm_write_budget, per-interface write slot (0 = off)
         double bankServiceCycles = 0.0;   // (1.12.111): SRAM/NVM one bank's access time, cycles (0 = no bank model)
         uint64_t defaultBandwidthMBs = 0; // default M/D/1 bandwidth (0 = auto)
-        uint64_t tierBandwidthMBs = 0;    // 1.11.97 (ruling 26): the placement tier's rung bandwidth (width x clock); 0 = none
+        uint64_t tierBandwidthMBs = 0;    // 1.11.97: the placement tier's rung bandwidth (width x clock); 0 = none
 
         // M:N PE-to-memory-org mapping
         uint32_t connectionMode = 0;     // 0=SHARED_IO, 1=SEPARATE_ENDPOINTS
@@ -423,7 +423,7 @@ struct GlobSimInfo {
         //   (inflates DRAM/H-tree). Drop remoteLat for non-grid; keep it for
         //   grid (where detailed > analytical and the memory term helps).
         uint32_t nocCurveIsGrid = 1;
-        /* 1.11.98 (ruling 4 (c)): 1 = the device's DRAM requests are replayed
+        /* 1.11.98: 1 = the device's DRAM requests are replayed
          * through Ramulator2 per epoch and the interfaces price the previous
          * epoch's measured service latency (see dram_epoch_replay.h). */
         uint32_t dramEpochReplay = 0;
@@ -463,7 +463,7 @@ struct GlobSimInfo {
         double   bytesPerCycle = 0.0;         // AGGREGATE bandwidth (per-ch x channels)
         uint32_t channels = 1;
         uint32_t uncachedCycles = 0;          // pure serialized cross-bridge access
-        /* (user ruling 2026-10-27: serial links calibrated): the host-device link's framing per
+        /* (serial links calibrated): the host-device link's framing per
          * transaction and its ASPM L1 timers (0 = the link class has no ASPM L1:
          * a DRAM channel, a UCIe link) */
         uint32_t headerBytes = 0;
@@ -479,7 +479,7 @@ struct GlobSimInfo {
     // clock starts: cycles = measuredDeltaBytes/writebackBytesPerCycle +
     // flushFixed (1.11.59, audit F021: this said footprintBytes, the config
     // override 1.11.40 replaced with a measurement and init.cpp now refuses;
-    // 1.11.62 (ruling 5b): it then said measuredSliceBytes, and the slices are
+    // 1.11.62: it then said measuredSliceBytes, and the slices are
     // gone -- the numerator is now the DELTA this arrival's own walk measured,
     // i.e. what has been dirtied since the previous walk, and flushFixed is
     // charged per arriving rank because each core runs its own flush).
@@ -489,7 +489,7 @@ struct GlobSimInfo {
     struct {
         bool enabled = false;
         uint32_t mode = 0;                    // 0=unified(flush), 1=separate(bypass)
-        /* 1.11.40 (audit N7): the flush footprint is MEASURED at roi_begin by
+        /* 1.11.40: the flush footprint is MEASURED at roi_begin by
          * walking the host caches' MESI state for lines in M -- the bytes a
          * writeback would actually move.
          *
@@ -501,7 +501,7 @@ struct GlobSimInfo {
          * unmeasured but physically impossible: a flush writes back dirty lines
          * FROM cache and cannot exceed what the cache holds.
          *
-         * 1.11.59 (audit F021): the `footprintBytes` field that carried the
+         * 1.11.59: the `footprintBytes` field that carried the
          * old override is GONE. It was written once from the config and read
          * only by the panic that refuses a non-zero value, but it sat in the
          * global state beside the real measurement, was printed at startup as
@@ -509,11 +509,11 @@ struct GlobSimInfo {
          * flush, and gave a reader a second, always-zero candidate for the
          * quantity in the formula above. The key is still consumed and still
          * refused (init.cpp); nothing keeps its value afterwards. */
-        /* 1.11.40: what the caches held. 1.11.57 (audit D015): DIAGNOSTIC
+        /* 1.11.40: what the caches held. 1.11.57: DIAGNOSTIC
          * ONLY -- no stat exports it and no consumer reads it, and it used to
          * be written TWICE per flush from two independent measurements, so
          * even as a diagnostic it only ever held the second one.
-         * 1.11.62 (ruling 5b): the epoch and its slices are gone. Every rank's
+         * 1.11.62: the epoch and its slices are gone. Every rank's
          * arrival WALKS the caches itself and charges the delta that walk
          * finds, so this field is written once per WALK and holds the
          * CUMULATIVE distinct-dirty bytes measured so far -- the sum of every
@@ -529,7 +529,7 @@ struct GlobSimInfo {
     } coherence;
     bool pagePlacementStandalone = false;   // (1.12.165): system.page_placement: standalone
 
-    /* 1.11.7 (#85): host<->device crossing counters. The QEMU plugin is the
+    /* 1.11.7: host<->device crossing counters. The QEMU plugin is the
      * only layer that sees each crossing WITH its byte size, so it counts
      * them here; ProxyStats in init.cpp export them to zsim.out; the power
      * path prices them inside the McPAT fork (per-link-type table). Every
@@ -542,11 +542,11 @@ struct GlobSimInfo {
         volatile uint64_t count = 0;       // discrete crossings (all types)
         volatile uint64_t flushBytes = 0;  // coherence-flush footprint bytes
         volatile uint64_t flushMcLines = 0;   // 1.12.18 (bug 7): of those, the line writebacks sent to the host memory controllers
-        volatile uint64_t l1Exits = 0;        // (user ruling 2026-10-27: serial links calibrated): transfers that found the link in L1
+        volatile uint64_t l1Exits = 0;        // (serial links calibrated): transfers that found the link in L1
         volatile uint64_t l0IdleNs = 0;       // idle time the link spent in L0 before entering L1 (the entry timer), ns
     } xing;
 
-    /* 1.11.8 (#84): per-object ACTIVE-PHASE marking for power-gating
+    /* 1.11.8: per-object ACTIVE-PHASE marking for power-gating
      * residency. Each object touches its tracker on its own event path
      * (cores at BBL retire, shared caches at access, NoC at injection,
      * MCs at request); idle residency = 1 - activePhases/numPhases at
@@ -557,7 +557,7 @@ struct GlobSimInfo {
         PhaseActivity sharedCache;
         PhaseActivity noc;
         PhaseActivity hostMC;
-        PhaseActivity hostUnion;   // 1.11.106 (ruling R106-8 (b)): any core retiring OR a host-MC access -- the host gating domain as ONE piece
+        PhaseActivity hostUnion;   // 1.11.106: any core retiring OR a host-MC access -- the host gating domain as ONE piece
         /* 1.11.57 (latent F024): the "[64]" and the words "per-channel"
          * promise a resolution nothing produces. Only devMC[0] is ever
          * touched (RamulatorMemory::access and the PE memory interface) and
@@ -571,17 +571,17 @@ struct GlobSimInfo {
          * per-channel view needs a channel index at the touch site, which
          * neither caller has. */
         PhaseActivity devMC[64];  // ONLY [0] is written or read; see above
-        /* 1.11.18 (audit go-through): ROI baselines. The residency is a
+        /* 1.11.18: ROI baselines. The residency is a
          * FRACTION of the priced window, and every activity counter it is
          * weighed against is ROI-relative -- these snapshots (taken at
          * roi_begin, with the phase index) make the numerator and its
          * denominator the same window. All zero without an ROI, which
          * reproduces the whole-run behavior exactly. */
-        /* 1.11.40 (audit E17): cycle-resolved companions to the two
+        /* 1.11.40: cycle-resolved companions to the two
          * device-side trackers above, carrying the event CYCLE instead of the
          * phase index.
          *
-         * 1.11.54 (audit F005/F006) corrects two claims that were made here:
+         * 1.11.54 corrects two claims that were made here:
          * (1) "Instrumented at the SAME sites ... one event stream". Not
          *     quite: the PE memory interface records both views on the same
          *     line, but RamulatorMemory::access touches devMC/hostMC WITHOUT
@@ -590,7 +590,7 @@ struct GlobSimInfo {
          *     RamulatorMemory with setPGDevice(true) -- so this is a trap
          *     rather than a live error, and it becomes live the moment a
          *     device topology terminates at the grand MC.
-         *     (1.12.147, user ruling 2026-10-28): RamulatorMemory is removed and a
+         *     (1.12.147): RamulatorMemory is removed and a
          *     router device of type Ramulator is refused, so no controller
          *     touches devMC without the PE-MI's gap event; the trap is gone.
          * (2) "Nothing reads these back into the model". FALSE since 1.11.51:
@@ -609,7 +609,7 @@ struct GlobSimInfo {
         uint64_t roiAnyCore = 0, roiSharedCache = 0, roiNoc = 0;
         uint64_t roiHostMC = 0, roiDevMC0 = 0;
         uint64_t roiHostUnion = 0;   // 1.11.106
-        /* 1.12.3 (ruling 1 (a), co-sim MPI): the priced window CLOSES at the
+        /* 1.12.3 (co-sim MPI): the priced window CLOSES at the
          * last rank's closing-barrier marker, where the device kernel ends.
          * The post-kernel collective tail (closing barrier, reduce, finalize)
          * is outside it. markKernelClose() snapshots the phase index and the
@@ -648,7 +648,7 @@ struct GlobSimInfo {
         }
     } pgres;
 
-    /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"): a
+    /* 1.12.18 (run time = elapsed wall clock): a
      * run's time is the ROI's elapsed time on the GLOBAL clock, not the max
      * over cores of their own (busy) cycle counts. A PE whose thread blocks
      * (an OpenMP thread waiting at a barrier or a lock) stops advancing its
@@ -673,11 +673,11 @@ struct GlobSimInfo {
         volatile bool ended = false;
         uint64_t beginStamp = 0, endStamp = 0;   // source 1, phase-clock cycles
         uint64_t mpiEnd = 0;                     // source 2 and 3, ROI-relative cycles
-        uint32_t mpiEndFreqMHz = 0;              // 1.12.18 (R2): the clock mpiEnd is counted in (the rank cores'); 0 = the device's
+        uint32_t mpiEndFreqMHz = 0;              // 1.12.18: the clock mpiEnd is counted in (the rank cores'); 0 = the device's
         uint64_t balance = 0;                    // (1.12.189): cycles the DRAM balance no barrier applied added to mpiEnd
         uint64_t cycles() const {
             if (!ended) return 0;
-            if (source == 2 || source == 3) return mpiEnd;   // 1.12.18: 3 = single-process cut (ruling 2026-10-24 (a))
+            if (source == 2 || source == 3) return mpiEnd;   // 1.12.18: 3 = single-process cut
             return (endStamp > beginStamp) ? endStamp - beginStamp : 0;
         }
     } roiWall;

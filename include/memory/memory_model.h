@@ -65,7 +65,7 @@ public:
      * nJ/access at assignment and getTotalEnergy() returns nanojoules.
      * A polymorphic consumer is now safe.
      *
-     * 1.11.60 (audit round 4, C003): THAT LAST SENTENCE WAS PREMATURE, and it
+     * 1.11.60: THAT LAST SENTENCE WAS PREMATURE, and it
      * is true now. 1.11.58 changed two of the three quantities this paragraph
      * lists -- the NVM density and the leakage unit -- and declared the third,
      * DRAMModel's accumulating total, closed along with them. It was not:
@@ -146,7 +146,7 @@ public:
      * not use. Must precede initialize(). <=0 keeps the model default. */
     virtual void setTechNodeNm(int /*nm*/) {}
 
-    /* 1.11.52 (audit D055): the RUN's operating temperature. Every NVM model
+    /* 1.11.52: the RUN's operating temperature. Every NVM model
      * hardcoded 350 K, so with power.temperature_k set the cores and caches
      * were priced hot while every memory array stayed at 77 C -- one machine,
      * two temperatures, silently. <=0 keeps the model default. */
@@ -182,7 +182,7 @@ public:
      * sourceable <tier> tier" when the pair splits. */
     virtual bool hasTier(Tier tier) const = 0;
 
-    /* 1.11.73: ONE tier below the bank, per family (ruling 2026-09-20):
+    /* 1.11.73: ONE tier below the bank, per family:
      *   SRAM -> subbank  (CACTI: the line of mats activated together for one
      *                     data word; its width is the bank's out_w)
      *   NVM  -> mat      (NVSim: numRowMat x numColumnMat per bank; width =

@@ -71,7 +71,7 @@ private:
         uint32_t write_ports;
         uint32_t tech_node_nm;   // Technology node
         uint32_t temperature_k = 350;  // 1.11.52 (D055): run temperature, K
-        /* 1.11.56 (audit D054): NANOSECONDS, and named so. This was a `Cycle`
+        /* 1.11.56: NANOSECONDS, and named so. This was a `Cycle`
          * filled by getAccessLatencyCycles(1e9) -- CACTI returns SECONDS, and
          * the 1 GHz was not the run's clock but the absence of one: this model
          * is never told a frequency. initialize() then printed the product as

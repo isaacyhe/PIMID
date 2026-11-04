@@ -1,4 +1,4 @@
-# NPB (NAS Parallel Benchmarks) — Self-Contained Implementations
+# NPB (NAS Parallel Benchmarks) -- Self-Contained Implementations
 BENCHDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ZSIM_HOOKS := $(BENCHDIR)/../../external/zsim/misc/hooks
 

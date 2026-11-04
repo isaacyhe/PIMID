@@ -19,8 +19,7 @@ namespace pimid {
  * Provides area, timing, and power modeling for Non-Volatile Memory
  * Supports (reachable from a PIMID config): STT-RAM, PCM, ReRAM.
  * FBDRAM, SLCNAND and MLCNAND exist in NVMType below and in NVSim, but NO
- * config string routes to them -- they are deliberately not exposed (user
- * decision 2026-07-30: keep to the technologies already supported). Do not
+ * config string routes to them -- they are deliberately not exposed (the model keeps to the technologies already supported). Do not
  * cite this header as evidence that NAND or floating-body DRAM is modelled.
  */
 class NVSimWrapper {
@@ -145,7 +144,7 @@ public:
      * -- but this wrapper never exposed it. Instead getDecoderDelay() and its
      * four siblings returned INVENTED percentages of mat.readLatency (10/20/
      * 45/15/5, summing to 0.95), which read as tool output and were not.
-     * 1.11.56 (audit D031) rebuilt those five on NVSim's own per-component
+     * 1.11.56 rebuilt those five on NVSim's own per-component
      * latencies, so they are tool reads now too; these two remain the right
      * source for a TIER, being the totals NVSim itself composed.
      * Return <0 when unavailable (notably on a cache hit -- the pregenerated

@@ -5,7 +5,7 @@
 #include <cstring>
 #include <new>       // 1.11.57 (latent D040): placement new for dvs_voltage
 #include <vector>
-#include <set>       // 1.11.57 (audit C015): one table note per technology
+#include <set>       // 1.11.57: one table note per technology
 #include <stdexcept>
 #include <unistd.h>
 #include <climits>
@@ -144,7 +144,7 @@ void CACTIWrapper::validateConfiguration() {
      * so an out-of-window value is not a bad number, it is a dead run with no
      * message from us. Refuse it here, where the caller can be told which
      * field and which unit.
-     * 1.11.60 (audit round 4, C012): the sentence that stood here -- "Cannot
+     * 1.11.60: the sentence that stood here -- "Cannot
      * fire today: nothing sets the field" -- was false when written. Five
      * sites set it (main.cpp's four CACTI query paths and SRAMModel::
      * initialize()), all from 1.11.52's D055 work. What holds is narrower:
@@ -256,7 +256,7 @@ InputParameter* CACTIWrapper::createCACTIInput(const SRAMConfig& config) {
     input->tag_arr_ram_cell_tech_type = 0;  // Tags always SRAM
     input->tag_arr_peri_global_tech_type = static_cast<unsigned int>(config.device_corner);
 
-    /* 1.11.30 (user ruling E5): from the CALLER, so CACTI and McPAT model one
+    /* 1.11.30: from the CALLER, so CACTI and McPAT model one
      * metal stack. This was pinned to 1 here while McPAT defaulted to 0, so the
      * same die had lossier wires in its arrays than in its cores. The original
      * note read "Conservative (required for reliable results)" -- conservative
@@ -289,10 +289,10 @@ InputParameter* CACTIWrapper::createCACTIInput(const SRAMConfig& config) {
     input->cycle_time_dev = config.dev_cycle_time;
     input->area_dev = config.dev_area;
 
-    // 1.11.94 (review C4 comment fix): ed = 2 selects ED^2 in CACTI (io.cc), its shipped cache.cfg setting; 0 is weight/deviate
+    // 1.11.94: ed = 2 selects ED^2 in CACTI (io.cc), its shipped cache.cfg setting; 0 is weight/deviate
     input->ed = config.ed_mode;
 
-    /* 1.11.95 (row 25 (b)): CACTI's power-gating model, off unless the config
+    /* 1.11.95: CACTI's power-gating model, off unless the config
      * turns a component on. power_gating is CACTI's master flag (any gated
      * component); perfloss its performance-loss budget. */
     input->array_power_gated = config.pg_array;
@@ -371,7 +371,7 @@ void CACTIWrapper::runCACTI() {
                 std::exit(3);
             }
         }
-        /* 1.11.45 (audit E30): the GLOBAL never outlives the call.
+        /* 1.11.45: the GLOBAL never outlives the call.
          * cacti_interface() points g_ip at our input and leaves it there;
          * when this wrapper is destroyed, delete cacti_input_ would turn the
          * global into a dangling pointer that every later libcacti7 consumer
@@ -430,7 +430,7 @@ double CACTIWrapper::getArea() const {
     return cacti_result_->area / 1e6;  // CACTI native um^2 -> mm^2
 }
 
-/* 1.11.14 (#122): the JEDEC calibration, moved INSIDE the tool that owns the
+/* 1.11.14: the JEDEC calibration, moved INSIDE the tool that owns the
  * array model. It used to be computed by the caller in main.cpp, at two sites,
  * with the density and generation tables living there too -- model logic in
  * the orchestrator, which the borders rule forbids.
@@ -442,7 +442,7 @@ double CACTIWrapper::getArea() const {
  * SRAM-as-memory arrays), to which a DRAM vendor-density factor would be
  * nonsense. Calibration requires BOTH a commodity-DRAM main-memory query
  * AND a named technology; anything else returns raw CACTI unchanged. */
-/* 1.11.19 (user decision D11): FULL-DIE density, one published measurement
+/* 1.11.19: FULL-DIE density, one published measurement
  * per row. "mm^2/die" now means what a reviewer assumes and can check
  * against a die photo.
  *
@@ -509,7 +509,7 @@ double CACTIWrapper::vendorArrayFraction(const std::string& tech) {
     return -1.0;  // not sourced; callers must omit the array line, not guess
 }
 
-/* 1.11.56 (audit D037): SAY THAT THE CLASSES COLLAPSE ONTO ONE TABLE.
+/* 1.11.56: SAY THAT THE CLASSES COLLAPSE ONTO ONE TABLE.
  *
  * These two functions are read together (main.cpp's getDRAMGenClass) and the
  * pair was printed as though it described two independent facts: a per-
@@ -529,7 +529,7 @@ double CACTIWrapper::vendorArrayFraction(const std::string& tech) {
  * nodes. The absolute scale is divided out by the JEDEC k-calibration
  * (1.11.1); what the table choice supplies is the structure response, which is
  * why one table across five classes is workable and not merely tolerated. */
-/* 1.11.57 (audit C015): announce ONCE PER TECHNOLOGY, not once per process.
+/* 1.11.57: announce ONCE PER TECHNOLOGY, not once per process.
  *
  * The single latch named only the FIRST technology a run asked about. On a
  * decoupled system-scope run this function is called per node, so a config
@@ -558,7 +558,7 @@ int CACTIWrapper::generationTableNm(const std::string& tech) {
  * node -- see generationTableNm() above. */
 const char* CACTIWrapper::generationClass(const std::string& tech) {
     /* 1.11.101 (step 2): the record's generation label (the generation of the
-     * same part whose measured density prices the die, sweep-94 row 13). The
+     * same part whose measured density prices the die). The
      * registry's strings are stable for the run. */
     if (!isDramPartTech(tech)) return "1x";   // the old table's default label; not a DRAM part
     return pimid::params::dramPartRecord(tech).generation.c_str();
@@ -592,7 +592,7 @@ CACTIWrapper::CalibratedArea CACTIWrapper::getCalibratedDieArea() const {
         config_.memory_tech.empty()) {
         return out;
     }
-    /* 1.11.19 (gate 1129 P1): UNITS. vendorDieDensity() returns MEGABYTES
+    /* 1.11.19: UNITS. vendorDieDensity() returns MEGABYTES
      * per mm^2 (its rows are Gb/mm^2 x 128). The capacity fed to it was in
      * MEGABITS -- the old local was even named chip_mbit -- so every die
      * area came out 8x too large. It went unnoticed because the pre-1.11.19
@@ -602,7 +602,7 @@ CACTIWrapper::CalibratedArea CACTIWrapper::getCalibratedDieArea() const {
      * fixed now: MB divided by MB/mm^2. */
     double chip_mbyte = static_cast<double>(config_.capacity_bytes)
                       / (1024.0 * 1024.0);
-    /* 1.11.45 (audit E29, user ruling): the x1.12 is GONE. Its provenance was
+    /* 1.11.45: the x1.12 is GONE. Its provenance was
      * lost in the 1.11.14 migration, and it double-counted periphery: the
      * vendorDieDensity() rows are measured from REAL DIES (die photos and
      * vendor disclosures), so capacity/density is already a full-die area,

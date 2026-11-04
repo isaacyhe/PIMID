@@ -18,7 +18,7 @@ class RamulatorWrapper;
  */
 class DRAMModel : public MemoryModel {
 public:
-    /* 1.11.52 (audit 1162 D024): the TECHNOLOGY, which this model used to
+    /* 1.11.52: the TECHNOLOGY, which this model used to
      * drop on the floor. The constructor hardcoded MemoryTechnology::DDR4
      * and handed RamulatorWrapper a default-argument "DDR4", while
      * MemoryModelFactory routed DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2 and
@@ -38,7 +38,7 @@ public:
     void tick() override;
 
     /* Energy modeling.
-     * 1.11.60 (audit round 4, C003): NANOJOULES PER ACCESS, as
+     * 1.11.60: NANOJOULES PER ACCESS, as
      * memory_model.h's contract requires. These two returned a cumulative
      * running total until 1.11.60 -- the wrapper's total_reads_ x per-access,
      * copied in on every tick() -- while the contract paragraph, updated at
@@ -128,7 +128,7 @@ private:
     std::string tierLatencySource(Tier tier, Op op) const override;
     void setArrayCapacityBytes(uint64_t bytes) override;
     void setAccessWidthBits(uint32_t bits) override;
-    /* 1.11.66 (round 5, B4): the temperature main.cpp hands every memory
+    /* 1.11.66: the temperature main.cpp hands every memory
      * model (setTemperatureK, 1.11.52 D055) had no DRAMModel override and so
      * never reached the owned RamulatorWrapper -- the refresh ladder was dead
      * on the co-sim device path. Forwarded now, together with the two knobs

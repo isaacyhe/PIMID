@@ -61,7 +61,7 @@ static void stencil_row(pimid_spm_t* s, const float* up, const float* mid, const
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the largest rank share
+/* 1.11.94: need of the largest rank share
  * [grid alloc_rows][tmp alloc_rows], alloc_rows = ceil(N/nprocs) + 2. */
 static size_t stencil_2d_mpi_need(long n, const void* c) {
     long np = *(const int*)c;
@@ -129,7 +129,7 @@ int main(int argc, char* argv[]) {
     size_t slot_bytes = 0;
     float* dbuf = NULL;
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+        /* 1.11.94: a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {

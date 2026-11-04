@@ -8,7 +8,7 @@
  * DDR4 Internal Ports (from dram_architecture_v2.h):
  * - Subarray GSA:      256 bits (INFERRED from DAS-MICRO15)
  * - Prefetch datapath: 64 bits  (VERIFIED from JEDEC)
- * - Bank serialization: 8 bits  (ESTIMATED - CRITICAL BOTTLENECK!)
+ * - Bank serialization: 8 bits  (estimated - CRITICAL BOTTLENECK!)
  * - Chip I/O:          8 bits  (VERIFIED for x8 device)
  * - Rank interface:    64 bits (VERIFIED - FIRST WIDE interface)
  *

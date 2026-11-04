@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(PIMID VERSION 1.12.266 LANGUAGES CXX)
+project(PIMID VERSION 1.12.267 LANGUAGES CXX)
 
 # (1.12.135): PIMID's pinned guest system libraries (src/main.cpp guestSysroot, docs/build.md "Guest libraries").
 option(PIMID_FETCH_GUEST_SYSROOT "Download PIMID's pinned guest libraries (Ubuntu 24.04 packages, sha256-checked) at configure time" ON)
@@ -68,13 +68,13 @@ endif()
 # Build external models
 message(STATUS "Building external models...")
 
-# ── Mandatory external models ──
+# -- Mandatory external models --
 # All five models ship with PIMID and MUST be present.
 
 # Ramulator2 for DRAM modeling
 if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/ramulator/CMakeLists.txt")
     message(FATAL_ERROR "Ramulator2 not found at external/ramulator/. "
-        "All external models are mandatory — check your git submodules.")
+        "All external models are mandatory -- check your git submodules.")
 endif()
 message(STATUS "  - Ramulator2 DRAM simulator")
 set(OLD_CXX_STANDARD ${CMAKE_CXX_STANDARD})
@@ -87,7 +87,7 @@ set(HAVE_RAMULATOR ON)
 # CACTI 7.0 for SRAM/DRAM array characterization and McPAT power modeling
 if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/cacti/CMakeLists.txt")
     message(FATAL_ERROR "CACTI 7.0 not found at external/cacti/. "
-        "All external models are mandatory — check your git submodules.")
+        "All external models are mandatory -- check your git submodules.")
 endif()
 message(STATUS "  - CACTI 7.0 SRAM/DRAM array analyzer")
 add_subdirectory(external/cacti)
@@ -99,7 +99,7 @@ set(HAVE_CACTI7 ON)
 # NVSim for NVM modeling (namespaced to avoid CACTI symbol collision)
 if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/nvsim/CMakeLists.txt")
     message(FATAL_ERROR "NVSim not found at external/nvsim/. "
-        "All external models are mandatory — check your git submodules.")
+        "All external models are mandatory -- check your git submodules.")
 endif()
 message(STATUS "  - NVSim NVM analyzer (namespaced)")
 add_subdirectory(external/nvsim)
@@ -109,7 +109,7 @@ set(HAVE_NVSIM ON)
 # McPAT for power modeling (using CACTI 7.0)
 if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/mcpat/CMakeLists.txt")
     message(FATAL_ERROR "McPAT not found at external/mcpat/. "
-        "All external models are mandatory — check your git submodules.")
+        "All external models are mandatory -- check your git submodules.")
 endif()
 message(STATUS "  - McPAT power analyzer (using CACTI 7)")
 add_subdirectory(external/mcpat)
@@ -119,7 +119,7 @@ set(HAVE_MCPAT ON)
 # Garnet NoC simulator (extracted from gem5)
 if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/garnet/CMakeLists.txt")
     message(FATAL_ERROR "Garnet not found at external/garnet/. "
-        "All external models are mandatory — check your git submodules.")
+        "All external models are mandatory -- check your git submodules.")
 endif()
 message(STATUS "  - Garnet NoC simulator (extracted from gem5)")
 add_subdirectory(external/garnet)
@@ -215,13 +215,13 @@ set(PIMID_SOURCES
     src/power/power_model.cpp
     src/power/mcpat_model.cpp
     src/power/mcpat_wrapper.cpp
-    src/power/cacti_io_wrapper.cpp   # 1.11.40: CACTI-IO harness (audit E19/link scope)
+    src/power/cacti_io_wrapper.cpp   # 1.11.40: CACTI-IO harness (scope)
 
     # Model registry - NEW PATH
     src/model_registry.cpp
 
     # 1.12.26: address translation (PEPlacementManager, AddressTranslator, pe_statistics) and the four PE
-    # schedulers are removed: no simulator code ever constructed them (user ruling 2026-10-24).
+    # schedulers are removed: no simulator code ever constructed them.
 
     # Instrumentation (PIMID API for workloads)
     src/instrumentation/pimid_api.cpp
@@ -302,7 +302,7 @@ if(BUILD_PLUGINS)
     )
 endif()
 
-# libpimid_mpi — thread-based MPI library for unified PIM simulation
+# libpimid_mpi -- thread-based MPI library for unified PIM simulation
 # LD_PRELOAD this into ZSim to run N MPI ranks as threads in one process.
 # Magic ops inject NoC + hierarchy timing per MPI message.
 # It runs inside the guest (the measured region), so the build installs PIMID's
@@ -356,7 +356,7 @@ target_link_libraries(nvsim_warm pimid_lib)
 target_link_libraries(pimid pimid_lib)
 if(BUILD_PLUGINS)
     target_link_libraries(pimid pimid_plugin)
-    # 1.11.91 (item 13): main.cpp checks the linked plugin's version stamp
+    # 1.11.91: main.cpp checks the linked plugin's version stamp
     # only when the plugin is actually linked (checkLinkedPluginOnce).
     target_compile_definitions(pimid PRIVATE PIMID_LINKED_PLUGIN=1)
 endif()

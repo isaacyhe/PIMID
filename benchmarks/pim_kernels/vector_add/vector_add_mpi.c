@@ -1,4 +1,4 @@
-/* vector_add_mpi.c — Vector Addition: c[i] = a[i] + b[i]
+/* vector_add_mpi.c -- Vector Addition: c[i] = a[i] + b[i]
  * MPI domain decomposition. Each rank processes N/nprocs elements. */
 #include <stdio.h>
 #include <stdlib.h>

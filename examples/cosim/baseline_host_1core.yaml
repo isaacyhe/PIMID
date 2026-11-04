@@ -1,21 +1,22 @@
-# Host-only baseline: 1 OOO host core (co-sim 1.7 fig5 baseline cell).
+# Host-only baseline: 1 OOO host core (the host baseline of the paper's
+# co-simulation experiment).
 #
-# This is a system-scope config run under PIMID_COSIM_NO_OFFLOAD=1: the ROI/
-# WORK magic ops become STAT-ONLY (no device migration, no transfer charged),
-# so the unmodified OMP/MPI kernel runs on the host OOO core(s) end to end
-# against the host memory technology. The device block below is REQUIRED by
-# the system-scope parser ("a host must be accompanied by at least one memory
-# device") but is INERT under the knob -- no thread ever migrates to it.
+# A co-simulation config run under PIMID_COSIM_NO_OFFLOAD=1: the ROI/WORK magic
+# ops become statistics markers only (no device migration, no transfer charged),
+# so the unmodified OMP/MPI kernel runs on the host OOO core(s) end to end against
+# the host memory technology. The device block below is required by the
+# configuration ("a host must be accompanied by at least one memory
+# device") but is inert under the knob -- no thread migrates to it.
 #
-# The sweep runner overrides memory.technology per cell (host tech = device
-# tech of the paired co-sim cell -- no host-tech confound). DDR5 is a
+# The experiment sets memory.technology per cell (host tech = device tech of
+# the paired co-simulation cell -- no host-tech confound). DDR5 is a
 # placeholder default only.
 #
 # Run with:
-#   PIMID_COSIM_NO_OFFLOAD=1 ./build/pimid --method exec --scope system \
+#   PIMID_COSIM_NO_OFFLOAD=1 ./build/pimid --method exec \
 #       --config examples/cosim/baseline_host_1core.yaml \
-#       --workload benchmarks/pim_kernels/gemv/gemv_omp \
-#       --workload-type openmp --size 512
+#       --workload benchmarks/pim_kernels/gemv/gemv_omp --size 512 \
+#       --workload-type openmp
 #
 # 1 core = no host fabric (a crossbar is degenerate at a single core); the
 # core-to-memory path is the calibrated analytic memory latency.
@@ -32,7 +33,7 @@ system:
         l1i_kb: 32
         l2_kb: 256
       memory:
-        technology: DDR5      # sweep runner overrides per cell
+        technology: DDR5      # set per cell by the experiment
 
   devices:
     - name: device

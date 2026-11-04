@@ -42,7 +42,7 @@ STTMRAMModel::STTMRAMModel(const std::string& config_path)
     mram_config_.banks = 8;
     mram_config_.read_write_ports = 1;
     mram_config_.tech_node_nm = 22;
-    /* 1.11.56 (audit D054): nanoseconds, not cycles. Placeholders that the
+    /* 1.11.56: nanoseconds, not cycles. Placeholders that the
      * NVSim path overwrites on every reachable run; the model refuses when
      * that binding fails, so they never reach a result. */
     mram_config_.read_latency_ns = 5.0;    // ns (fast read)
@@ -125,7 +125,7 @@ void STTMRAMModel::initialize() {
               << mram_arch_->timing.inner_bank.source << std::endl;
 
     // Use architecture energy values as defaults (may have been extracted from NVSim)
-    /* 1.11.58 (audit D022/D043, the gated unit change memory_model.h asked
+    /* 1.11.58 (the gated unit change memory_model.h asked
      * for): this member is NANOJOULES PER ACCESS, the contract's unit.
      *
      * It used to hold two different quantities depending on which path ran.
@@ -146,14 +146,14 @@ void STTMRAMModel::initialize() {
     std::cout << "  Capacity: " << (mram_config_.capacity / (1024.0 * 1024)) << " MB" << std::endl;
     std::cout << "  Banks: " << mram_config_.banks << std::endl;
     std::cout << "  Technology: " << mram_config_.tech_node_nm << " nm" << std::endl;
-    /* 1.11.56 (audit D054): printed as NANOSECONDS, which is what NVSim
+    /* 1.11.56: printed as NANOSECONDS, which is what NVSim
      * reported and what these fields hold. They were labelled "cycles" while
      * carrying a 1 GHz product, so the number was right only at 1 GHz. */
     std::cout << "  Read Latency: " << mram_config_.read_latency_ns << " ns" << std::endl;
     std::cout << "  Write Latency: " << mram_config_.write_latency_ns << " ns" << std::endl;
     std::cout << "  Endurance: " << mram_config_.endurance << " writes" << std::endl;
     std::cout << "  PIM Enabled: " << (mram_config_.is_pim_enabled ? "Yes" : "No") << std::endl;
-    /* 1.11.60 (audit round 4, C001): nJ PER ACCESS, which is what the two
+    /* 1.11.60: nJ PER ACCESS, which is what the two
      * assignments seventeen lines above this actually produce. 1.11.58 re-based
      * the members from pJ/byte to nJ/access and did not move the labels here,
      * so the printed number was 15.6x below the pJ/byte it claimed at the
@@ -234,7 +234,7 @@ void STTMRAMModel::loadConfig(const std::string& config_path) {
     std::cout << "[STTMRAMModel] Configuration loaded successfully" << std::endl;
 }
 
-/* 1.11.56 (audit D054): THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
+/* 1.11.56: THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
  *
  * MemoryModel's legacy access()/getLatency() return Cycle, and this model is
  * handed no clock -- the simulator drives it through getTierLatencyNs(), which
@@ -249,7 +249,7 @@ static inline Cycle legacyNsAsCycles(double ns) {
     return static_cast<Cycle>(std::ceil(ns));   // 1 GHz: no clock is supplied
 }
 
-/* 1.11.60 (audit round 4, C001): READ THE PARAGRAPH BELOW AS HISTORY, NOT AS
+/* 1.11.60: READ THE PARAGRAPH BELOW AS HISTORY, NOT AS
  * A STATEMENT OF THE PRESENT UNIT. It was written at 1.11.57 and it was true
  * then; 1.11.58 re-based read_energy_/write_energy_ to NANOJOULES PER ACCESS
  * at assignment (see the note beside the assignments in initialize()), and
@@ -354,7 +354,7 @@ void STTMRAMModel::tick() {
 
 Cycle STTMRAMModel::getLatency(MemoryRequestType type) const {
     switch (type) {
-        // 1.11.56 (audit D054): see legacyNsAsCycles above.
+        // 1.11.56: see legacyNsAsCycles above.
         case MemoryRequestType::READ:
             return legacyNsAsCycles(mram_config_.read_latency_ns);
         case MemoryRequestType::WRITE:
@@ -368,7 +368,7 @@ Cycle STTMRAMModel::getLatency(MemoryRequestType type) const {
 }
 
 double STTMRAMModel::getTotalEnergy() const {
-    /* 1.11.58 (audit D022/D043): NANOJOULES, as MemoryModel documents.
+    /* 1.11.58: NANOJOULES, as MemoryModel documents.
      *
      * Two errors lived on these three lines. The dynamic term multiplied a
      * pJ/byte density by an access count and called the product picojoules
@@ -415,7 +415,7 @@ void STTMRAMModel::printStats() const {
     std::cout << "  Chip Write: " << getChipWriteLatency() << " ns" << std::endl;
 
     std::cout << "\nEnergy Consumption:" << std::endl;
-    /* 1.11.60 (audit round 4, C002): THE SECOND MULTIPLY IS GONE.
+    /* 1.11.60: THE SECOND MULTIPLY IS GONE.
      *
      * These lines multiplied read_energy_/write_energy_ by bytes-per-access.
      * That was right at 1.11.57, when the members were an energy DENSITY;
@@ -432,7 +432,7 @@ void STTMRAMModel::printStats() const {
      * product was 0 x wrong.
      *
      * The per-access figures are now the members themselves, and the per-byte
-     * line is DERIVED from them rather than being the stored quantity, so the
+     * line is derived from them rather than being the stored quantity, so the
      * two can no longer drift apart again. */
     const double bpa = bytesPerAccess(access_width_bits_);
     std::cout << "  Access Width: " << (bpa * 8.0) << " bits (" << bpa << " B)" << std::endl;
@@ -510,7 +510,7 @@ void STTMRAMModel::initializeNVSim() {
             leakage_power_ = nvsim_wrapper_->getLeakagePower() / 1000.0;  // mW to W
             area_mm2_ = nvsim_wrapper_->getArea();
 
-            /* 1.11.56 (audit D054): NVSim reports SECONDS. Carry them as
+            /* 1.11.56: NVSim reports SECONDS. Carry them as
              * nanoseconds. The old code multiplied by a hardcoded 1 GHz and
              * stored the product in a field the printout labelled "cycles", so
              * a run at 2 GHz reported half the cycles it would really spend.
@@ -683,7 +683,7 @@ uint64_t STTMRAMModel::getBandwidth() const {
     static bool announced = false;
     if (!announced) {
         announced = true;
-        std::cerr << "[STTMRAMModel] getBandwidth() returns 0 = NOT SOURCED. This model "
+        std::cerr << "[STTMRAMModel] getBandwidth() returns 0 (no sourced value). This model "
                      "characterizes latency, energy and area through its tool; "
                      "it has no sustained-bandwidth model, and the literal that "
                      "used to stand here (capacity_ / 100) was fabricated. Compose a "

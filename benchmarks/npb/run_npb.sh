@@ -24,7 +24,7 @@ for yaml in "$SCRIPT_DIR"/configs/*.yaml; do
     fi
     echo -n "RUN  $name... "
     outdir=$(mktemp -d /tmp/pimid_npb_XXXXXX)
-    # 1.11.94 (b03-suites-b-1, ruling H42): pimid has no --output option; it
+    # 1.11.94: pimid has no --output option; it
     # rejected the flag ('Unknown option: --output', rc=1), so every run failed.
     # pimid's own exit status decides PASS; its output goes to $outdir.
     if $PIMID_BIN --method exec --config "$yaml" --no-power \

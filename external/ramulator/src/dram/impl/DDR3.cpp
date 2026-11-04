@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -92,7 +92,7 @@ class DDR3 : public IDRAM, public Implementation {
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
       //   name       rate    nBL  nCL  nRCD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCD  nRRD  nWTR  nFAW  nRFC nREFI  nCS  tCK_ps
       {"DDR3_800D",   {800,    4,   5,   5,    5,    15,  20,    6,   4,   5,    4,   -1,    4,   -1,  -1,   -1,    2,  2500}},
-      /* 1.12.42 (user ruling 2026-10-25): DDR3_800E is 6-6-6, tRC 52.5 ns (JESD79-3E Table 62 p.159); the row was a
+      /* 1.12.42: DDR3_800E is 6-6-6, tRC 52.5 ns (JESD79-3E Table 62 p.159); the row was a
        * copy of DDR3_800D (5-5-5, nRC 20). */
       {"DDR3_800E",   {800,    4,   6,   6,    6,    15,  21,    6,   4,   5,    4,   -1,    4,   -1,  -1,   -1,    2,  2500}},
       {"DDR3_1066E",  {1066,   4,   6,   6,    6,    20,  26,    8,   4,   6,    4,   -1,    4,   -1,  -1,   -1,    2,  1876}},
@@ -152,7 +152,7 @@ class DDR3 : public IDRAM, public Implementation {
       }
     );
 
-    /* PIMID 1.12.18 (AA10): open-row / close-row requests as DDR4 defines them (ACT / PRE), so a row policy can close
+    /* PIMID 1.12.18: open-row / close-row requests as DDR4 defines them (ACT / PRE), so a row policy can close
      * a DDR3 row (the host adaptive open-page timeout); upstream DDR3 had neither request nor an ACT/PRE prerequisite */
     inline static constexpr ImplDef m_requests = {
       "read", "write", "all-bank-refresh", "open-row", "close-row",
@@ -161,7 +161,7 @@ class DDR3 : public IDRAM, public Implementation {
     inline static const ImplLUT m_request_translations = LUT (
       m_requests, m_commands, {
         {"read", "RD"}, {"write", "WR"}, {"all-bank-refresh", "REFab"},
-        {"open-row", "ACT"}, {"close-row", "PRE"}   // PIMID 1.12.18 (AA10)
+        {"open-row", "ACT"}, {"close-row", "PRE"}   // PIMID 1.12.18
       }
     );
 
@@ -204,7 +204,7 @@ class DDR3 : public IDRAM, public Implementation {
       Node(DDR3* dram, Node* parent, int level, int id) : DRAMNodeBase<DDR3>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -215,7 +215,7 @@ class DDR3 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
     };
 
@@ -230,7 +230,7 @@ class DDR3 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -238,7 +238,7 @@ class DDR3 : public IDRAM, public Implementation {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {
@@ -461,7 +461,7 @@ class DDR3 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the four tabulated ones, and that -1 then indexed
        * tRFC_TABLE. An out-of-bounds read one element BEFORE a table of
        * plausible nanosecond figures does not crash -- it yields whatever
@@ -584,8 +584,8 @@ class DDR3 : public IDRAM, public Implementation {
       // Bank actions
       m_preqs[m_levels["bank"]][m_commands["RD"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;
       m_preqs[m_levels["bank"]][m_commands["WR"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;
-      m_preqs[m_levels["bank"]][m_commands["ACT"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;    // PIMID 1.12.18 (AA10), as DDR4
-      m_preqs[m_levels["bank"]][m_commands["PRE"]] = Lambdas::Preq::Bank::RequireBankClosed<DDR3>;  // PIMID 1.12.18 (AA10), as DDR4
+      m_preqs[m_levels["bank"]][m_commands["ACT"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR3>;    // PIMID 1.12.18, as DDR4
+      m_preqs[m_levels["bank"]][m_commands["PRE"]] = Lambdas::Preq::Bank::RequireBankClosed<DDR3>;  // PIMID 1.12.18, as DDR4
     };
 
     void set_rowhits() {

@@ -1,4 +1,4 @@
-/* stream_triad_mpi.c — STREAM Triad: a[i] = b[i] + scalar * c[i]
+/* stream_triad_mpi.c -- STREAM Triad: a[i] = b[i] + scalar * c[i]
  * MPI domain decomposition. Each rank processes N/nprocs elements. */
 #include <stdio.h>
 #include <stdlib.h>

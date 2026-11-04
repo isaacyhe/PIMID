@@ -1,4 +1,4 @@
-/* dram_epoch_replay.cpp -- 1.11.98 (ruling 4 (c)): see the header. */
+/* dram_epoch_replay.cpp -- 1.11.98: see the header. */
 #ifdef _WITH_RAMULATOR_
 #include "base/base.h"
 #include "base/request.h"
@@ -11,7 +11,7 @@
 #include "dram_epoch_replay.h"
 #include "hierarchy_util.h"
 #include "core.h"
-#include "pe_memory_interface.h"   // 1.12.18 (R0605): the interfaces' stamp, epoch and cut helpers, reused for the host
+#include "pe_memory_interface.h"   // 1.12.18: the interfaces' stamp, epoch and cut helpers, reused for the host
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -108,15 +108,15 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     ovA_.reset(new std::atomic<double>[kRecCores]); for (uint32_t k = 0; k < kRecCores; k++) ovA_[k].store(1.0);
     syncP_.reset(new std::atomic<uint8_t>[kRecCores]); for (uint32_t k = 0; k < kRecCores; k++) syncP_[k].store(0);   // (1.12.189)
     seqA_.reset(new uint64_t[kRecCores]()); maxS_.reset(new uint64_t[kRecCores]());   // (1.12.216): see settleMark
-    hostOnly_ = hostOnly;   // 1.12.18 (R0605)
+    hostOnly_ = hostOnly;   // 1.12.18
     {   /* 1.12.17: message passing (thread-MPI) replays in cut mode */
         const char* r = getenv("PIMID_MPI_RANKS");
         cutMode_ = (r && atoi(r) > 1 && !getenv("PIMID_MPI_RANK"));
-        if (PEMemoryInterface::singleProcCut()) cutMode_ = true;   // 1.12.18 (ruling 2026-10-24): single-process runs too
+        if (PEMemoryInterface::singleProcCut()) cutMode_ = true;   // 1.12.18: single-process runs too
         mpiHost_ = cutMode_ && PEMemoryInterface::mpiThreadDetPricing();   // (1.12.153): see mpiHost_
     }
     YAML::Node config = YAML::LoadFile(configFile);
-    /* 1.11.98 (gate 1208A): ONE instance for the whole DEVICE. The device's
+    /* 1.11.98: ONE instance for the whole DEVICE. The device's
      * Ramulator YAML (written for one controller per channel) declares one
      * channel; the replay sets the device's channel count and the hierarchy's
      * ranks per channel, and a linear mapper it can invert exactly
@@ -125,14 +125,14 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
      * line address against the one-channel organisation put the whole
      * device's traffic on channel 0, on banks chosen by address bits. */
     const std::string dimpl = config["MemorySystem"]["DRAM"]["impl"].as<std::string>("");
-    /* 1.12.18 (ruling 17 / R0605): a hostOnly instance is the decoupled host
+    /* 1.12.18: a hostOnly instance is the decoupled host
      * memory: its own channel count, one rank (the population the host array's
      * energy is priced at, decoupledHostChannels / 1 rank), and the YAML's own
      * address mapper; no device hierarchy, no PE placement. */
     const uint32_t nch = hostOnly_ ? std::max(1u, hostChannels)
                                    : ((zinfo->hierarchy.dramChannels > 0) ? zinfo->hierarchy.dramChannels : 1);
     const bool hasRankLevel = (dimpl == "DDR3" || dimpl == "DDR4" || dimpl == "DDR5" || dimpl == "LPDDR5");
-    {   /* 1.12.18 (user ruling 2026-10-24): per-chip bank state for chip-level PE placement */
+    {   /* 1.12.18: per-chip bank state for chip-level PE placement */
         const uint32_t cpr0 = zinfo->hierarchy.chipsPerRank, plv0 = zinfo->hierarchy.placementLevel;
         chipSplit_ = !hostOnly_ && hasRankLevel && cpr0 > 1 && plv0 <= 3 && !(nch > 1 && cpr0 == nch);
         chips_ = chipSplit_ ? cpr0 : 1;
@@ -234,8 +234,8 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         const uint32_t cpr = zinfo->hierarchy.chipsPerRank;
         foldedChannels_ = !hostOnly_ && (nch > 1 && cpr == nch);
         perChan_.assign((size_t)std::max(1, counts_[0]), 0);
-        if (hostOnly_) {   // 1.12.18 (R0605)
-            info("[mem] %s: host memory replay organisation %s, %d channel(s), %lu banks per channel, address mapper %s (the YAML's own), %u B per column access [1.12.18 ruling 17]",
+        if (hostOnly_) {   // 1.12.18
+            info("[mem] %s: host memory replay organisation %s, %d channel(s), %lu banks per channel, address mapper %s (the YAML's own), %u B per column access [1.12.18]",
                  name, dimpl.c_str(), counts_[0], (unsigned long)banksPerChannel_,
                  config["MemorySystem"]["AddrMapper"]["impl"].as<std::string>("").c_str(), 1u << txBits_);
         } else {
@@ -248,7 +248,7 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
              name, dimpl.c_str(), counts_[0], (unsigned long)banksPerChannel_, (unsigned long)pimidBanks, 1u << txBits_,
              (pimidBanks != banksPerChannel_) ? " -- MISMATCH: bank indices wrap modulo the Ramulator count" : "");
         if (chipSplit_)
-            info("[mem] %s: 1.12.18 (user ruling 2026-10-24): PE placement at the chip tier or below -- each of the %u chips of a rank is its own Ramulator rank "
+            info("[mem] %s: 1.12.18: PE placement at the chip tier or below -- each of the %u chips of a rank is its own Ramulator rank "
                  "(own bank state, rows, tRRD/tFAW; PE commands from the in-chip controller, no DIMM CA bus); a host request is replayed on all %u chips in "
                  "lock step (copy 0 counted, the others timed and state-changing), completes with its slowest copy, and obeys the channel's CA bus",
                  name, chips_, chips_);
@@ -259,14 +259,14 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
     if (!(tck > 0.0) || !(corePeriodNs > 0.0))
         panic("DramEpochReplay %s: no DRAM clock (tCK %.3f ns, core %.3f ns)", name, tck, corePeriodNs);
     ticksPerCycle_ = corePeriodNs / tck;
-    coreFreqHz_ = coreFreqHz; tckNs_ = tck;   // 1.12.18 (R2): the run time's clock may be another node's
-    miRd_.assign(numMIs_, nullptr); miWr_.assign(numMIs_, nullptr);   // 1.12.18 (R1)
+    coreFreqHz_ = coreFreqHz; tckNs_ = tck;   // 1.12.18: the run time's clock may be another node's
+    miRd_.assign(numMIs_, nullptr); miWr_.assign(numMIs_, nullptr);   // 1.12.18
     miPriced_.assign(numMIs_, nullptr); miChgLat_.assign(numMIs_, nullptr);   // (1.12.153)
     outPriced_.assign(numMIs_, 0); outChgLat_.assign(numMIs_, 0); outPricedApplied_.assign(numMIs_, 0); outChgLatApplied_.assign(numMIs_, 0);
     outRd_.assign(numMIs_, 0); outWr_.assign(numMIs_, 0); outRdApplied_.assign(numMIs_, 0); outWrApplied_.assign(numMIs_, 0);
     sumLat_.assign(numMIs_, 0); cntLat_.assign(numMIs_, 0);
     lastValue_.assign(kPriceKinds * (size_t)numMIs_, 0);   // (1.12.189): a price slot per interface and kind
-    miTicksPerCycle_.assign(numMIs_, ticksPerCycle_);   // 1.12.18 (R0605): host interfaces carry their own clock
+    miTicksPerCycle_.assign(numMIs_, ticksPerCycle_);   // 1.12.18: host interfaces carry their own clock
     /* (1.12.144): the per-channel replay (see Chan in the header). Only for DDR5, the organisation it was validated on: a
      * DDR5 channel is a separate DIMM sub-channel with its own chips, so a one-channel instance keeps every chip's
      * density and organisation. A GDDR6 device holds both channels on one die (its density counts them), and other
@@ -292,14 +292,14 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
         }
         info("[mem] %s: the two channels are replayed on two host threads, one Ramulator2 instance each [(1.12.144): host speed]", name);
     }
-    info("[mem] %s: DRAM epoch replay armed: Ramulator2 from %s, tCK %.4f ns = %.4f DRAM cycles per core cycle, %u interfaces, %u column commands per line [1.11.98 ruling 4 (c)]",
+    info("[mem] %s: DRAM epoch replay armed: Ramulator2 from %s, tCK %.4f ns = %.4f DRAM cycles per core cycle, %u interfaces, %u column commands per line [1.11.98]",
          name, configFile.c_str(), tck, ticksPerCycle_, numMIs_, burstsPerLine_);
 }
 
 DramEpochReplay::~DramEpochReplay() {}
 
 uint32_t DramEpochReplay::addHostInterface(uint64_t hostFreqHz) {
-    /* 1.12.18 (ruling 17 / R0605): see the header. The interface's latency is
+    /* 1.12.18: see the header. The interface's latency is
      * measured in DRAM ticks and returned in its own (host) cycles. */
     const double tck = sys_->get_tCK();
     const double tpc = (hostFreqHz > 0 && tck > 0.0) ? (1e9 / (double)hostFreqHz) / tck : 0.0;
@@ -311,24 +311,24 @@ uint32_t DramEpochReplay::addHostInterface(uint64_t hostFreqHz) {
     hostMis_++;
     sumLat_.push_back(0); cntLat_.push_back(0); for (uint32_t k = 0; k < kPriceKinds; k++) lastValue_.push_back(0);   // (1.12.189): its price slots
     miTicksPerCycle_.push_back(tpc);
-    miRd_.push_back(nullptr); miWr_.push_back(nullptr);   // 1.12.18 (R1)
+    miRd_.push_back(nullptr); miWr_.push_back(nullptr);   // 1.12.18
     miPriced_.push_back(nullptr); miChgLat_.push_back(nullptr);   // (1.12.153)
     outPriced_.push_back(0); outChgLat_.push_back(0); outPricedApplied_.push_back(0); outChgLatApplied_.push_back(0);
     outRd_.push_back(0); outWr_.push_back(0); outRdApplied_.push_back(0); outWrApplied_.push_back(0);
     futex_unlock(&lock_);
-    info("[mem] %s: host memory interface %u joined the replay (%s): host clock %.1f MHz = %.4f DRAM cycles per host cycle; its requests carry source_id 1 and the controller splits their row hits/misses/conflicts and activates [1.12.18 ruling 17]",
+    info("[mem] %s: host memory interface %u joined the replay (%s): host clock %.1f MHz = %.4f DRAM cycles per host cycle; its requests carry source_id 1 and the controller splits their row hits/misses/conflicts and activates [1.12.18]",
          name_.c_str(), mi, hostOnly_ ? "host-only instance" : "the device's instance: the shared array, interfaces after the device's",
          (double)hostFreqHz / 1e6, tpc);
     return mi;
 }
 
-void DramEpochReplay::bindCounters(uint32_t mi, Counter* rd, Counter* wr, Counter* priced, Counter* chargedLat) {   // 1.12.18 (R1)
+void DramEpochReplay::bindCounters(uint32_t mi, Counter* rd, Counter* wr, Counter* priced, Counter* chargedLat) {   // 1.12.18
     futex_lock(&lock_);
     if (mi < numMIs_) { miRd_[mi] = rd; miWr_[mi] = wr; miPriced_[mi] = priced; miChgLat_[mi] = chargedLat; }
     futex_unlock(&lock_);
 }
 
-/* 1.12.18 (user ruling R1 2026-10-24): take the requests found outside the
+/* 1.12.18: take the requests found outside the
  * ROI out of the bound interface counters (the rd/wr the power model and
  * McPAT read), once each; finalize runs at every statistics dump. */
 void DramEpochReplay::applyOutside() {
@@ -345,8 +345,8 @@ void DramEpochReplay::applyOutside() {
 
 void DramEpochReplay::initStats(AggregateStat* parentStat) {
     AggregateStat* s = new AggregateStat();
-    s->init(name_.c_str(), hostOnly_ ? "DRAM epoch replay (1.12.18 ruling 17): the decoupled host memory's controller replayed per epoch"
-                                     : "DRAM epoch replay (ruling 4 (c)): the device controller replayed per epoch");
+    s->init(name_.c_str(), hostOnly_ ? "DRAM epoch replay (1.12.18): the decoupled host memory's controller replayed per epoch"
+                                     : "DRAM epoch replay: the device controller replayed per epoch");
     profRequests_.init("ctrlRequests", "Device DRAM requests replayed through the controller"); s->append(&profRequests_);
     profEpochs_.init("epochs", "Epochs replayed"); s->append(&profEpochs_);
     profReads_.init("reads", "Replayed reads"); s->append(&profReads_);
@@ -356,14 +356,14 @@ void DramEpochReplay::initStats(AggregateStat* parentStat) {
     profRowHits_.init("ctrlRowHits", "Controller row hits (Ramulator2 totals over the replayed run; 1.12.18: the device interfaces only when host interfaces joined, see hostRow*)"); s->append(&profRowHits_);
     profRowMisses_.init("ctrlRowMisses", "Controller row misses (a closed bank)"); s->append(&profRowMisses_);
     profRowConflicts_.init("ctrlRowConflicts", "Controller row conflicts (another row open: precharge + activate)"); s->append(&profRowConflicts_);
-    profRefreshes_.init("ctrlRefreshes", "Refresh commands the controller issued over the replayed run (row 28: measured background)"); s->append(&profRefreshes_);
+    profRefreshes_.init("ctrlRefreshes", "Refresh commands the controller issued over the replayed run (measured background)"); s->append(&profRefreshes_);
     if (pdOn_) {   // 1.12.19
         profPdCycles_.init("ctrlPdUnitCycles", "Replayed DRAM cycles x power-down units spent in precharge power-down (ROI window)"); s->append(&profPdCycles_);
         profPdUnits_.init("ctrlPdUnits", "Power-down units (ranks, or channels without a rank level) of the replayed controller"); s->append(&profPdUnits_);
         profPdExits_.init("ctrlPdExits", "Power-down exits in the ROI window (each delays the next command by tXP)"); s->append(&profPdExits_);
     }
     profTicks_.init("ctrlTicks", "DRAM clock cycles the controller was replayed for"); s->append(&profTicks_);
-    profIdleTicks_.init("ctrlIdleTicks", "Replayed DRAM cycles with no request in flight (row 28: measured idle)"); s->append(&profIdleTicks_);
+    profIdleTicks_.init("ctrlIdleTicks", "Replayed DRAM cycles with no request in flight (measured idle)"); s->append(&profIdleTicks_);
     profChannelsUsed_.init("ctrlChannelsUsed", "Channels of the device that received replayed requests"); s->append(&profChannelsUsed_);
     profMaxChanPermille_.init("ctrlMaxChannelPermille", "The busiest channel's share of the replayed requests (per mille)"); s->append(&profMaxChanPermille_);
     profPriced_.init("priced", "Interface accesses priced at the previous epoch's replayed service latency"); s->append(&profPriced_);
@@ -379,10 +379,10 @@ void DramEpochReplay::initStats(AggregateStat* parentStat) {
     profActivates_.init("ctrlActivates", "ACT commands the replayed controller issued (ROI; refresh-forced re-opens included; 1.12.18: the device interfaces only, see hostActivates)"); s->append(&profActivates_);   // 1.12.18
     if (sys_) { uint64_t w = 0, o = 0; bankTracked_ = sys_->pimid_bank_open_totals(w, o); }   // 1.12.18
     if (bankTracked_) {
-        profBankOpenCycles_.init("bankOpenCycles", "Replayed DRAM cycles x units with a bank open (ROI; ruling R8-7 b / 4 c)"); s->append(&profBankOpenCycles_);
+        profBankOpenCycles_.init("bankOpenCycles", "Replayed DRAM cycles x units with a bank open (ROI; b / 4 c)"); s->append(&profBankOpenCycles_);
         profBankOpenWindow_.init("bankOpenWindow", "Replayed DRAM cycles x units sampled (the window bankOpenCycles is a fraction of)"); s->append(&profBankOpenWindow_);
     }
-    /* 1.12.18 (user ruling R1 2026-10-24) */
+    /* 1.12.18 */
     profORequests_.init("outsideRequests", "Device requests stamped after the ROI end: replayed (controller state), NOT priced, not in any count above"); s->append(&profORequests_);
     profOReads_.init("outsideReads", "Device reads stamped after the ROI end (not priced)"); s->append(&profOReads_);
     profOWrites_.init("outsideWrites", "Device writes stamped after the ROI end (not priced)"); s->append(&profOWrites_);
@@ -393,7 +393,7 @@ void DramEpochReplay::initStats(AggregateStat* parentStat) {
     profOHostReads_.init("outsideHostReads", "Host reads stamped after the ROI end (not priced)"); s->append(&profOHostReads_);
     profOHostWrites_.init("outsideHostWrites", "Host writes stamped after the ROI end (not priced)"); s->append(&profOHostWrites_);
     profOHostActivates_.init("outsideHostActivates", "ACT commands issued for host requests outside the ROI (not priced)"); s->append(&profOHostActivates_);
-    if (hostMis_ > 0) {   // 1.12.18 (ruling 17 / R0605)
+    if (hostMis_ > 0) {   // 1.12.18
         profHRequests_.init("hostRequests", "Host DRAM requests replayed through the controller (the ctrl* request/row/activate counters above exclude them)"); s->append(&profHRequests_);
         profHReads_.init("hostReads", "Replayed host reads"); s->append(&profHReads_);
         profHWrites_.init("hostWrites", "Replayed host writes (dirty writebacks)"); s->append(&profHWrites_);
@@ -551,7 +551,7 @@ void DramEpochReplay::pfApply(uint32_t core, int64_t corr) {
 }
 
 uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cycle, uint32_t srcId, bool isWrite, bool adjustedClock) {
-    /* 1.12.18 (ruling 17 / R0605): the host twin of the interface hook in
+    /* 1.12.18: the host twin of the interface hook in
      * PEMemoryInterface::localAccessLatency -- the same epoch key, stamp axis,
      * cut discipline and read lag, so a host record and a device record of
      * one phase sit on one axis. The stamp is the zsim phase grid, the one
@@ -566,7 +566,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
         panic("DramEpochReplay %s: cut mode %d disagrees with the pricing mode %d (host interface)",
               name_.c_str(), (int)cutMode_, (int)detMpi);
     if (cutMode_ && !zinfo->hierarchy.mpiNocBaselined) { rawHBoot_.fetch_add(1, std::memory_order_relaxed); return 0; }
-    const uint32_t E = epochPhases();   // (1.12.145, ruling 2026-10-28): the replay's own epoch
+    const uint32_t E = epochPhases();   // (1.12.145): the replay's own epoch
     uint64_t epoch, stamp;
     if (cutMode_) {
         const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -582,7 +582,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
          * core's intra-phase offset): the axis the shared-memory replay puts
          * host records on, here shifted to the ROI origin. */
         const bool based = srcId < zinfo->numCores && zinfo->cores[srcId] && zinfo->cores[srcId]->getRoiBaseCycle() > 0;
-        /* 1.12.18 (R2, B3): a host core keeps no roiBaseCycle of its own
+        /* 1.12.18: a host core keeps no roiBaseCycle of its own
          * (OOOCore/InOrderCore do not export it), but the ROI baseline
          * snapshot (the first ROI barrier) recorded its wall-free clock
          * (Core::getCycles()); the stamp is that clock relative to it (a
@@ -599,7 +599,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
         const uint64_t* hb = zinfo->hierarchy.mpiRoiBaseCyc;
         const bool hostBased = !based && hb && srcId < zinfo->numCores && srcId < zinfo->hierarchy.mpiRoiBaseCycN && zinfo->cores[srcId];
         if (devRequesters_) {
-            /* (1.12.147, user ruling 2026-10-28): a device element at the host
+            /* (1.12.147): a device element at the host
              * memory controller (HOST_MC): the device interfaces' stamp and
              * ROI-end note (PEMemoryInterface::localAccessLatency) */
             stamp = PEMemoryInterface::cutRoiRel(srcId, cycle);
@@ -660,7 +660,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
             uint32_t unit = 0, slot = 0; uint64_t row = 0;
             hostTarget_(lineAddr, unit, slot, row);
             if (chipSplit_) {
-                /* 1.12.18 (user ruling 2026-10-24): a host access drives every chip of the rank in lock step:
+                /* 1.12.18: a host access drives every chip of the rank in lock step:
                  * its row is chips_ x the per-chip row (the PE row model's stripe is one chip's page), the same
                  * bank and row in every chip. (1.12.151): sent ONCE, at chip 0's address; the controller
                  * (pimid_lockstep_chips) drives the rank's chips with it -- one queue entry, one rank-wide command
@@ -698,7 +698,7 @@ uint32_t DramEpochReplay::serviceLatency(uint32_t mi, uint64_t curEpoch, bool wr
     auto it = frozen_.find(curEpoch - 1);
     if (it != frozen_.end() && sl < it->second.size()) v = it->second[sl];
     else if (it == frozen_.end()) v = partialMean(curEpoch - 1, sl);   // 1.12.18: still in flight
-    /* 1.11.98 (gate 1208B): an interface with no access in the previous epoch
+    /* 1.11.98: an interface with no access in the previous epoch
      * keeps the last service latency the replay measured for it (bursty
      * interfaces otherwise fell back to the analytical service every other
      * epoch); the analytical bootstrap only before its first replayed value. */
@@ -741,7 +741,7 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
     /* 1.12.18: epoch r fed but still in flight (drain the lag: its last
      * requests have not completed): the mean of its requests completed so
      * far, not an older final epoch's value */
-    /* (1.12.145, user ruling 2026-10-28): the newest epoch at or before r the controller has been fed, final or
+    /* (1.12.145): the newest epoch at or before r the controller has been fed, final or
      * not. When the cut trails (r not fed yet) and the newest fed epoch is still in flight, its aged partial
      * mean is newer than any final value; such a read used to fall back to an older final epoch or, when
      * none had finished, to the analytical bootstrap (16-core DDR5 pointer chase: 84 022 of 87 893 priced
@@ -765,7 +765,7 @@ uint32_t DramEpochReplay::serviceLatencyCut(uint32_t mi, uint64_t epoch, uint64_
         auto w = winCnt_.find(e0);
         n0 = (w != winCnt_.end() && sl < w->second.size()) ? w->second[sl] : 0;
     }
-    /* (1.12.153, user ruling 2026-10-28): the price window -- the request-weighted mean over the epoch read and the
+    /* (1.12.153): the price window -- the request-weighted mean over the epoch read and the
      * priceWindow() - 1 finalized epochs before it (an interface idle in the epoch read weighs its carried value
      * once) */
     const uint32_t W = priceWindow();
@@ -814,11 +814,11 @@ void DramEpochReplay::bankTotals() {
     if (sys_ && bankTracked_ && sys_->pimid_bank_open_totals(w, o)) { raw_.bankW = w; raw_.bankO = o; }
     if (sys_ && sys_->pimid_cmd_totals(a)) raw_.acts = a;   // 1.12.18
     if (pdOn_ && sys_) sys_->pimid_pd_totals(raw_.pdC, raw_.pdU, raw_.pdX);   // 1.12.19
-    uint64_t sh = 0, sm = 0, sc = 0, sa = 0;   // 1.12.18 (R0605): the host requests' share (source_id 1)
+    uint64_t sh = 0, sm = 0, sc = 0, sa = 0;   // 1.12.18: the host requests' share (source_id 1)
     if (sys_ && hostMis_ > 0 && sys_->pimid_src_totals(sh, sm, sc, sa)) {
         raw_.hhits = sh; raw_.hmisses = sm; raw_.hconflicts = sc; raw_.hacts = sa;
     }
-    uint64_t oh = 0, om = 0, oc = 0, oa = 0, oha = 0;   // 1.12.18 (R1): source_id 2/3, outside the ROI
+    uint64_t oh = 0, om = 0, oc = 0, oa = 0, oha = 0;   // 1.12.18: source_id 2/3, outside the ROI
     if (sys_ && sys_->pimid_out_totals(oh, om, oc, oa, oha)) {
         raw_.ohits = oh; raw_.omisses = om; raw_.oconflicts = oc; raw_.oacts = oa; raw_.ohacts = oha;
     }
@@ -839,7 +839,7 @@ void DramEpochReplay::tickOnce() {
     }
 }
 
-/* 1.12.18 (R2): DRAM ticks per cycle of the clock roiWall.mpiEnd is counted
+/* 1.12.18: DRAM ticks per cycle of the clock roiWall.mpiEnd is counted
  * in -- the rank cores' (the device PEs', or the host cores' of a no-offload
  * baseline). */
 double DramEpochReplay::runTicksPerCycle() const {
@@ -918,7 +918,7 @@ void DramEpochReplay::armClose(bool fromFinalize) {
             info("[mem] %s: replay window = the pricing window: run time %lu cycles raised to the busy max %lu (core clock of this replay)",
                  name_.c_str(), (unsigned long)zinfo->roiWall.mpiEnd, (unsigned long)busyCyc);
     } else if (cutMode_ && zinfo->roiWall.source == 1) {
-        /* 1.12.18 (ruling 2026-10-24): a single-process run in cut mode closes
+        /* 1.12.18: a single-process run in cut mode closes
          * at the pricing window (run time raised to the busy max, B4), counted
          * from the ROI's DRAM tick on the ROI-relative axis; armed at the dump
          * like phase mode (the busy counts are final there). */
@@ -1043,7 +1043,7 @@ void DramEpochReplay::tickTo(uint64_t tick) {
     while (curTick_ < tick) tickOnce();
 }
 
-/* 1.12.18 (user ruling 2026-10-24, "drain the lag"): each record issues at
+/* 1.12.18 (drain the lag): each record issues at
  * max(its own stamp, the instant its controller queue can take it). A full
  * queue holds the record at that queue's door -- FIFO per channel and
  * direction, so a read never waits behind a full write queue -- and the
@@ -1068,7 +1068,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
             Inflight& f = it->second;
             if (f.remaining > 1) { f.remaining--; return; }
             const uint64_t lat = (curTick_ + 1 > f.issueTick) ? (curTick_ + 1 - f.issueTick) : 1;
-            /* 1.12.18 (R0605): in the interface's own cycles (a host interface: host cycles) */
+            /* 1.12.18: in the interface's own cycles (a host interface: host cycles) */
             const double tpc = (f.mi < miTicksPerCycle_.size()) ? miTicksPerCycle_[f.mi] : ticksPerCycle_;
             uint64_t latCyc = (uint64_t)((double)lat / tpc + 0.5);
             const uint64_t ep = f.epoch;
@@ -1087,7 +1087,7 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
                     f.gated ? f.dmab : 0, f.seq);   // (1.12.189); (1.12.216): seq, and the wait behind the clock (late)
             if (!f.out && !f.posted && !f.accp) compNote(priceSlot(f.mi, f.wr, f.pfr), latCyc);   // (1.12.189)
             if (f.out && f.chg && !f.boot && f.mi < outPriced_.size()) { outPriced_[f.mi]++; outChgLat_[f.mi] += f.chg - std::min(f.chg, f.ref); }   // (1.12.153); (1.12.189): not a bootstrap charge; the charge after its refund
-            if (f.out) raw_.olat += latCyc;   // 1.12.18 (R1)
+            if (f.out) raw_.olat += latCyc;   // 1.12.18
             else if (isHostMi(f.mi)) {
                 raw_.hlat += latCyc;
                 if (!f.wr) raw_.hrlat += latCyc;   // (1.12.189)
@@ -1135,10 +1135,10 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
             if (a != acc_.end() && a->second.pend > 0 && --a->second.pend == 0 && a->second.fed) finalizeEpoch(ep);
         };
         if (!fe_->receive_external_requests(typeId, (Ramulator::Addr_t)(r.addr + w.b * step),
-                                            (isHostMi(r.mi) ? 1 : 0) + (w.out ? 2 : 0) + (r.shadow ? 3 : 0), cb))   /* 1.12.18: +3 = a lock-step shadow copy */   // 1.12.18 (R1): +2 = outside the ROI; (R0605): source_id 1 = host
+                                            (isHostMi(r.mi) ? 1 : 0) + (w.out ? 2 : 0) + (r.shadow ? 3 : 0), cb))   /* 1.12.18: +3 = a lock-step shadow copy */   // 1.12.18: +2 = outside the ROI; source_id 1 = host
             return false;   // the queue is full: the record waits at the door
         if (w.b == 0) {   // the request has entered the controller: in flight from now
-            /* (1.12.145, user ruling 2026-10-28): the latency is counted from the tick the record reached the
+            /* (1.12.145): the latency is counted from the tick the record reached the
              * door (its stamp, or later when the replay clock already stood past it). A request that waited
              * at a full queue's door was waiting for this controller; its latency used to start only when it
              * entered the queue, so the wait was charged to no core. */
@@ -1188,12 +1188,12 @@ bool DramEpochReplay::acceptOne(Waiting& w) {
                 doorRecs_++; doorTicks_ += d; if (d > doorMax_) doorMax_ = d;
             }
             if (r.shadow) { /* 1.12.18: a shadow copy is not a request of its own */ }
-            else if (w.out) {   // 1.12.18 (R1)
+            else if (w.out) {   // 1.12.18
                 if (isHostMi(r.mi)) { raw_.ohreq++; if (r.wr) raw_.ohwr++; else raw_.ohrd++; }
                 else { raw_.oreq++; if (r.wr) raw_.owr++; else raw_.ord++; }
                 if (r.mi < outRd_.size()) { if (r.wr) outWr_[r.mi]++; else outRd_[r.mi]++; }
             }
-            else if (isHostMi(r.mi)) { raw_.hreq++; if (r.wr) raw_.hwr++; else raw_.hrd++; }   // 1.12.18 (R0605)
+            else if (isHostMi(r.mi)) { raw_.hreq++; if (r.wr) raw_.hwr++; else raw_.hrd++; }   // 1.12.18
             else { raw_.req++; if (r.wr) raw_.wr++; else raw_.rd++; }
         }
     }
@@ -1213,7 +1213,7 @@ void DramEpochReplay::serveDoors() {
 uint32_t DramEpochReplay::partialMean(uint64_t e, uint32_t mi) {   // (1.12.189): mi = a price slot (priceSlot)
     auto a = acc_.find(e);
     if (a == acc_.end() || !a->second.fed || mi >= a->second.cnt.size()) return 0;
-    /* (1.12.145, user ruling 2026-10-28): the finished requests of an epoch in flight are its fast ones; the
+    /* (1.12.145): the finished requests of an epoch in flight are its fast ones; the
      * slow ones are still queued. Each unfinished request now counts at its age so far (a lower bound on
      * its latency): in the controller since it reached the door, or still waiting at the door. */
     PartialCache& pc = pcache_[e];
@@ -2084,7 +2084,7 @@ void DramEpochReplay::replayEpoch(uint64_t epoch) {
         const Rec& r = recs[i];
         uint64_t target = (uint64_t)((double)r.stamp * ticksPerCycle_);
         if (cutMode_) target += roiTick0_;   // 1.12.17: ROI-relative stamps start at the ROI's DRAM tick
-        /* 1.12.18 (user ruling R1 2026-10-24): a request stamped after the
+        /* 1.12.18: a request stamped after the
          * ROI end is replayed (the controller's state stays correct) but is
          * outside: source_id 2 (device) / 3 (host) in the controller, and in
          * none of the ROI counts, latencies or row/ACT totals. Judged on its
@@ -2419,7 +2419,7 @@ void DramEpochReplay::replayEpochPar(uint64_t epoch) {
         const int c = (&K == &chans_[0]) ? 0 : 1;
         for (ChanWork& cw : work[c]) {
             chanTickTo(K, cw.target);
-            cw.w.feed = K.curTick;   // (1.12.145, ruling 2026-10-28): the tick the record reached the door
+            cw.w.feed = K.curTick;   // (1.12.145): the tick the record reached the door
             const uint32_t key = cw.w.r.ch * 2u + (cw.w.r.wr ? 1u : 0u);
             std::deque<Waiting>& q = K.doors[key];
             if (!q.empty() || !chanAccept(K, cw.w)) { q.push_back(cw.w); K.waitingN++; }
@@ -2451,10 +2451,10 @@ void DramEpochReplay::markRoi() {
     drainAll();   // 1.12.18 (drain the lag): the pre-ROI requests are served before the window opens
     /* the ROI snapshot restarts epoch numbering (mpiNocRoiBasePhase): the
      * frozen pre-ROI epochs are on the old axis and must not be found, or
-     * pruned instead of the new ones (gate 1208B) */
+     * pruned instead of the new ones */
     frozen_.clear();
     if (maxS_) for (uint32_t k = 0; k < kRecCores; k++) maxS_[k] = 0;   // (1.12.216): ROI stamps only (settleMark)
-    pcache_.clear();   // (1.12.145, ruling 2026-10-28)
+    pcache_.clear();   // (1.12.145)
     winSum_.clear(); winCnt_.clear();   // (1.12.153)
     if (cutMode_) {   // 1.12.17: the ROI-relative axis starts here
         roiTick0_ = curTick_;
@@ -2472,13 +2472,13 @@ void DramEpochReplay::markRoi() {
          * same ticks are run either way (bank and refresh state are unchanged);
          * only the window boundary moves. */
         const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
-        /* 1.12.18 (ruling 2026-10-23): open at the run time's roi_begin
+        /* 1.12.18: open at the run time's roi_begin
          * stamp, the phase clock plus the opening core's offset. */
         const uint64_t open = (zinfo->roiWall.source == 1 && !zinfo->roiWall.ended && zinfo->roiWall.beginStamp > 0)
                             ? zinfo->roiWall.beginStamp : (uint64_t)zinfo->numPhases * pl;
         tickTo((uint64_t)((double)open * ticksPerCycle_));
     }
-    closeArmed_ = closeSnapped_ = false; closeTick_ = closeLate_ = pastEndRecs_ = 0;   // 1.12.18 (R1): every mode
+    closeArmed_ = closeSnapped_ = false; closeTick_ = closeLate_ = pastEndRecs_ = 0;   // 1.12.18: every mode
     hist_.clear();   // 1.12.18 (shift by lag)
     ring_.assign(kRing, Snap()); for (Snap& s : ring_) s.tick = ~0ull; closeFromSnap_ = false;   // (1.12.212): the per-tick ring
     pinFree(); closeFromPin_ = false;   // (1.12.225)
@@ -2487,7 +2487,7 @@ void DramEpochReplay::markRoi() {
     bankTotals();   // 1.12.18
     base_ = raw_;
     basePriced_ = rawPriced_.load(); baseBoot_ = rawBoot_.load();
-    baseHPriced_ = rawHPriced_.load(); baseHBoot_ = rawHBoot_.load();   // 1.12.18 (R0605)
+    baseHPriced_ = rawHPriced_.load(); baseHBoot_ = rawHBoot_.load();   // 1.12.18
     hLatMin_ = ~0ull; hLatMax_ = 0;
     /* (1.12.189): the reconciliation counts the ROI's accesses only; the replay is drained, no record is held */
     for (auto& ar : recSt_) for (RecStat& s : ar) s = RecStat();
@@ -2507,7 +2507,7 @@ void DramEpochReplay::markRoi() {
 
 void DramEpochReplay::finalize() {
     if (!sys_) return;
-    /* 1.11.98 (gate 1208A): never block here. finalize() runs inside the
+    /* 1.11.98: never block here. finalize() runs inside the
      * statistics dump, which zsim also runs from its exit handler; if the
      * model exits in the middle of a replay (Ramulator calls std::exit on an
      * invalid state) the exiting thread already holds the lock and a plain
@@ -2525,12 +2525,12 @@ void DramEpochReplay::finalize() {
     /* replay whatever is still pending so the controller totals cover the window */
     while (!pending_.empty()) { uint64_t ep = pending_.begin()->first; replayEpoch(ep); pending_.erase(ep); pendNe_.erase(ep); }
     drainAll();   // 1.12.18 (drain the lag): every fed request served before the counters are read
-    /* 1.12.18 (ruling 17 / R0605): a host-only instance closes its window at
+    /* 1.12.18: a host-only instance closes its window at
      * the current phase clock, as markRoi opens it there: a decoupled host
      * memory sits idle through a co-simulated kernel, and its replayed DRAM
      * time (and the refresh commands counted in it) would otherwise end at
      * the host's last request. Monotone; bank and refresh state carry on. */
-    /* 1.12.18 (user ruling 2026-10-23, "run time = elapsed wall clock"):
+    /* 1.12.18 (run time = elapsed wall clock):
      * every instance closes its window at the ROI END, the run time's one
      * owner (zinfo->roiWall), not at its last request's drain: the DRAM
      * refreshes and idles through the rest of the ROI, and its background
@@ -2539,7 +2539,7 @@ void DramEpochReplay::finalize() {
      * Phase-clock stamps in phase mode; the ROI-relative end in cut mode. */
     bool closedAtEnd = false;
     if (roiMarked_ && zinfo->roiWall.ended && closeArmed_) {
-        /* 1.12.18 (R1, R2, B4): the close armed above -- cut mode at the
+        /* 1.12.18: the close armed above -- cut mode at the
          * ROI-relative end on the rank cores' clock, phase mode at the
          * pricing window's end (the run time raised to the busy max). */
         const uint64_t t0 = curTick_;
@@ -2583,7 +2583,7 @@ void DramEpochReplay::finalize() {
                  name_.c_str(), (unsigned long)hc, (unsigned long)hb);
         }
     }
-    if (chipSplit_ && !chipReported_) {   /* 1.12.18 (user ruling 2026-10-24) */
+    if (chipSplit_ && !chipReported_) {   /* 1.12.18 */
         uint64_t sa = 0, cw = 0, cc = 0, ca = 0;
         bool got = false;
         if (par()) {   // (1.12.144)
@@ -2598,11 +2598,11 @@ void DramEpochReplay::finalize() {
     }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);
     bankTotals();   // 1.12.18
-    /* 1.12.18 (R0605): the ctrl* row and activate counters are the DEVICE
+    /* 1.12.18: the ctrl* row and activate counters are the DEVICE
      * interfaces' share (the controller's totals minus the host requests'),
      * the host* counters the host's; refreshes, ticks, idle ticks and the
      * bank-open time are the array's, whoever caused them. */
-    /* 1.12.18 (R1): and minus the requests outside the ROI (source_id 2/3) */
+    /* 1.12.18: and minus the requests outside the ROI (source_id 2/3) */
     profActivates_.set((raw_.acts - raw_.hacts - raw_.oacts) - (base_.acts - base_.hacts - base_.oacts));   // 1.12.18
     if (hostMis_ > 0) {
         profHRequests_.set(raw_.hreq - base_.hreq);
@@ -2624,7 +2624,7 @@ void DramEpochReplay::finalize() {
         profBankOpenWindow_.set((snap ? snapBankW_ : raw_.bankW) - base_.bankW);
     }
     /* SET, not add: finalize() runs at every statistics dump and the totals
-     * are cumulative (adding them counted every request ~4x, gate 1208A). */
+     * are cumulative (adding them counted every request ~4x). */
     profRequests_.set(raw_.req - base_.req);
     profReads_.set(raw_.rd - base_.rd);
     profWrites_.set(raw_.wr - base_.wr);
@@ -2633,10 +2633,10 @@ void DramEpochReplay::finalize() {
     profUnserved_.set(raw_.unserved - base_.unserved);
     profTicks_.set((snap ? snapTicks_ : raw_.ticks) - base_.ticks);
     profIdleTicks_.set((snap ? snapIdle_ : raw_.idle) - base_.idle);
-    profRowHits_.set((raw_.hits - raw_.hhits - raw_.ohits) - (base_.hits - base_.hhits - base_.ohits));   // 1.12.18 (R0605): the device's share; (R1) ROI only
+    profRowHits_.set((raw_.hits - raw_.hhits - raw_.ohits) - (base_.hits - base_.hhits - base_.ohits));   // 1.12.18: the device's share; ROI only
     profRowMisses_.set((raw_.misses - raw_.hmisses - raw_.omisses) - (base_.misses - base_.hmisses - base_.omisses));
     profRowConflicts_.set((raw_.conflicts - raw_.hconflicts - raw_.oconflicts) - (base_.conflicts - base_.hconflicts - base_.oconflicts));
-    /* 1.12.18 (user ruling R1 2026-10-24): outside the ROI, not priced */
+    /* 1.12.18: outside the ROI, not priced */
     profORequests_.set(raw_.oreq - base_.oreq);
     profOReads_.set(raw_.ord - base_.ord);
     profOWrites_.set(raw_.owr - base_.owr);
@@ -2668,7 +2668,7 @@ void DramEpochReplay::finalize() {
         info("[mem] %s: 1.12.18 drain the lag: %lu request(s) found their controller queue full and entered when it could take them, mean wait %.0f, max %lu DRAM cycles; %lu read(s) of an epoch still in flight took its partial mean (%lu with unfinished requests at their age)",
              name_.c_str(), (unsigned long)doorRecs_, (double)doorTicks_ / (double)doorRecs_, (unsigned long)doorMax_, (unsigned long)partial_, (unsigned long)partialAged_);
     }
-    {   // (1.12.145, ruling 2026-10-28): once per dump
+    {   // (1.12.145): once per dump
         info("[mem] %s: (1.12.145) epoch %u phase(s), read %lu epochs back; %lu partial mean(s) counted unfinished requests at their age",
              name_.c_str(), epochPhases(), (unsigned long)kDramReadLagEpochs, (unsigned long)partialAged_);
     }
@@ -2684,7 +2684,7 @@ void DramEpochReplay::finalize() {
              (unsigned long)(raw_.conflicts - base_.conflicts), (unsigned long)(raw_.refreshes - base_.refreshes),
              (unsigned long)(raw_.ticks - base_.ticks), (unsigned long)(raw_.idle - base_.idle), (unsigned long)used,
              (unsigned long)(tot ? (mx * 1000 + tot / 2) / tot : 0));
-    if (getenv("PIMID_DEBUG_REPLAY") && hostMis_ > 0)   // 1.12.18 (R0605)
+    if (getenv("PIMID_DEBUG_REPLAY") && hostMis_ > 0)   // 1.12.18
         info("[replaydbg] %s host share%s: requests=%lu hits=%lu misses=%lu conflicts=%lu activates=%lu meanLatency=%.1f host cycles (min %lu max %lu) priced=%lu bootstrap=%lu",
              name_.c_str(), roiMarked_ ? " (ROI)" : " (whole run)",
              (unsigned long)(raw_.hreq - base_.hreq), (unsigned long)(raw_.hhits - base_.hhits),

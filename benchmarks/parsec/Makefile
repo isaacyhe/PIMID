@@ -1,4 +1,4 @@
-# PARSEC Benchmarks — Self-Contained Implementations
+# PARSEC Benchmarks -- Self-Contained Implementations
 BENCHDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ZSIM_HOOKS := $(BENCHDIR)/../../external/zsim/misc/hooks
 

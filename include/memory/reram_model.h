@@ -81,7 +81,7 @@ private:
         uint32_t banks;
         uint32_t read_write_ports;
         uint32_t tech_node_nm;
-        /* 1.11.56 (audit D054): NANOSECONDS, and named so. These were `Cycle`,
+        /* 1.11.56: NANOSECONDS, and named so. These were `Cycle`,
          * filled from NVSim under a comment reading "assumes 1 GHz: 1 ns = 1
          * cycle" -- but NVSim returns SECONDS and this model has no clock to
          * convert them with (nothing here ever reads a frequency). The 1 GHz

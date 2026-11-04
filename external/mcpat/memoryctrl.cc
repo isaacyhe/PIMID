@@ -172,14 +172,14 @@ void MCBackend::computeEnergy(bool is_tdp)
     else
     {
     	rt_power.readOp.dynamic	= (stats_t.readAc.access + stats_t.writeAc.access)*mcp.llcBlockSize*8.0/mcp.dataBusWidth*power_t.readOp.dynamic;
-    	/* PIMID 1.12.18 (user 2026-10-23: no 10% convention, "measure and
-    	 * calculate"): each command the controller issued without a data
+    	/* PIMID 1.12.18 (no 10% convention: measured and calculated):
+    	 * each command the controller issued without a data
     	 * transfer (the refresh commands it counted) is one pass of the
     	 * transaction engine -- one internal-bus beat of this model's own
     	 * per-beat energy, no data burst. */
     	rt_power.readOp.dynamic += mcp.command_ops*power_t.readOp.dynamic;
     	rt_power = rt_power + power_t*pppm_lkg;
-    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
+    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98: the 0.1 is background_fraction */;
     	//Assume 10% of peak power is consumed by routine job including memory refreshing and scrubbing
     }
 }
@@ -210,7 +210,7 @@ void MCPHY::compute()
 	  if (mcp.type == 0)
 	  {
 		  power_per_gb_per_s = mcp.LVDS? 0.01:0.04;
-		  /* PIMID 1.11.19 (user decision D2): INTERPOSER interface class.
+		  /* PIMID 1.11.19: INTERPOSER interface class.
 		   * An HBM base die / channel-tier controller drives TSVs and
 		   * microbumps, not off-package DQ with ODT -- our own Ramulator
 		   * model already returns zero termination for HBM "by physics
@@ -259,7 +259,7 @@ void MCPHY::compute()
 		  //This is power not energy, 10mw/Gb/s @90nm for each channel and scaling down
 		  //power.readOp.dynamic = 0.02*memAccesses*llcBlocksize*8;//change from Bytes to bits.
 		  power_t.readOp.dynamic = power_per_gb_per_s*sqrt(l_ip.F_sz_um/0.09)*g_tp.peri_global.Vdd/1.2*g_tp.peri_global.Vdd/1.2;
-		  /* PIMID (1.12.132) (user ruling 2026-10-28): a published PHY energy per bit
+		  /* PIMID (1.12.132): a published PHY energy per bit
 		   * REPLACES the formula above (W per Gb/s = pJ/bit x 1e-3), unscaled: it
 		   * is a measurement of a real PHY, not a 90 nm figure to carry. The peak
 		   * uses the larger of the two directions; the run uses each direction's
@@ -281,7 +281,7 @@ void MCPHY::compute()
 		  power_per_gb_per_s = 0.01;
 		  //This is power not energy, 10mw/Gb/s @90nm for each channel and scaling down
 		  power_t.readOp.dynamic = power_per_gb_per_s*(l_ip.F_sz_um/0.09)*g_tp.peri_global.Vdd/1.2*g_tp.peri_global.Vdd/1.2;
-		  /* PIMID 1.11.60 (audit round 4, D008): THE withPHY TERNARY HERE WAS A
+		  /* PIMID 1.11.60: THE withPHY TERNARY HERE WAS A
 		   * GUARD THAT COULD NOT FIRE, and it has been deleted.
 		   *
 		   * Both lines used to read (mcp.withPHY? phy_gates:0). Since 1.11.19
@@ -370,7 +370,7 @@ void MCPHY::computeEnergy(bool is_tdp)
     	rt_power.readOp.dynamic=power_t.readOp.dynamic*(stats_t.readAc.access + stats_t.writeAc.access)*(mcp.llcBlockSize)*8/1e9/mcp.executionTime*(mcp.executionTime);
 		if (mc_type == MC && mcp.phy_pj_bit_rd > 0.0 && mcp.phy_pj_bit_wr > 0.0)   /* PIMID (1.12.132): each direction at its published pJ/bit, in place of the line above */
 			rt_power.readOp.dynamic = (stats_t.readAc.access*mcp.phy_pj_bit_rd + stats_t.writeAc.access*mcp.phy_pj_bit_wr)*(mcp.llcBlockSize)*8*1e-12;
-    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
+    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98: the 0.1 is background_fraction */;
     }
 }
 
@@ -602,7 +602,7 @@ void MCFrontEnd::computeEnergy(bool is_tdp)
     	        		writeBuffer->local_result.power)*pppm_lkg_c +
     	        (frontendBank ? frontendBank->local_result.power*pppm_lkg_c : frontendBuffer->local_result.power*pppm_lkg_q) +
     	        arb_t + MC_arb->power*pppm_lkg_q;
-    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98 (row 28): the 0.1 is background_fraction */;
+    	rt_power.readOp.dynamic = rt_power.readOp.dynamic + power.readOp.dynamic*mcp.background_fraction*mcp.clockRate*mcp.num_mcs*mcp.executionTime /* PIMID 1.11.98: the 0.1 is background_fraction */;
     }
 }
 
@@ -689,7 +689,7 @@ MemoryController::MemoryController(ParseXML *XML_interface,InputParameter* inter
   area.set_area(area.get_area()+ frontend->area.get_area());
   transecEngine = new MCBackend(&interface_ip, mcp, mc_type);
   area.set_area(area.get_area()+ transecEngine->area.get_area());
-  /* PIMID 1.11.19 (user decision D3): withPHY is HONORED for type=0 too.
+  /* PIMID 1.11.19: withPHY is HONORED for type=0 too.
    * It used to be ignored there ("type==0 ||"), so an on-die element
    * controller could not drop its off-chip driver without also switching to
    * type=1 -- which silently swapped the BACKEND cost model (Cadence
@@ -706,7 +706,7 @@ MemoryController::MemoryController(ParseXML *XML_interface,InputParameter* inter
    * builds as libmcpat.a only, the sole entry point is McPATWrapper and
    * nothing under src/ names ProcessorDescriptionFiles.
    *
-   * PIMID 1.11.59 (audit E010): that was STATED here and left standing, which
+   * PIMID 1.11.59: that was STATED here and left standing, which
    * left a reader two readings of the same 0 -- "upstream ignored this field
    * for type=0" and "this part has no PHY" -- with no way to tell which was
    * meant. The eight type=0 reference files now declare withPHY=1, each with
@@ -830,8 +830,7 @@ void MemoryController::computeEnergy(bool is_tdp)
 		const double e_cyc = clockNetwork.e_tree_cycle + clockNetwork.n_sinks*clockNetwork.e_pin_reg;
 		const double cycles = mcp.executionTime * clk_hz;
 		const double e_rt = e_cyc * cycles * XML->sys.mc.number_mcs;
-		/* Gated by the controller's measured utilisation (user ruling
-		 * 2026-10-23; Wattch cc2): the measured requests one controller
+		/* Gated by the controller's measured utilisation (Wattch cc2): the measured requests one controller
 		 * served (memory_reads + memory_writes are the totals over every
 		 * controller, so / number_mcs: the mean per controller) per
 		 * controller cycle per channel -- the rule PIMID uses for the
@@ -848,7 +847,7 @@ void MemoryController::computeEnergy(bool is_tdp)
 			if (n_mc > 1) as << req_all << " / " << n_mc << " controllers = ";
 			as << req << " / (" << cycles << " controller cycles x " << ch << " channel(s))";
 			a = clockNetwork.gate((cycles > 0) ? req / (cycles * ch) : -1.0, as.str());
-			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered cycle. */
+			/* PIMID 1.12.18: global part every powered cycle. */
 			clockNetwork.set_powered(XML->sys.pimid_clock_pg_mc, "1 - measured MC power-gated residency (pimid_clock_pg_mc)");
 		}
 		const double e_rt_g = is_tdp ? e_rt
@@ -1009,7 +1008,7 @@ void MemoryController::set_mc_param()
 		mcp.LVDS = XML->sys.mc.LVDS;
 		mcp.type = XML->sys.mc.type;
 		mcp.withPHY = XML->sys.mc.withPHY;
-		mcp.background_fraction = XML->sys.mc.background_fraction;   /* PIMID 1.11.98 (row 28, ruling (c)) */
+		mcp.background_fraction = XML->sys.mc.background_fraction;   /* PIMID 1.11.98 */
 		mcp.command_ops = XML->sys.mc.pimid_command_ops;   /* PIMID 1.12.18 */
 		mcp.phy_class = XML->sys.mc.phy_class;   // PIMID 1.11.19 (D2/D3)
 		mcp.phy_pj_bit_rd = XML->sys.mc.phy_pj_bit_rd;   // PIMID (1.12.132)

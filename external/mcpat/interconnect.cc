@@ -73,7 +73,7 @@ interconnect::interconnect(
   deviceType(dt)
 {
 
-  /* 1.11.94 (R3208, sweep94 ruling 28(a)): the wire type is the caller's
+  /* 1.11.94: the wire type is the caller's
    * argument. The body used to overwrite it with `wt = Global;`, so a
    * caller asking for Semi-global or Low-swing wires got Global ones and
    * nothing said so. Every caller in this tree (core.cc bypass buses, 18

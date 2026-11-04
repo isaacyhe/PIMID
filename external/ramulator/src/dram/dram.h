@@ -73,7 +73,7 @@ class IDRAM : public Clocked<IDRAM> {
 
     bool m_power_debug = false;
 
-    /* PIMID 1.11.91 (audit R8-7): the measured bank-open fraction
+    /* PIMID 1.11.91: the measured bank-open fraction
      * (dram/pimid_bank_open.h). Implementations that keep the tracker set
      * m_pimid_bank_open_tracked and accumulate the two sums once per tick;
      * the others leave the flag false and the zsim side exports nothing. */

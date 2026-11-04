@@ -73,8 +73,7 @@ highest first: CLI > environment > YAML config > built-in default.**
 The warehouse is the only store the simulator reads or writes. From 1.11.52
 to 1.12.4 a miss consulted the pre-1.11.52 per-user location `~/.cache/pimid`
 read-only and copied a passing entry forward ("migrated cached
-characterization into the tree cache"). Since 1.12.5 (ruling F5, user
-2026-10-15: no wrong folders and no old cache files) nothing is read from it:
+characterization into the tree cache"). Since 1.12.5 nothing is read from it:
 a miss is characterized and stored in the warehouse. Entries elsewhere are
 reached only by naming their root (`--cache-dir`, `PIMID_CACHE_DIR`,
 `cache.dir`).
@@ -97,8 +96,8 @@ The generic `PIMID_CACHE_*` variables take precedence over the legacy
 ```
 <root>/                       warehouse root (default <pimid>/cache)
 |-- index.jsonl               append-only manifest (one JSON object per line)
-|-- nvsim/                     per-backend artifact subdir
-|   |-- nvm_t1_c8388608_n22.xml
+|-- nvsim/                    per-backend artifact subdir
+|   |-- nvm_t1_c8388608_n22_w64.xml
 |   `-- ...
 `-- <other-backend>/          one subdir per backend
 ```
@@ -111,13 +110,14 @@ place by normal runs. Each record describes one cached point:
 ```json
 {
   "backend": "nvsim",
-  "key": "t1_c8388608_n22",
-  "tool_version": "1.0.0",
+  "key": "nvm_t1_c8388608_n22_w64",
+  "tool_version": "1.12.162",
   "timestamp": 1780000000,
   "params": {
     "nvm_type": 1,
     "capacity_bytes": 8388608,
-    "process_node_nm": 22
+    "process_node_nm": 22,
+    "word_width_bits": 64
   },
   "value": {
     "read_latency_s": 1.2e-9,
@@ -136,7 +136,7 @@ Field meanings:
 |----------------|---------------------------------------------------------------------|
 | `backend`      | Backend that produced the record (e.g. `nvsim`); also its subdir.   |
 | `key`          | Stable identity of the cached point within the backend.             |
-| `tool_version` | Version of the producing tool; used to detect stale entries.        |
+| `tool_version` | Characterization stamp of the producing binary (`kToolVersion`, a PIMID release); used to detect stale entries. |
 | `timestamp`    | Unix epoch seconds when the record was written.                     |
 | `params`       | Input parameters that define the point.                             |
 | `value`        | The cached result.                                                  |
@@ -149,8 +149,8 @@ occurrence) is **authoritative**; earlier lines are superseded history. The
 ## The `pimid-cache` tool
 
 A standalone Python 3 (stdlib-only) inspector/maintenance CLI ships at
-`scripts/pimid-cache` (in the tree since 1.12.5; before that it was dev-side
-tooling that defaulted to the old per-user store). It resolves the warehouse
+`scripts/pimid-cache` (in the tree since 1.12.5; before that it was a separate
+tool that defaulted to the old per-user store). It resolves the warehouse
 root the way the binary does: `--dir`/`--cache-dir` > `$PIMID_CACHE_DIR` >
 the `cache/` directory of the tree the script sits in. Run from any tree, a
 bare `pimid-cache list` shows that tree's warehouse.
@@ -185,11 +185,11 @@ pimid-cache list
 pimid-cache list --backend nvsim
 
 # Inspect one point.
-pimid-cache show t1_c8388608_n22
+pimid-cache show nvm_t1_c8388608_n22_w64
 
 # Find entries produced by an old tool version.
 pimid-cache stale
-pimid-cache stale --current-version 1.1.0
+pimid-cache stale --current-version 1.12.162
 
 # Refresh a stale point (recompute + overwrite):
 #   re-run the relevant PIMID experiment with:  --cache wo

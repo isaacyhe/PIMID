@@ -125,7 +125,7 @@ static size_t bfs_expand(pimid_spm_t* s0, const bfs_ctx_t* c0, const int* fronti
     return nout + no;
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of [row][col][dist]. */
+/* 1.11.94: per-PE need of [row][col][dist]. */
 typedef struct { int P; int deg; } bfs_omp_ctx;
 static size_t bfs_omp_need(long v, const void* c) {
     const bfs_omp_ctx* x = (const bfs_omp_ctx*)c;
@@ -180,7 +180,7 @@ int main(int argc, char* argv[]) {
     size_t slot_bytes = 0;
     char* base = NULL;
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+        /* 1.11.94: a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {

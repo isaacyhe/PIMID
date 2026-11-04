@@ -1,4 +1,4 @@
-/* stream_triad.c — STREAM Triad: a[i] = b[i] + scalar * c[i]
+/* stream_triad.c -- STREAM Triad: a[i] = b[i] + scalar * c[i]
  * Serial baseline. Standalone, no shared headers. */
 #include <stdio.h>
 #include <stdlib.h>

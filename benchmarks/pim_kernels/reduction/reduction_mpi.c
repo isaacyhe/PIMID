@@ -1,4 +1,4 @@
-/* reduction_mpi.c — Streaming sum reduction: result = sum(a[i])
+/* reduction_mpi.c -- Streaming sum reduction: result = sum(a[i])
  * MPI domain decomposition. Each rank sums its chunk, then MPI_Reduce
  * aggregates partial sums to rank 0 (inside the ROI since 1.12.18). */
 #include <stdio.h>
@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
         local_sum = reduction_sum(&spm, a, (size_t)local_n);
     }
 
-    /* 1.12.18 (ruling 2026-10-23): the cross-rank reduction that produces the
+    /* 1.12.18: the cross-rank reduction that produces the
      * result is timed, as the OpenMP reduction(+:sum) clause is: partial sums
      * are reduced to rank 0 INSIDE the ROI (both scratchpad branches end
      * here). Every rank calls it before rank 0's zsim_roi_end and the closing

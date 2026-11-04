@@ -1,4 +1,4 @@
-# Classic Single-Thread Benchmarks Makefile — 6 benchmarks
+# Classic Single-Thread Benchmarks Makefile -- 6 benchmarks
 BENCHDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ZSIM_HOOKS := $(BENCHDIR)/../../external/zsim/misc/hooks
 

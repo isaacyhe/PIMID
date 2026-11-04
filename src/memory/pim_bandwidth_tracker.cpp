@@ -331,7 +331,7 @@ void PIMBandwidthTracker::printStats() const {
                   << usage.num_concurrent_pes << " PEs)\n";
     }
 
-    /* 1.11.56 (audit D073): the "<-" markers here and the unit arrows above
+    /* 1.11.56: the "<-" markers here and the unit arrows above
      * were U+2192/U+2190, against the project's ASCII-only rule. Text only. */
     std::cout << "\nBandwidth Limits:\n";
     std::cout << "-----------------\n";

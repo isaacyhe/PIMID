@@ -1,4 +1,4 @@
-/* spmv_csr_mpi.c — Sparse Matrix-Vector Multiply in CSR format: y = A * x
+/* spmv_csr_mpi.c -- Sparse Matrix-Vector Multiply in CSR format: y = A * x
  * MPI domain decomposition. Rank 0 generates the full CSR matrix, then
  * distributes row ranges to all ranks. Each rank computes its rows of y. */
 #include <stdio.h>

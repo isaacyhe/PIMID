@@ -40,7 +40,7 @@ SRAMModel::SRAMModel(const std::string& config_path)
     sram_config_.read_ports = 0;
     sram_config_.write_ports = 0;
     sram_config_.tech_node_nm = 22;      // 22nm technology
-    /* 1.11.56 (audit D054): nanoseconds, not cycles. A placeholder the CACTI
+    /* 1.11.56: nanoseconds, not cycles. A placeholder the CACTI
      * path overwrites on every reachable run; the model refuses when that
      * binding fails, so it never reaches a result. */
     sram_config_.access_time_ns = 2.0;   // ns
@@ -79,7 +79,7 @@ void SRAMModel::initialize() {
         cacti_config.temperature = sram_config_.temperature_k;   // 1.11.52 (D055)
         cacti_config.device_corner = device_corner_;   // (1.12.112): power.device_corner
         cacti_config.cell_type = static_cast<CACTIWrapper::CellType>(cell_type_);   // (1.12.253): memory.sram_cell_type
-        /* 1.11.97 (review H28): the element's scratchpad is a RAM, not a cache --
+        /* 1.11.97: the element's scratchpad is a RAM, not a cache --
          * no tag array, no associativity, one bank per unit (the per-bank unit
          * is what this model characterises; the device's bank count scales it).
          * It was timed and priced as an 8-way, 8-bank CACHE, a tag lookup and
@@ -111,7 +111,7 @@ void SRAMModel::initialize() {
             leakage_power_ = cacti_wrapper_->getLeakagePower() / 1000.0; // Convert mW to W
             area_mm2_ = cacti_wrapper_->getArea();
 
-            /* 1.11.56 (audit D054): CACTI reports SECONDS. Take the time and
+            /* 1.11.56: CACTI reports SECONDS. Take the time and
               * keep it. getAccessLatencyCycles(1e9) turned it into a "cycle"
               * count against a clock nobody supplied, and the log then printed
               * that count as cycles -- correct only for a 1 GHz PE. */
@@ -151,7 +151,7 @@ void SRAMModel::initialize() {
     std::cout << "  Banks: " << sram_config_.banks << std::endl;
     std::cout << "  Ports (RW): " << sram_config_.read_write_ports << std::endl;
     std::cout << "  Technology: " << sram_config_.tech_node_nm << " nm" << std::endl;
-    // 1.11.56 (audit D054): nanoseconds, which is what CACTI reported.
+    // 1.11.56: nanoseconds, which is what CACTI reported.
     std::cout << "  Access Time: " << sram_config_.access_time_ns << " ns" << std::endl;
     std::cout << "  Area: " << area_mm2_ << " mm^2" << std::endl;
     std::cout << "  Read Energy: " << read_energy_ << " nJ" << std::endl;
@@ -259,7 +259,7 @@ void SRAMModel::loadConfig(const std::string& config_path) {
         // Load timing
         if (sram["timing"]) {
             auto timing = sram["timing"];
-            /* 1.11.56 (audit D054): the YAML knob is named in CYCLES but this
+            /* 1.11.56: the YAML knob is named in CYCLES but this
              * model holds TIME and has no clock to convert with, so a cycle
              * count cannot be honoured as written. Prefer an explicit
              * read_latency_ns; accept the legacy cycles key but say once, at
@@ -308,7 +308,7 @@ void SRAMModel::loadConfig(const std::string& config_path) {
     }
 }
 
-/* 1.11.56 (audit D054): THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
+/* 1.11.56: THE ONE PLACE TIME BECOMES CYCLES IN THIS MODEL.
  *
  * MemoryModel's legacy access()/getLatency() return Cycle, and this model is
  * handed no clock -- the simulator drives it through getTierLatencyNs(), which
@@ -379,12 +379,12 @@ void SRAMModel::tick() {
 
 Cycle SRAMModel::getLatency(MemoryRequestType type) const {
     // SRAM has fixed latency regardless of request type.
-    // 1.11.56 (audit D054): see legacyNsAsCycles above.
+    // 1.11.56: see legacyNsAsCycles above.
     return legacyNsAsCycles(sram_config_.access_time_ns);
 }
 
 double SRAMModel::getTotalEnergy() const {
-    /* 1.11.58 (audit D022/D043): NANOJOULES, as MemoryModel documents.
+    /* 1.11.58: NANOJOULES, as MemoryModel documents.
      *
      * SRAM's per-access members were already nanojoules on both paths (CACTI's
      * getDynamicReadEnergy() and the YAML read_energy_nj key), so the dynamic
@@ -566,7 +566,7 @@ uint64_t SRAMModel::getBandwidth() const {
     static bool announced = false;
     if (!announced) {
         announced = true;
-        std::cerr << "[SRAMModel] getBandwidth() returns 0 = NOT SOURCED. This model "
+        std::cerr << "[SRAMModel] getBandwidth() returns 0 (no sourced value). This model "
                      "characterizes latency, energy and area through its tool; "
                      "it has no sustained-bandwidth model, and the literal that "
                      "used to stand here (capacity_ * 2) was fabricated. Compose a "

@@ -1,4 +1,4 @@
-/* gemv_mpi.c — General Matrix-Vector Multiply: y = A * x
+/* gemv_mpi.c -- General Matrix-Vector Multiply: y = A * x
  * MPI domain decomposition. Rows of A distributed across ranks.
  * Each rank needs the full x vector (broadcast from rank 0). */
 #include <stdio.h>

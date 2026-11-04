@@ -48,7 +48,7 @@ class AllBankRefresh : public IRefreshManager, public Implementation {
         m_nrefi = (n >= 1) ? n : 1;
       }
       m_ref_req_id = m_dram->m_requests("all-bank-refresh");
-      /* PIMID 1.11.98 (gate 1208A): send the all-bank refresh at the scope the
+      /* PIMID 1.11.98: send the all-bank refresh at the scope the
        * DRAM model declares for its command. Upstream looped over
        * get_level_size("rank"), which is -1 for a model with no rank level:
        * GDDR6, HBM2 and HBM3 declare REFab at CHANNEL scope and have no rank,
@@ -66,7 +66,7 @@ class AllBankRefresh : public IRefreshManager, public Implementation {
       }
 
       m_next_refresh_cycle = m_nrefi;
-      /* 1.11.98 (PIMID, sweep-94 row 28): the refresh commands this
+      /* 1.11.98 (PIMID): the refresh commands this
        * controller issued, a MEASURED controller-background quantity. */
       register_stat(s_num_refresh).name("num_refresh_{}", m_ctrl->m_channel_id);
       if (std::getenv("PIMID_DEBUG_REPLAY"))   /* diagnostic (1.11.98 gate 1208A) */
@@ -74,7 +74,7 @@ class AllBankRefresh : public IRefreshManager, public Implementation {
                      (long long)m_next_refresh_cycle, m_num_ranks, m_ref_scope, m_ref_req_id);
     };
 
-    size_t pimid_num_refresh() const override { return s_num_refresh; }   // PIMID 1.11.98 (row 28)
+    size_t pimid_num_refresh() const override { return s_num_refresh; }   // PIMID 1.11.98
 
     void tick() {
       m_clk++;

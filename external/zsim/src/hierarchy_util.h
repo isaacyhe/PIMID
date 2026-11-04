@@ -90,7 +90,7 @@ static inline HierPos unitToHierPos(uint32_t unit_id, uint32_t placement,
             break;
         }
         case 5: pos.channel = unit_id; break;  // CHANNEL
-        /* 1.11.60 (audit round 4, D005): level 6 is the emitter's LOGIC_DIE
+        /* 1.11.60: level 6 is the emitter's LOGIC_DIE
          * ("SYSTEM" here is this file's older name for the same tier, the top
          * of the in-stack tree). Recorded because the naming difference read
          * as a level this file knew about and pe_memory_interface.h did not,
@@ -140,7 +140,7 @@ static inline uint64_t computeHierTraversal(
         uint32_t banks_per_bg, uint32_t bg_per_chip,
         uint32_t chips_per_rank = 1, uint32_t ranks_per_channel = 1) {
     if (src_unit == dst_unit) return 0;
-    /* 1.11.94 (H17): HOST_MC (rung 7) has no tree below it in this walk -- the
+    /* 1.11.94: HOST_MC (rung 7) has no tree below it in this walk -- the
      * PE sits beside the host controller and every unit is reached through the
      * channel once, at the host-path latency. No negative index can arise. */
     if (placement >= 7) return levelLatency[7];
@@ -181,7 +181,7 @@ static inline uint32_t hierTraversalLevels(
         uint32_t banks_per_bg, uint32_t bg_per_chip,
         uint32_t chips_per_rank = 1, uint32_t ranks_per_channel = 1) {
     for (int l = 0; l < 8; l++) perLevel[l] = 0;
-    if (placement >= 7) { perLevel[7] = 1; return 1; }   // 1.11.94 (H17): one host-path crossing, one link
+    if (placement >= 7) { perLevel[7] = 1; return 1; }   // 1.11.94: one host-path crossing, one link
     if (src_unit == dst_unit) return 0;
     HierPos src = unitToHierPos(src_unit, placement, sa_per_bank, banks_per_bg,
                                  bg_per_chip, chips_per_rank, ranks_per_channel);

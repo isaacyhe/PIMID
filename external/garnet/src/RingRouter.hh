@@ -12,7 +12,7 @@
  * The dateline cut is between node (N-1) and node 0.  Each RingRouter
  * is told which of its outports (if any) crosses the dateline.
  *
- * 1.11.94 (x03-garnet-custom-1, ruling H35): the same router also builds
+ * 1.11.94: the same router also builds
  * TORUS_2D. A torus under dimension-order routing is one ring per row
  * (East/West) and one ring per column (North/South), each with its own
  * dateline on its wrap link. With setDimensionReset(true) a head flit that
@@ -48,13 +48,13 @@ class RingRouter : public Router {
     // Called by TopologyBuilders::buildRing() after link creation.
     void addDatelineOutport(int outport) { m_dateline_outports.push_back(outport); }
 
-    // 1.11.94 (H35): mark the outport(s) named `dirn` as crossing the
+    // 1.11.94: mark the outport(s) named `dirn` as crossing the
     // dateline. Resolved to outport indices in init(), once the links exist,
     // so the builder does not have to predict port numbering.
     void addDatelineDirection(const PortDirection& dirn)
     { m_dateline_dirns.push_back(dirn); }
 
-    // 1.11.94 (H35): restart in class 0 when a head flit changes dimension
+    // 1.11.94: restart in class 0 when a head flit changes dimension
     // (East/West <-> North/South). Set by the TORUS_2D builder only.
     void setDimensionReset(bool on) { m_dimension_reset = on; }
 
@@ -77,7 +77,7 @@ class RingRouter : public Router {
     void getClassRange(int vnet, int vc_class,      // [lo, hi)
                        int &lo, int &hi) const;
 
-    // 1.11.94 (H35): the VC class a head flit must be allocated in.
+    // 1.11.94: the VC class a head flit must be allocated in.
     int targetClass(int inport, int invc, int outport);
     static int dimensionOf(const PortDirection& dirn);
 

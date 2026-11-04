@@ -58,7 +58,7 @@ const std::string& warehouseRoot();
 /// "<root>/<backend>" -- created (mkdir -p) on demand. e.g. backendDir("nvsim").
 std::string backendDir(const std::string& backend);
 
-/* 1.12.5 (ruling F5, user 2026-10-15): the warehouse is the only store. The
+/* 1.12.5: the warehouse is the only store. The
  * pre-1.11.52 per-user location (~/.cache/pimid/<backend>) was read as a
  * fallback from 1.11.52 to 1.12.4 (legacyBackendDir); nothing reads it now. */
 

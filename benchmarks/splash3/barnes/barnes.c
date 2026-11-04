@@ -24,7 +24,7 @@
 #define THETA           0.5
 #define SOFTENING       0.01
 #define MAX_NODES       (DEFAULT_SIZE * 40)
-/* 1.11.94 (b02-suites-a-3, ruling C1): depth bound for insert_body. The root
+/* 1.11.94: depth bound for insert_body. The root
  * is refitted to the bodies every step, so a depth this large is reached only
  * when two bodies coincide to within 2^-MAX_TREE_DEPTH of the root side; the
  * build then refuses instead of recursing until the stack overflows. */
@@ -109,7 +109,7 @@ static void child_origin(octree_node_t* n, int oct, double* cx, double* cy, doub
     *cz = n->oz + ((oct & 4) ? hs : 0);
 }
 
-/* 1.11.94 (b02-suites-a-3, ruling C1): a full node pool or an unbounded
+/* 1.11.94: a full node pool or an unbounded
  * subdivision is a refusal, not a silent drop. Before this, alloc_node()
  * returning -1 dropped the body from the tree without a word, and bodies that
  * had left the fixed root cell recursed until the stack overflowed
@@ -183,7 +183,7 @@ static void compute_com(int node_idx) {
     n->total_mass = mt;
 }
 
-/* 1.11.94 (b02-suites-a-3, ruling C1): the root cell is the bodies' bounding
+/* 1.11.94: the root cell is the bodies' bounding
  * cube, refitted every timestep, as SPLASH-2 barnes does (setbound(): min/max
  * over all bodies, side = largest extent, root slightly larger so a body on the
  * max face still falls inside). The old root was fixed at [-0.5,1.5]^3; at
@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     printf("Barnes-Hut N-body -- N=%d, threads=%d, timesteps=%d\n", N, num_threads, TIMESTEPS);
 
     max_nodes = N * 40;
-    /* 1.11.94 (b02-suites-a-3): gate injection hook. Random inputs never fill
+    /* 1.11.94: gate injection hook. Random inputs never fill
      * a 40*N pool once the root is refitted, so the refusal path is exercised
      * by shrinking the pool: PIMID_BARNES_POOL_FAULT=<nodes>. */
     {
@@ -296,14 +296,14 @@ int main(int argc, char** argv) {
         bodies[i].y = (double)bench_rand(&seed) / 32768.0;
         bodies[i].z = (double)bench_rand(&seed) / 32768.0;
         bodies[i].vx = bodies[i].vy = bodies[i].vz = 0;
-        /* 1.11.94 (b02-suites-a-3, ruling C1): total mass 1 (each body
+        /* 1.11.94: total mass 1 (each body
          * 1/N), as SPLASH-2's Plummer model normalises it. With mass 1.0 each
          * and G = 1, accelerations grew with N and the system flew apart
          * within one DT at the large size. */
         bodies[i].mass = 1.0 / (double)N;
     }
 
-    /* 1.11.94 (b02-suites-a-3): gate injection hook for the depth refusal:
+    /* 1.11.94: gate injection hook for the depth refusal:
      * PIMID_BARNES_COINCIDE_FAULT=1 puts body 1 on body 0. */
     {
         const char* e = getenv("PIMID_BARNES_COINCIDE_FAULT");

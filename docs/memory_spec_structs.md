@@ -31,23 +31,22 @@ HBM but not on commodity DDR.
 
 | File | Purpose |
 |------|---------|
-| `dram_architecture_v2.h` | DRAM specs: `createDDR4_2400_Verified()`, `createDDR5_4800_Verified()`, `createHBM2_Verified()`, `createHBM3_Verified()` |
+| `dram_architecture_v2.h` | DRAM specs, one creator per technology: `createDDR3_1600_Verified()`, `createDDR4_2400_Verified()`, `createDDR5_4800_Verified()`, `createLPDDR5_6400_Verified()`, `createGDDR6_14000_Verified()`, `createHBM2_Verified()`, `createHBM3_Verified()` |
 | `sram_architecture.h` | SRAM (cache) specs with inner-bank timing |
 | `sttmram_architecture.h` | STT-MRAM specs with read/write asymmetry |
 | `pcm_architecture.h` | PCM (phase-change memory) specs |
 | `reram_architecture.h` | ReRAM/memristor specs with analog-compute support |
 
-1.11.59 (C016-class): `dram_architecture.h` / `.cpp` -- the legacy v1
-`DRAMArchitecture` object listed here until now -- were DELETED. They were
+1.11.59: `dram_architecture.h` / `.cpp` -- the legacy v1
+`DRAMArchitecture` object listed here until now -- were deleted. They were
 compiled but had no caller anywhere in the tree, and they carried HBM
 access-time literals that had drifted 16-37% from their own declared sums
 since release 1.1.1 raised HBM tRCD/tCAS to the JEDEC spec minima. Use the v2
 object below; it derives those sums from tRCD/tCAS/tRP at construction.
 
-The structs cover four explicit DRAM creators; the other simulator
-technologies (DDR3, LPDDR5, GDDR6 -- see [memory.md](memory.md)) take their
-cycle timing from Ramulator2 presets and their organization from the
-architecture extractor.
+The structs cover all seven DRAM technologies the simulator runs; the run's
+cycle timing itself comes from the Ramulator2 presets (see
+[memory.md](memory.md)).
 
 ## Quick start
 
@@ -96,8 +95,8 @@ subarray / bank / chip / rank, with an `energy_source` citation string.
 
 ## Specification sources
 
-Timing and organization values come from JEDEC standards (JESD79-4/-5,
-JESD235A, JESD238) and vendor datasheets. External I/O widths are exact;
+Timing and organization values come from JEDEC standards (JESD79-3/-4/-5,
+JESD209-5C, JESD250D, JESD235D, JESD238B) and vendor datasheets. External I/O widths are exact;
 internal port bitwidths are estimates based on
 industry knowledge and bandwidth measurements (treat them as ~representative,
 not vendor-exact). Background reading: SALP (ISCA'12), Tiered-Latency DRAM

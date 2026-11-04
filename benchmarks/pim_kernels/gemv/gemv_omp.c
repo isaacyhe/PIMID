@@ -51,7 +51,7 @@ static void gemv_rows(pimid_spm_t* s, const float* A, const float* x, float* y,
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of the prep layout
+/* 1.11.94: per-PE need of the prep layout
  * [A rows][x] for size N on P PEs (largest share = ceil(N/P) rows). */
 static size_t gemv_omp_need(long n, const void* ctx) {
     long P = *(const int*)ctx;
@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
          * Relocate PE pe's rows of A + a private copy of x into PE pe's own unit
          * slot, so the ROI's reads are LOCAL. Slot layout: [A rows][x]. */
         omp_set_num_threads(P);
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): refuse when PE pe's rows + x
+        /* 1.11.94: refuse when PE pe's rows + x
          * do not fit its slot (they spilled into the next PE's slot before). */
         size_t slot_bytes = pimid_devorg_slot_bytes(&dev);
         size_t need = gemv_omp_need(N, &P);

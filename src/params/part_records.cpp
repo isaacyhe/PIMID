@@ -188,7 +188,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                 const YAML::Node q = m["io_share"]; row.has_io_share = true;
                 if (!need(q, "idd4r_ma", row.idd4r_io, err) || !need(q, "idd4w_ma", row.idd4w_io, err) ||
                     !opt(q, "provenance", row.io_share_provenance, err) || !need(q, "source", row.io_share_source, err)) { err = "io_share: " + err; return false; }
-                /* 1.12.18 (user ruling 2026-10-23): the optional anchor, all four keys or none */
+                /* 1.12.18: the optional anchor, all four keys or none */
                 const int na = (q["anchor_read_pj_bit"] ? 1 : 0) + (q["anchor_write_pj_bit"] ? 1 : 0) + (q["channel_gbps"] ? 1 : 0) + (q["anchor_source"] ? 1 : 0);
                 if (na != 0 && na != 4) { err = "io_share: anchor_read_pj_bit, anchor_write_pj_bit, channel_gbps and anchor_source go together (all four or none)"; return false; }
                 if (na == 4) {
@@ -216,7 +216,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
             if (!readRow(b, row, err)) { error = "part record " + path + ": idd: " + err; return false; }
             r.idd.by_grade[0] = row;
         }
-        /* (1.12.48) (user ruling 2026-10-25): optional idd.by_width -- per-device-width columns of a single-grade record.
+        /* (1.12.48): optional idd.by_width -- per-device-width columns of a single-grade record.
          * Each width row is the single row with the columns the sheet prints for that width replacing it; a column
          * the width row omits is the sheet's "All widths" value (the single row). Its source is required. */
         if (b["by_width"]) {
@@ -238,7 +238,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         }
         if (b["e_actpre_pj_override"] && !need(b, "e_actpre_pj_override", r.idd.e_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
         if (b["stack_floor_mw"] && !need(b, "stack_floor_mw", r.idd.stack_floor_mw, error)) { error = "part record " + path + ": idd: " + error; return false; }
-        /* user ruling 2026-10-25 (second supply rails): the VPP share of an override activation (GDDR6, the IDD7 route) */
+        /* second supply rails: the VPP share of an override activation (GDDR6, the IDD7 route) */
         if (b["vpp_actpre_pj_override"]) {
             if (!need(b, "vpp_actpre_pj_override", r.idd.vpp_actpre_pj_override, error)) { error = "part record " + path + ": idd: " + error; return false; }
             if (!(r.idd.vpp_actpre_pj_override >= 0.0) || !(r.idd.e_actpre_pj_override >= 0.0)) {
@@ -253,7 +253,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                 }
             }
         }
-        /* 1.12.18 (user ruling 2026-10-24, option 5): an HBM row states which loop its idd0 is */
+        /* 1.12.18: an HBM row states which loop its idd0 is */
         if (b["idd0_loop"] && !need(b, "idd0_loop", r.idd.idd0_loop, error)) { error = "part record " + path + ": idd: " + error; return false; }
         if ((r.technology == "HBM2" || r.technology == "HBM3") && r.idd.idd0_loop != "ONE_PC_PER_TRC") {
             error = "part record " + path + ": idd.idd0_loop must be ONE_PC_PER_TRC on an HBM record (found '" + r.idd.idd0_loop +
@@ -262,7 +262,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                     " idd0 = baseline + (IDD0_JEDEC - baseline) / 2";
             return false;
         }
-        /* 1.12.18 (user ruling 2026-10-24): HBM activation VPP as a ratio of the VDD activate energy */
+        /* 1.12.18: HBM activation VPP as a ratio of the VDD activate energy */
         if (b["vpp_act"]) {
             const YAML::Node v = b["vpp_act"]; r.idd.has_vpp_act = true;
             if (!need(v, "ratio", r.idd.vpp_act_ratio, error) || !need(v, "device", r.idd.vpp_act_device, error) ||
@@ -278,7 +278,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                     error = "part record " + path + ": idd.vpp_act and an ipp.ipp0 row both price the VPP activation; give one"; return false;
                 }
         }
-        /* (1.12.142) (user ruling 2026-10-28): HBM standby VPP as a ratio of the VDD standby power */
+        /* (1.12.142): HBM standby VPP as a ratio of the VDD standby power */
         if (b["vpp_standby"]) {
             const YAML::Node v = b["vpp_standby"]; r.idd.has_vpp_standby = true;
             if (!need(v, "ratio", r.idd.vpp_standby_ratio, error) || !need(v, "device", r.idd.vpp_standby_device, error) ||
@@ -295,7 +295,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
                     error = "part record " + path + ": idd.vpp_standby and an ipp row both price the standby VPP; give one"; return false;
                 }
         }
-        if (b["background_guard_mw_stack"]) {   // 1.12.18 (user ruling 2026-10-24, floor option 2): guard only
+        if (b["background_guard_mw_stack"]) {   // 1.12.18 (floor option 2): guard only
             const YAML::Node g = b["background_guard_mw_stack"]; r.idd.has_bg_guard = true;
             if (!need(g, "lo", r.idd.bg_guard_lo_mw, error) || !need(g, "hi", r.idd.bg_guard_hi_mw, error) ||
                 !need(g, "source", r.idd.bg_guard_source, error)) {
@@ -349,7 +349,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         const YAML::Node q = n["iddq_band_pj_bit"]; r.iddq_band.valid = true;
         if (!need(q, "lo", r.iddq_band.lo, error) || !need(q, "hi", r.iddq_band.hi, error) || !need(q, "source", r.iddq_band.source, error)) { error = "part record " + path + ": iddq_band_pj_bit: " + error; return false; }
     }
-    if (n["read_energy_guard"]) {   // 1.12.18 (user ruling 2026-10-23): guard only
+    if (n["read_energy_guard"]) {   // 1.12.18: guard only
         const YAML::Node g = n["read_energy_guard"]; r.read_energy_guard.valid = true;
         if (!need(g, "max_generation_gain", r.read_energy_guard.max_generation_gain, error) || !need(g, "gain_source", r.read_energy_guard.gain_source, error)) {
             error = "part record " + path + ": read_energy_guard: " + error; return false;
@@ -369,7 +369,7 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
         error = "part record " + path + " says technology '" + r.technology + "' but was loaded for '" + tech + "'";
         return false;
     }
-    /* (1.12.61) (user ruling 2026-10-25): the optional data_pattern block. */
+    /* (1.12.61): the optional data_pattern block. */
     if (n["data_pattern"]) {
         const YAML::Node p = n["data_pattern"];
         auto& d = r.data_pattern; d.valid = true;
@@ -517,7 +517,7 @@ const DramPartRecord& dramPartRecord(const std::string& tech) {
 }
 
 /* 1.11.101 (step 2): the record's own consistency, in place of the deleted
- * cross-check. The HBM capacity identity is ruling 16; the channel-count
+ * cross-check. The HBM capacity identity is; the channel-count
  * check ties the record to the IDD row the energy model prices with (the
  * row's basis is a measurement context, not a second table of the part). */
 bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>& errors) {
@@ -562,7 +562,7 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
         } else if (!rec.idd.by_grade.count(0) || rec.idd.by_grade.size() != 1) {
             errors.push_back("idd must be a single row (no by_grade) for " + t);
         }
-        for (const auto& kv : rec.idd.by_width) {   // (1.12.48) (user ruling 2026-10-25)
+        for (const auto& kv : rec.idd.by_width) {   // (1.12.48)
             const IddRow& r = kv.second;
             const std::string k = "idd.by_width " + kv.first;
             if (r.idd0 < 0.0 || r.idd2n < 0.0 || r.idd3n < 0.0 || r.idd4r < 0.0 || r.idd4w < 0.0 || r.idd5 < 0.0 || r.idd2p < 0.0) errors.push_back(k + ": currents must be non-negative");
@@ -584,7 +584,7 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
                 errors.push_back(k + ": io_share must be non-negative and inside the burst excess (idd4r - idd3n, idd4w - idd3n)");   // 1.12.18
             if (r.has_io_share && !r.io_share_provenance.empty() && r.io_share_provenance != "DERIVED" && r.io_share_provenance != "MEASURED")
                 errors.push_back(k + ": io_share.provenance must be DERIVED or MEASURED");   // 1.12.18
-            if (r.io_share_anchored) {   // 1.12.18 (user ruling 2026-10-23): the share IS its anchor at the channel rate
+            if (r.io_share_anchored) {   // 1.12.18: the share IS its anchor at the channel rate
                 if (!(r.io_anchor_rd_pj_bit > 0.0) || !(r.io_anchor_wr_pj_bit > 0.0) || !(r.io_channel_gbps > 0.0))
                     errors.push_back(k + ": io_share.anchor_read_pj_bit / anchor_write_pj_bit / channel_gbps must be positive");
                 else {
@@ -610,7 +610,7 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
             if (rec.termination.rtt_rd < 0.0 || rec.termination.rtt_wr < 0.0) errors.push_back("termination.rtt_rd / rtt_wr must be non-negative (0 = no DC termination path)");
         }
         if (rec.iddq_band.valid && !(rec.iddq_band.lo > 0.0 && rec.iddq_band.hi >= rec.iddq_band.lo)) errors.push_back("iddq_band_pj_bit must satisfy 0 < lo <= hi");
-        if (rec.read_energy_guard.valid) {   // 1.12.18 (user ruling 2026-10-23)
+        if (rec.read_energy_guard.valid) {   // 1.12.18
             if (!(rec.read_energy_guard.max_generation_gain >= 0.0 && rec.read_energy_guard.max_generation_gain < 1.0))
                 errors.push_back("read_energy_guard.max_generation_gain must be in [0, 1)");
             for (const auto& ref : rec.read_energy_guard.references)
@@ -629,7 +629,7 @@ bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>&
             if (!close(die_gb, rec.die_capacity_gb, 1e-6))
                 errors.push_back("die_capacity_gb " + fmt(rec.die_capacity_gb) + " != stack capacity / dies = " + fmt(die_gb) +
                                  " Gb (preset " + std::to_string(org.density_mb) + " MB/channel x " + std::to_string(rec.channels) +
-                                 " channels x 8 / " + std::to_string(rec.stack_dies) + " dies; ruling 16)");
+                                 " channels x 8 / " + std::to_string(rec.stack_dies) + " dies)");
         }
         const int idd_ch = w.getIddRowChannels();
         if (stacked && idd_ch > 0 && idd_ch != rec.channels)
@@ -881,7 +881,7 @@ bool loadCoreRecord(CoreRecord& out, std::string& error) {
         return false;
     }
     out.in_order.retire_width = -1;
-    /* 1.12.1 (ticket #114): the in-order element's branch predictor --
+    /* 1.12.1: the in-order element's branch predictor --
      * required like every field (no value lives in code); pag | none. */
     if (!io["branch_predictor"]) {
         error = "core record " + out.file + ": 'in_order' lacks 'branch_predictor' (in_order.branch_predictor: "

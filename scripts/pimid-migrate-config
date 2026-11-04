@@ -3,7 +3,7 @@
 block under system:.
 
 Through 1.12.7 a device-only run was described by hardware blocks at the left margin (pim:, memory:,
-noc:, cache.l*, technology:). Since 1.12.8 (the configuration-shape rulings of 2026-10-15) every
+noc:, cache.l*, technology:). Since 1.12.8 every
 hardware block is written under system: -- a device is a system.devices[] entry (a memory with PEs), a
 memory without PEs a system.memories[] entry, a host a system.hosts[] entry -- and a hardware block
 left at the margin is ignored with a warning. The left margin keeps the run's keys: workload, scope

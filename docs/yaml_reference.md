@@ -29,16 +29,16 @@ Complete reference for all YAML configuration keys supported by PIMID.
   - [Host-Device Link](#host-device-link-powerlink-legacy-powerpcie)
 - [System Configuration](#system-configuration)
   - [Hosts](#hosts)
-  - [Host Memory Path (co-sim)](#host-memory-path-co-sim)
-  - [Host NoC (co-sim)](#host-noc-co-sim)
-  - [Separate Host Memory (co-sim)](#separate-host-memory-co-sim)
+  - [Host Memory Path (co-simulation)](#host-memory-path-co-simulation)
+  - [Host NoC (co-simulation)](#host-noc-co-simulation)
+  - [Separate Host Memory (co-simulation)](#separate-host-memory-co-simulation)
   - [Devices](#devices)
-  - [Host-Device Bridge (co-sim)](#host-device-bridge-co-sim)
-  - [Coherence (co-sim)](#coherence-co-sim)
-  - [Data placement (co-sim)](#data-placement-co-sim)
-  - [Kernel Launch (co-sim)](#kernel-launch-co-sim)
+  - [Host-Device Bridge (co-simulation)](#host-device-bridge-co-simulation)
+  - [Coherence (co-simulation)](#coherence-co-simulation)
+  - [Data placement (co-simulation)](#data-placement-co-simulation)
+  - [Kernel Launch (co-simulation)](#kernel-launch-co-simulation)
   - [System Network](#system-network)
-  - [Host Block (scope: cosim)](#host-block-host-scope-cosim)
+  - [Host Block (retired)](#host-block-host-scope-cosim----retired-in-1128)
 - [Enumerations](#enumerations)
 - [Override Rules](#override-rules)
 - [Examples](#examples)
@@ -58,8 +58,7 @@ Complete reference for all YAML configuration keys supported by PIMID.
 
 ## Configuration Shape (1.12.8)
 
-Every hardware block is written under `system:` (ruling 5 of 2026-10-15,
-"everything under system"). A device is a `system.devices[]` entry (a memory
+Every hardware block is written under `system:` (everything under system). A device is a `system.devices[]` entry (a memory
 with PEs), a memory without PEs a `system.memories[]` entry, a host a
 `system.hosts[]` entry. The nodes decide what the run is (1.12.9): a system
 with `system.hosts[]` is a co-simulation, one without is a device run. A
@@ -87,16 +86,16 @@ The left margin keeps the run's keys: `workload`, `method`, `name`,
 dropped before the key schema runs, with one `[config] WARNING` naming every
 dropped key; the run continues on the nodes. A file with no device node is
 refused, naming `system.devices[]`; a second node in a device run is refused
-by name (the device-scope model has one memory, the device's). A `scope:`
+by name (the device-run model has one memory, the device's). A `scope:`
 line is a retired word, dropped with a warning (1.12.9).
-In a device run a key the node does not give takes the device-scope default
+In a device run a key the node does not give takes the device-run default
 (as the margin form did: a core-type PE's 16 KB L1I and 2 MB L2); in a
 co-simulation it takes the node table's default (32/32/256 KB caches,
 `alu_core`, 0 PEs, 1000 MHz, `DDR4`).
 `scripts/pimid-migrate-config` rewrites a pre-1.12.8 file into this shape,
 text-preserving, and checks the rewrite; `--check` reports whether a file is
 already in shape. The key tables below describe each block as written in its
-node; the device-scope-only cache keys (`cache.l2.count`, the `energy_nj` /
+node; the device-run-only cache keys (`cache.l2.count`, the `energy_nj` /
 `static_power_mw` overrides, `cache.pg`) are accepted in the device node of a
 device run and stay refused in a co-simulation node.
 A device or a memory may declare its address window and a host or a device
@@ -119,7 +118,7 @@ contents are the user's own are exempt: `workload.env`,
 `pim.mapping.map`, `pim.mc.groups` and `power.mcpat_overrides` (whose names
 are checked separately, see [McPAT Overrides](#mcpat-overrides)). A
 `system.hosts[]` node accepts the keys listed under [Hosts](#hosts). A
-`system.devices[]` node accepts its node keys and every device-scope key --
+`system.devices[]` node accepts its node keys and every device key --
 each `pim.*`, `memory.*`, `noc.*`, `cache.*`, `core.*` and
 `technology.node_nm` key on this page, under the node (1.11.107, one
 vocabulary; see [Devices](#devices) for what the system model does with each).
@@ -141,8 +140,8 @@ refuses (rc 2), naming both; the later one used to win in silence. The pairs:
 - `memory.timing.read_latency_ns` / `memory.timing.subarray_read_ns`, and `memory.timing.write_latency_ns` / `memory.timing.subarray_write_ns`
 - `noc.bridges` / `noc.gateways`
 - `power.link` / `power.pcie`
-- inside a `system.devices[]` node, each flat node key and the device-scope key
-  it aliases, and the pairs above that are device-scope keys (1.11.107; the
+- inside a `system.devices[]` node, each flat node key and the device key
+  it aliases, and the pairs above that are device keys (1.11.107; the
   list is under [Devices](#devices))
 
 The L0 words follow the same rule since 1.11.74: one of
@@ -172,19 +171,19 @@ workload:
 |-----|------|---------|-------------|
 | `workload.binary` | string | `""` | Path to workload binary. CLI `--workload` overrides this. |
 | `workload.args` | list | `[]` | Command-line arguments (YAML list of strings). CLI `--workload` args override. |
-| `workload.env` | map | `{}` | Environment variables injected into the workload process. In system scope a node's own `workload.env` joins this map (see [Hosts](#hosts)). |
+| `workload.env` | map | `{}` | Environment variables injected into the workload process. In a co-simulation a node's own `workload.env` joins this map (see [Hosts](#hosts)). |
 | `workload.type` | string | `"serial"` | Workload type: `serial`, `openmp`, or `mpi`. |
-| `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `host.num_cores` for a system-scope `PIMID_COSIM_NO_OFFLOAD` baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
-| `workload.mpich_path` | string | - | Deprecated and ignored, with a warning: PIMID no longer uses `mpirun`. |
+| `workload.mpi_ranks` | int | `0` | Number of MPI ranks. 0 = auto (defaults to `pim.pe.count`; `system.hosts[].num_cores` for a `PIMID_COSIM_NO_OFFLOAD` host baseline, where the host runs the kernel). CLI `--mpi-ranks` overrides. |
+| `workload.mpich_path` | string | - | Deprecated and ignored, with a warning: PIMID no longer uses `mpirun`. The command-line flag `--mpich-path <dir>` is the same: accepted and ignored with a warning. |
 
-**The guest's environment is set by the launch (since (1.12.64)).** The guest gets
+**The guest's environment is set by the launch (since 1.12.64).** The guest gets
 `workload.env`, the OpenMP settings PIMID adds, and from pimid's own environment
 only the OpenMP runtime's variables by name (the `OMP_*` variables of OpenMP 5.2 and
 libgomp's `GOMP_*` ones, with their device suffixes) and the `PIMID_*` variables the
 shipped guest code reads.
-Nothing else of the user's environment reaches the guest (since (1.12.192) an `OMP_` or
+Nothing else of the user's environment reaches the guest (since 1.12.192 an `OMP_` or
 `GOMP_` name that is not the OpenMP runtime's is dropped, with a note); a workload that needs
-another variable sets it in `workload.env`. Since (1.12.192) the guest's environment is a
+another variable sets it in `workload.env`. Since 1.12.192 the guest's environment is a
 fixed image: the variables of known names first, filler variables with empty values
 that keep the number of entries and of name characters the same, the padding, then
 the other `workload.env` variables, so the strings the guest reads keep their
@@ -196,9 +195,9 @@ do); more, or longer names, are passed with a note. `PATH`, `LD_LIBRARY_PATH`, `
 installation and user values are not passed: a workload that needs one (a guest
 library outside the system paths, say) sets it in `workload.env`. A dynamic-loader
 variable of `workload.env` (`LD_*`) reaches the guest only, never the emulator
-itself (since (1.12.120)). The guest's
+itself (since 1.12.120). The guest's
 `LD_LIBRARY_PATH` always ends with the system library directories
-(`/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib`, since (1.12.107)), so
+(`/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib:/usr/lib`, since 1.12.107), so
 its libraries are not looked up in the host's loader cache. The strings on
 the guest's stack are padded to a fixed size, its `AT_RANDOM` bytes are seeded,
 and its address space is reserved by the launch, so a serial result does not
@@ -237,9 +236,9 @@ pim:
 | `pim.pe.frequency_mhz` | int | `2000` | PE clock frequency in MHz. Overrides `system.frequency_mhz`. `noc.clock_mhz`, when given, overrides both. |
 | `pim.pe.pg` | bool | `false` | Power-gate the PE cores and their private caches over their measured idle residency. The shared L2/L3 gate with them unless `cache.pg: false`. |
 | `pim.pe.fp_emulation_cycles` | int | `0` | Cycles charged per floating-point-class instruction when `floating_point: false` (software emulation). `0` charges nothing; the run then reports how many FP instructions executed uncharged. A non-negative integer. |
-| `pim.pe.arch_int_regs` | int | `16` | Architectural integer registers the power model prices (McPAT's register file). Default 16, the simulated x86-64 guest's count (since 1.11.97; it was 32). The timing model executes x86-64 whatever the value; a set value is printed as the user's. Must be >= 1. In system scope it prices every host -- the host node on the per-node path (since 1.11.94) and the host of the `trace` method's power path (since 1.12.2; McPAT's built-in 32 before) -- and it is the default of every device node, which may set its own (`system.devices[].pim.pe.arch_int_regs`, 1.11.107); the device's own value prices it on both power paths (the `trace` path since 1.12.2, with the node's `lanes`, `imem_bytes` and `operand_width`). |
+| `pim.pe.arch_int_regs` | int | `16` | Architectural integer registers the power model prices (McPAT's register file). Default 16, the simulated x86-64 guest's count (since 1.11.97; it was 32). The timing model executes x86-64 whatever the value; a set value is printed as the user's. Must be >= 1. In a co-simulation it prices every host -- the host node on the per-node path (since 1.11.94) and the host of the `trace` method's power path (since 1.12.2; McPAT's built-in 32 before) -- and it is the default of every device node, which may set its own (`system.devices[].pim.pe.arch_int_regs`, 1.11.107); the device's own value prices it on both power paths (the `trace` path since 1.12.2, with the node's `lanes`, `imem_bytes` and `operand_width`). |
 | `pim.pe.arch_fp_regs` | int | `16` | Architectural floating-point registers the power model prices; as `arch_int_regs`. |
-| `pim.pe.element_bits` | int | - | WITHDRAWN: refused (rc 1). The element's datapath width is `pim.pe.operand_width`, which the timing model reads; a second name let the two halves disagree. |
+| `pim.pe.element_bits` | int | - | Withdrawn: refused (rc 1). The element's datapath width is `pim.pe.operand_width`, which the timing model reads; a second name let the two halves disagree. |
 
 **ALU Scaling Factors** (only meaningful for `alu_core`):
 
@@ -249,15 +248,15 @@ pim:
 | `pim.pe.access_factor` | double | `1.0` | Cycles per load/store. `0.0` = free local access (PUM). |
 | `pim.pe.throughput_factor` | double | `1.0` | Parallelism divider on instruction count. |
 | `pim.pe.bit_serial` | bool | `false` | Datapath model. `false` = bit-parallel (operand width has no cycle cost). `true` = bit-serial PUM (compute cost proportional to `operand_width`). |
-| `pim.pe.operand_width` | int | `32` | Datapath width in bits, used by BOTH halves of the model. Timing: with `bit_serial: true` compute cost scales linearly with width (a W-bit op = W bit-steps); with `bit_serial: false` it has no cycle cost. Power/area: always sizes the register files, queue entries and result buses. The power model quantises to 32-bit granularity, so a narrower element is priced as 32-bit and says so. |
+| `pim.pe.operand_width` | int | `32` | Datapath width in bits, used by both halves of the model. Timing: with `bit_serial: true` compute cost scales linearly with width (a W-bit op = W bit-steps); with `bit_serial: false` it has no cycle cost. Power/area: always sizes the register files, queue entries and result buses. The power model quantises to 32-bit granularity, so a narrower element is priced as 32-bit and says so. |
 | `pim.pe.energy_factor` | double | `1.0` | Per-op energy scale factor (reporting only, does not affect timing). |
-| `pim.pe.lanes` | int | `1` | Datapath replication. `1` = scalar, `W` = W-wide. Sizes the arithmetic units, register file and result bus in the power/area model. It does NOT speed the element up on its own -- the timing model expresses width through `throughput_factor`, so set both. Declaring lanes without throughput_factor warns, since the result is an element that pays for W lanes and runs like one. |
-| `pim.pe.floating_point` | bool | `true` | Whether the element has a floating-point unit. Default true because three of the five kernels are FP32. WARNS when false: this removes the unit from the power description only -- the timing model never sees an opcode, so it will not charge software emulation. Honest for an integer kernel, not for a floating-point one. |
+| `pim.pe.lanes` | int | `1` | Datapath replication. `1` = scalar, `W` = W-wide. Sizes the arithmetic units, register file and result bus in the power/area model. It does not speed the element up on its own -- the timing model expresses width through `throughput_factor`, so set both. Declaring lanes without throughput_factor warns, since the result is an element that pays for W lanes and runs like one. |
+| `pim.pe.floating_point` | bool | `true` | Whether the element has a floating-point unit. Default true because three of the five kernels are FP32. Warns when false: this removes the unit from the power description only -- the timing model never sees an opcode, so it will not charge software emulation. Accurate for an integer kernel, not for a floating-point one. |
 | `pim.pe.imem_bytes` | int | `4096` | Size of the element's resident instruction memory. Spans a command-driven in-bank engine (hundreds of bytes) to a programmable near-bank one (kilobytes); minimum 64. This is the axis that decides which kernels fit on an element. |
 | `pim.pe.spm_bytes` | int | `4096` | Size of the compute unit's data scratchpad (since 1.12.18): a private RAM beside the datapath that the kernel fills and drains a block at a time, as UPMEM's WRAM (64 KB) or an HBM-PIM register file. A power of two of at least 128 bytes (16 rows of its 64-bit word; CACTI builds no array below 16 rows), or `0` for none; anything else is refused. Its access time and energy come from CACTI at the PE's logic node (a plain RAM with a 64-bit word: no tags, no miss path). It belongs to the compute unit (`alu_core`); giving it to an in-order or out-of-order PE, which has an L1 data cache instead, is refused. Nothing enters it by itself -- see [the scratchpad section of benchmarks.md](benchmarks.md#the-pe-scratchpad). |
 | `pim.pe.spm_staging` | string | `dma` | Who moves the scratchpad's blocks (since 1.12.18). `dma`: a DMA engine on each PE issues the block's lines through the PE's own memory path in address order, at the path's bandwidth; the PE waits and executes no copy instructions. The engine is priced from McPAT's own models (a one-line buffer, its three 64-bit counter registers and one adder). `core`: the PE copies the block with its own 8-byte loads and stores, each one priced. |
 | `pim.pe.stack` | string | `dram` | Where the compute unit's own stack lives (since 1.12.18). `dram`: in the PE's own DRAM, as before 1.12.18; every stack access, a compiler's register spill included, is a memory access. `spm`: in the scratchpad, as UPMEM keeps each tasklet's stack in its WRAM; stack accesses then cost scratchpad accesses, and the stack takes `spm_stack_bytes` of `spm_bytes`, the kernel's buffers the rest. Another thread's stack (an OpenMP master's shared variables, read by its workers) is always in its owner's memory. Each PE reports the stack span it touched in the ROI (`stackSpanBytes`), in either mode. Needs `spm_bytes` > 0 for `spm`; compute unit (`alu_core`) only. |
-| `pim.pe.spm_stack_bytes` | int | `8192` | The stack's share of the scratchpad with `stack: spm` (since 1.12.18); refused with `stack: dram`. A positive multiple of 64 leaving the kernel at least 128 bytes, so the default needs `spm_bytes` of at least 16384. A run whose stack spans more than this in the ROI stops with an error naming both values (a co-simulation rank's post-ROI tail is outside the ROI and not counted). The default holds the ROI stack of every shipped kernel: at most 648 bytes measured for the serial and OpenMP forms and 3,736 bytes for the message-passing ones. (Since (1.12.211) the MPI library's process-mode receive, with its 64 KB message slot, is a frame of its own; before, every receive entered that frame and a rank that receives inside the ROI touched about 69 KB.) |
+| `pim.pe.spm_stack_bytes` | int | `8192` | The stack's share of the scratchpad with `stack: spm` (since 1.12.18); refused with `stack: dram`. A positive multiple of 64 leaving the kernel at least 128 bytes, so the default needs `spm_bytes` of at least 16384. A run whose stack spans more than this in the ROI stops with an error naming both values (a co-simulation rank's post-ROI tail is outside the ROI and not counted). The default holds the ROI stack of every shipped kernel: at most 648 bytes measured for the serial and OpenMP forms and 3,736 bytes for the message-passing ones. (Since 1.12.211 the MPI library's process-mode receive, with its 64 KB message slot, is a frame of its own; before, every receive entered that frame and a rank that receives inside the ROI touched about 69 KB.) |
 
 **Cycle model**: BBL cycles = `instructions * compute_factor / throughput_factor`, load/store = `access_factor` cycles each.
 
@@ -335,15 +334,15 @@ pim:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `pim.mc.type` | string | `"simple"` | PE-MC type: `simple` (M/D/1 queuing always active; the only PE-MC model). Another word is accepted with a WARNING that it has no separate implementation; under a `system.devices[]` node anything but `simple` is refused (1.11.106). |
+| `pim.mc.type` | string | `"simple"` | PE-MC type: `simple` (M/D/1 queuing always active; the only PE-MC model). Another word is accepted with a warning that it has no separate implementation; under a `system.devices[]` node anything but `simple` is refused (1.11.106). |
 | `pim.mc.pes_per_mc` | int | `1` | Number of PEs sharing each memory controller. |
 | `pim.mc.local_latency` | int | `-1` | Local access latency in cycles. `-1` = auto-derived from memory technology. |
-| `pim.mc.bandwidth_mbs` | int | `-1` | Bandwidth in MB/s . `-1` = auto-derived from Ramulator. |
+| `pim.mc.bandwidth_mbs` | int | `-1` | Bandwidth in MB/s. `-1` = auto-derived from Ramulator. |
 | `pim.mc.groups` | list | `[]` | Per-group overrides. Each entry: `{id, type, local_latency, bandwidth_mbs}`; a group `type` other than `simple` warns, as `pim.mc.type` does. |
 | `pim.mc.placement` | string | `"with_core"` | Where each controller sits: `with_core` (beside the PE and its caches) or `standalone` (its own NoC endpoint, one per memory organisation, so even a local access takes one extra hop). Any other word is refused. |
 | `pim.mc.clock_gear` | int | `1` | Controller clock McPAT prices, as the DRAM preset's CK x this gear: `1` (an on-die controller) or `2` (a gear-2 controller); any other value is refused (rc 1). A non-DRAM memory has no CK: its controller is priced at half the core clock and the key does not apply. |
 | `pim.mc.epoch_replay` | bool | `true` | Replay every memory interface's DRAM requests through Ramulator2 once per epoch and price the previous epoch's measured service latency. Applies to a DRAM technology on the `ramulator` controller, for shared-memory and message-passing (`exec` method) runs; a message-passing run folds each epoch at the consistent cut of its ranks' clocks. A message-passing `trace` run keeps the deterministic M/D/1 service. `false` keeps the analytical (M/D/1) service. The run prints which one it used. |
-| `pim.mc.pg` | bool | `false` | Power-gate the memory controller LOGIC over its measured idle residency. It gates neither DRAM (see `memory.power_down`) nor an array (see `memory.array_pg`). |
+| `pim.mc.pg` | bool | `false` | Power-gate the memory controller logic over its measured idle residency. It gates neither DRAM (see `memory.power_down`) nor an array (see `memory.array_pg`). |
 
 **Required** for all placement levels except `HOST_MC`. Without PE-MCs, every memory access would traverse the full hierarchy to the host MC.
 
@@ -359,7 +358,7 @@ The timing cores' front-end penalties come from the core part record,
 derivation. A `core:` key replaces one field for the run -- every core of that
 type, host and device -- and the run prints it as the user's number.
 
-The record's `ooo_host` section sizes the HOST out-of-order core's window: `rob_entries`,
+The record's `ooo_host` section sizes the host out-of-order core's window: `rob_entries`,
 `load_queue_entries`, `store_queue_entries`, `scheduler_entries`, `l1d_fill_buffers` (0 = unlimited) and `store_buffer`. It
 has no `core:` key; edit the record to run another window ([cores.md](cores.md)).
 
@@ -416,30 +415,30 @@ memory:
 |-----|------|---------|-------------|
 | `memory.technology` | string | `"SRAM"` | Memory technology. See [Memory Technologies](#memory-technologies). |
 | `memory.topology` | string | per technology | (1.12.65). The memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between the connector and the DRAM in the termination loop: DDR3/DDR4 DIMMs 15 ohm, DDR5 RDIMM 15 ohm, DDR5 UDIMM/SODIMM 0, soldered 0. Defaults: DDR3/DDR4/DDR5 `rdimm` (the host baselines are server class), LPDDR5/GDDR6/HBM2/HBM3 `soldered` (their only topology). Refused: any other value, a DIMM topology on LPDDR5/GDDR6/HBM, any value on a non-DRAM memory, `lrdimm` (data buffers not modelled), `camm2`/`lpcamm2`. The log prints the topology, the stub and its source. |
-| `memory.banks` | int | `4` | Number of memory banks. Honoured for SRAM and the NVMs. **INERT for every DRAM technology**, which always simulates its preset's full bank count -- see the table below. |
+| `memory.banks` | int | `4` | Number of memory banks. Honoured for SRAM and the NVMs. **Inert for every DRAM technology**, which always simulates its preset's full bank count -- see the table below. |
 | `memory.subarrays_per_bank` | int | derived | Count of the tier one level below the bank. The `4` in the config struct is only a starting value: on a DRAM technology the run computes the count as the preset's `bank_rows` / subarray height (512 rows, 1024 on HBM), and since 1.11.73 a non-DRAM technology takes it from its own array model (CACTI for SRAM, NVSim for the NVMs). Setting this key overrides the derivation, and the run says which key set it. Family spellings `memory.subbanks_per_bank` (SRAM) and `memory.mats_per_bank` (NVM) are accepted since 1.11.74 -- give exactly one, and the wrong family's word is refused. |
 | `memory.latency` | int | `-1` | Override memory latency in cycles. `-1` = auto from external models. |
-| `memory.dram.device_width` | string | unset | DRAM device width for the DDR family (`x4`/`x8`/`x16`). Selects the org preset row and, since 1.11.66, the org Ramulator instantiates -- the two are bound by a live shape check. UNSET means each technology's own JEDEC default, which is x8 for DDR3/DDR4/DDR5 and x16 for LPDDR5 and GDDR6; it is not a literal x8. LPDDR5 accepts only x16 and GDDR6 only x8/x16 (their other presets do not exist upstream), and HBM refuses the key outright -- a stacked part has no x4/x8/x16 width. An unrecognised value is refused since 1.11.76. On a non-DRAM technology (SRAM, the NVMs) the key is refused (1.11.106; it used to pass the width check and be ignored). |
-| `memory.dram.ddr3_variant` | string | `DDR3` (the part record's default) | Since 1.12.25 (user ruling 2026-10-24). The DDR3 part's voltage variant: `DDR3` = 1.5 V, SSTL-15 termination (JESD79-3E); `DDR3L` = 1.35 V, SSTL-135 (JESD79-3-1). Both price the same 4 Gb x8 die Rev E currents (Micron Table 20 is titled "for 1.35/1.5V Operation"), so the variant moves VDD and VDDQ only. Run-wide (the part record is one per technology); refused when the run has no DDR3 memory. |
-| `memory.dram.trfc_basis` | string | `datasheet` (the part record's default) | Since 1.12.25 (user ruling 2026-10-24). The tRFC a part with tRFC bases (DDR3) is timed AND refreshed at: `datasheet` = the Micron 4 Gb sheet's 260 ns (the tRFC its IDD5B loop runs at), `jedec` = JESD79-3E Table 61's 300 ns. Written into the Ramulator timing as a `tRFC` override and used for the refresh energy per REF. Run-wide; refused when no record of the run carries tRFC bases. |
-| `memory.dram.ddr5_speed_grade` | int | `4800` (the part record's grade) | DDR5 speed grade, one of `3200`, `4800`, `5600` (since 1.11.66). Since 1.12.19 the default is `4800` again (DDR5-4800B, Micron MT60B 16 Gb x8 Die Rev A, core sheet Table 6; user ruling 2026-10-24): Rev D's Table 8 has no 4800 column, which is why 1.12.18 defaulted to `5600`, but Rev A publishes the 4800 column for the same 16 Gb x8 part. `5600` (Rev D) and `3200` stay selectable. Selects ONE part: timing preset (`DDR5_3200AN` / `DDR5_4800B` / `DDR5_5600B` -- the B bins at 4800/5600 because the Micron MT60B dies whose IDD currents are used are -48B/-56B parts), org (the 16 Gb MT60B die at every grade; 3200 ran the 8 Gb part until (1.12.141)), IDD row (Micron Rev A / Rev D addenda), and data rate. Since (1.12.141) (user ruling 2026-10-28) the 3200 IDD, IDDQ and IPP rows are scaled from the Rev A 4800 column by data rate (burst increments and background standby x 3200/4800; activate, refresh and power-down currents as at 4800), on the 16 Gb organisation the 3200 bin runs since then (tRFC1 295 ns). Any other value is a FATAL configuration error. |
-| `memory.row_policy.host_idle_timeout_clocks` | int | `128` | Since 1.12.18 (user ruling 2026-10-24). DRAM row policy for HOST (CPU) requests on DDR4 and DDR3: adaptive open page -- a bank whose row a host access left open is precharged after this many memory clocks with no access to it (Ramulator2 plugin PimidSourceRowPolicy, host: timeout). Default 128 = the only published timer value, AMD BKDG Family 15h Models 00h-0Fh (42301 Rev 3.14) D18F2x90 DynPageCloseEn=0, p.307-308: "automatically closed after 128 clocks of inactivity". Intel's adaptive default (Lenovo Press LP1477 p.18) publishes no timer. PE (in-memory) requests are always open page (SK hynix AiM, Hot Chips 34; Samsung PIMSimulator open_page); every other host technology (LPDDR5, GDDR6, HBM2/HBM3) is open page; DDR5 host is closed page (next key). Must be >= 1 (FATAL otherwise). |
-| `memory.row_policy.host_closed_mode` | string | `auto_precharge` | Since 1.12.18 (user ruling 2026-10-24). How the DDR5 HOST closed-page policy closes a row (Lenovo Press LP1836 p.12, 4th/5th Gen Xeon SP: page policy "Closed (Default)"): `auto_precharge` translates host reads/writes to RDA/WRA (Ramulator2 DDR5 model; PIMID adds their row prerequisites); `explicit_pre` issues a separate PRE after every host column access (Ramulator2 ClosedRowPolicy cap 1). Any other value is FATAL. Co-sim YAML and the analytical oracle emit the policy from one function (RamulatorWrapper::rowPolicyYaml). |
+| `memory.dram.device_width` | string | unset | DRAM device width for the DDR family (`x4`/`x8`/`x16`). Selects the org preset row and, since 1.11.66, the org Ramulator instantiates -- the two are bound by a live shape check. Unset means each technology's own JEDEC default, which is x8 for DDR3/DDR4/DDR5 and x16 for LPDDR5 and GDDR6; it is not a literal x8. LPDDR5 accepts only x16 and GDDR6 only x8/x16 (their other presets do not exist upstream), and HBM refuses the key outright -- a stacked part has no x4/x8/x16 width. An unrecognised value is refused since 1.11.76. On a non-DRAM technology (SRAM, the NVMs) the key is refused (1.11.106; it used to pass the width check and be ignored). |
+| `memory.dram.ddr3_variant` | string | `DDR3` (the part record's default) | Since 1.12.25. The DDR3 part's voltage variant: `DDR3` = 1.5 V, SSTL-15 termination (JESD79-3E); `DDR3L` = 1.35 V, SSTL-135 (JESD79-3-1). Both price the same 4 Gb x8 die Rev E currents (Micron Table 20 is titled "for 1.35/1.5V Operation"), so the variant moves VDD and VDDQ only. Run-wide (the part record is one per technology); refused when the run has no DDR3 memory. |
+| `memory.dram.trfc_basis` | string | `datasheet` (the part record's default) | Since 1.12.25. The tRFC a part with tRFC bases (DDR3) is timed and refreshed at: `datasheet` = the Micron 4 Gb sheet's 260 ns (the tRFC its IDD5B loop runs at), `jedec` = JESD79-3E Table 61's 300 ns. Written into the Ramulator timing as a `tRFC` override and used for the refresh energy per REF. Run-wide; refused when no record of the run carries tRFC bases. |
+| `memory.dram.ddr5_speed_grade` | int | `4800` (the part record's grade) | DDR5 speed grade, one of `3200`, `4800`, `5600` (since 1.11.66). Since 1.12.19 the default is `4800` again (DDR5-4800B, Micron MT60B 16 Gb x8 Die Rev A, core sheet Table 6): Rev D's Table 8 has no 4800 column, which is why 1.12.18 defaulted to `5600`, but Rev A publishes the 4800 column for the same 16 Gb x8 part. `5600` (Rev D) and `3200` stay selectable. Selects one part: timing preset (`DDR5_3200AN` / `DDR5_4800B` / `DDR5_5600B` -- the B bins at 4800/5600 because the Micron MT60B dies whose IDD currents are used are -48B/-56B parts), org (the 16 Gb MT60B die at every grade; 3200 ran the 8 Gb part until 1.12.141), IDD row (Micron Rev A / Rev D addenda), and data rate. Since 1.12.141 the 3200 IDD, IDDQ and IPP rows are scaled from the Rev A 4800 column by data rate (burst increments and background standby x 3200/4800; activate, refresh and power-down currents as at 4800), on the 16 Gb organisation the 3200 bin runs since then (tRFC1 295 ns). Any other value is a FATAL configuration error. |
+| `memory.row_policy.host_idle_timeout_clocks` | int | `128` | Since 1.12.18. DRAM row policy for host (CPU) requests on DDR4 and DDR3: adaptive open page -- a bank whose row a host access left open is precharged after this many memory clocks with no access to it (Ramulator2 plugin PimidSourceRowPolicy, host: timeout). Default 128 = the only published timer value, AMD BKDG Family 15h Models 00h-0Fh (42301 Rev 3.14) D18F2x90 DynPageCloseEn=0, p.307-308: "automatically closed after 128 clocks of inactivity". Intel's adaptive default (Lenovo Press LP1477 p.18) publishes no timer. PE (in-memory) requests are always open page (SK hynix AiM, Hot Chips 34; Samsung PIMSimulator open_page); every other host technology (LPDDR5, GDDR6, HBM2/HBM3) is open page; DDR5 host is closed page (next key). Must be >= 1 (FATAL otherwise). |
+| `memory.row_policy.host_closed_mode` | string | `auto_precharge` | Since 1.12.18. How the DDR5 host closed-page policy closes a row (Lenovo Press LP1836 p.12, 4th/5th Gen Xeon SP: page policy "Closed (Default)"): `auto_precharge` translates host reads/writes to RDA/WRA (Ramulator2 DDR5 model; PIMID adds their row prerequisites); `explicit_pre` issues a separate PRE after every host column access (Ramulator2 ClosedRowPolicy cap 1). Any other value is FATAL. Co-simulation YAML and the analytical oracle emit the policy from one function (RamulatorWrapper::rowPolicyYaml). |
 | `memory.dq_turnaround` | bool | `true` | Charge the shared DQ bus a direction-reversal penalty (JEDEC tWTR) between a write and a read. Since 1.11.65 the penalty is computed as nWTR_L x tCK from the Ramulator timing preset the run selects (DDR3 7.5 ns, DDR4 7.5, DDR5 10.0, LPDDR5 12.5, GDDR6 6.28, HBM2 8.33, HBM3 8.125 at the shipped presets; GDDR6 read 11.0 in 1.11.65 from a wrong clock, corrected in 1.11.66) and printed at load; earlier releases carried a hand-written table that had drifted 1.75x low for GDDR6. Set `false` for a design with a dedicated PIM interconnect and no shared bus. |
 | `memory.subarray_height` | int | per technology (`512`; `1024` on HBM2/HBM3) | Rows per subarray on a DRAM technology: the subarray count is derived as the preset's bank rows / this height unless `memory.subarrays_per_bank` is given. `0` or absent = the per-technology value (measured die geometry). Not used by SRAM or the NVMs. |
-| `memory.organization.bank_groups` | int | the technology's | Bank groups per chip in the in-memory hierarchy. `0` or absent = the technology's JEDEC organisation at the selected device width. Refused on an SRAM or NVM device ((1.12.247)): it has no bank groups; each element's interface and the banks of its slot form one local group (as `banks_per_group`). |
+| `memory.organization.bank_groups` | int | the technology's | Bank groups per chip in the in-memory hierarchy. `0` or absent = the technology's JEDEC organisation at the selected device width. Refused on an SRAM or NVM device (1.12.247): it has no bank groups; each element's interface and the banks of its slot form one local group (as `banks_per_group`). |
 | `memory.organization.banks_per_group` | int | the technology's | Banks per bank group in the in-memory hierarchy; as `bank_groups`. |
-| `memory.local_path` | string | `bus` | (1.12.259) How an SRAM or NVM element reaches the banks of its own group at the `BANK` placement: `bus` = the group's shared local bus, priced as a link in both network models, only traffic between groups crossing the die router; `garnet` = every bank its own network endpoint and the element its own port on the group's router, every access a network request and reply in the detailed model and the same router path in the analytical model; `garnet_bus` ((1.12.259)) = the same endpoints with each group's router a shared bus (one transfer per cycle, arbitrated), priced as a bus with its arbiter. Refused on a DRAM device, at `MAT` / `SUBBANK`, and with a named flat `noc.topology`. See [network.md](network.md). |
+| `memory.local_path` | string | `bus` | (1.12.259) How an SRAM or NVM element reaches the banks of its own group at the `BANK` placement: `bus` = the group's shared local bus, priced as a link in both network models, only traffic between groups crossing the die router; `garnet` = every bank its own network endpoint and the element its own port on the group's router, every access a network request and reply in the detailed model and the same router path in the analytical model; `garnet_bus` (1.12.259) = the same endpoints with each group's router a shared bus (one transfer per cycle, arbitrated), priced as a bus with its arbiter. Refused on a DRAM device, at `MAT` / `SUBBANK`, and with a named flat `noc.topology`. See [network.md](network.md). |
 | `memory.write_buffer_entries` | int | `32` | (1.12.266) Posted writes on an SRAM or NVM device at the `BANK` placement, with every `memory.local_path`, in both network models. Each element's controller takes a write to a bank of its own slot into its write buffer and acknowledges it one cycle later; the write then crosses the path and waits for its bank. The banks serve reads first: a read is served ahead of the posted writes still waiting for its bank, which start after it (a write that has started is not interrupted), and while more than 80% of the entries are taken the oldest writes keep their place until at most 80% remain. A read of a line a buffered write holds is answered by the controller from the buffer one cycle after its issue, with no path or bank access. A write that finds every entry taken waits for the earliest to complete. Fences and barriers do not wait for the buffer to drain, as on Intel Optane DC persistent memory, whose fences wait for a store to reach the memory controller's write pending queue, not the media (Yang et al., FAST 2020). A write to another element's slot is acknowledged by its bank. `0` = blocking writes: a write is acknowledged when its bank has written it. The scheduling is the baseline PCM controller of Qureshi et al., PreSET, ISCA 2012 (Sec. 4.1 and Table 1: read priority while the write queue is under 80% full, a read of a pending line served by the write queue); PCM controllers buffer writes the same way in Qureshi et al., HPCA 2010. The default depth is the write queue PIMID prices for every PIM element controller (PARE, Green et al., MICRO 2026, Sec. V-A). The power model prices the controller's write buffer for that many lines and, past 32 entries, its write queue for that many requests. Refused on a DRAM device, at `MAT` / `SUBBANK`, and with a named flat `noc.topology`. See [network.md](network.md). |
 | `memory.ranks_per_channel` | int | `1` | Ranks per channel: the fanout of the rank tier. Refused above 1 on HBM2/HBM3, which fold the channel count into chips per rank. |
 | `memory.ports_per_bank` | int | `1` | Physical read/write ports per bank (a multiport SRAM; DRAM and NVM parts have one). Bounds the PE memory interfaces (organisations x ports) and sets the array model's port count. A value below 1 is taken as 1. |
 | `memory.bank_kb` | int | `64` | SRAM/NVM bank size in KB; device capacity = `memory.banks` x this size. Must be >= 1. A set value is printed as the user's. |
 | `memory.sram_cell_type` | string | `hp` | The SRAM device array's data-array cell flavor, one of CACTI's ITRS cells, for the array's timing and power together; the periphery follows `power.device_corner`. Measured on the 64 KB bank (512-bit access, 22 nm, 350 K, HP periphery): `hp` (default), high-performance cells: leakage 9.53 mW per bank (19.1 mW/Mb), read 12.5 pJ and write 39.4 pJ per access, 0.219 ns access, 215 F^2/bit. `lop`, low-operating-power cells: 11.9 mW (23.7 mW/Mb), 15.8 / 20.1 pJ, 0.305 ns, 254 F^2/bit. `lstp`, low-standby-power cells: 1.09 mW (2.17 mW/Mb), 22.1 / 27.0 pJ, 0.356 ns, 608 F^2/bit (the search, which minimises the cycle time, builds the slower cells into small subarrays). `lstp` cells with the default HP periphery are how last-level-cache arrays are built, as in the 22 nm Xeon LLC arrays Neural Cache computes in, accessed in one 4 GHz cycle (Eckert et al., ISCA 2018). For scale: a last-level cache leaks about 100 mW/MB, 12.5 mW/Mb (Horowitz, ISSCC 2014), and a 22 nm low-standby-power cell 10 pA (Jan et al., IEDM 2012). The run prints the flavor on its `[sram]` array line, and the bank's leakage split into cells and periphery on the line after. |
-| `memory.power_down` | bool | per technology | Since 1.12.20 (user rulings 2026-10-23 "1 and 3", 2026-10-24): DRAM precharge power-down in the replayed Ramulator2 controller -- a rank (a channel without a rank level) enters power-down after `memory.power_down_idle_clocks` idle memory clocks, the first command after it waits tXP, and the energy model credits the measured residency at IDD2P (Background is the reduced figure; a credit line is printed). Default ON for DDR3 (AMD BKDG 42301 Table 81 p.162-163, PowerDownEn = 1 in normal operation), DDR4 (Lenovo Press LP1267 p.34, Memory Power Down Enable default Enable) and DDR5 (Lenovo Press LP1977 p.27, default Enabled); OFF for LPDDR5, GDDR6, HBM2 and HBM3. tXP: DDR3 max(3nCK,6ns) JESD79-3D, DDR4 max(4nCK,6ns) JESD79-4, DDR5 7.5 ns JESD79-5, LPDDR5 7.5 ns JESD209-5, GDDR6 12 tCK (Samsung K4Z80325BC Rev. 1.3 Table 92 p.158), HBM3 max(10nCK,7.5ns) (JESD238B.01 p.178); HBM2: not modelled unless `memory.power_down_threshold_ns` gives tXP. HBM IDD2P is IDD2N x 28/40 (Chatterjee et al. HPCA 2017 Table II). |
+| `memory.power_down` | bool | per technology | Since 1.12.20: DRAM precharge power-down in the replayed Ramulator2 controller -- a rank (a channel without a rank level) enters power-down after `memory.power_down_idle_clocks` idle memory clocks, the first command after it waits tXP, and the energy model credits the measured residency at IDD2P (Background is the reduced figure; a credit line is printed). Default ON for DDR3 (AMD BKDG 42301 Table 81 p.162-163, PowerDownEn = 1 in normal operation), DDR4 (Lenovo Press LP1267 p.34, Memory Power Down Enable default Enable) and DDR5 (Lenovo Press LP1977 p.27, default Enabled); OFF for LPDDR5, GDDR6, HBM2 and HBM3. tXP: DDR3 max(3nCK,6ns) JESD79-3D, DDR4 max(4nCK,6ns) JESD79-4, DDR5 7.5 ns JESD79-5, LPDDR5 7.5 ns JESD209-5, GDDR6 12 tCK (Samsung K4Z80325BC Rev. 1.3 Table 92 p.158), HBM3 max(10nCK,7.5ns) (JESD238B.01 p.178); HBM2: not modelled unless `memory.power_down_threshold_ns` gives tXP. HBM IDD2P is IDD2N x 28/40 (Chatterjee et al. HPCA 2017 Table II). |
 | `memory.power_down_idle_clocks` | int | `64` | Since 1.12.19. Memory clocks a rank must be idle (no queued request, no command) before the controller enters precharge power-down. Default 64 = AMD BKDG 42301 Rev 3.14 D18F2x248 PchgPDEnDelay / AggrPDDelay (p.366, BIOS defaults 00h = 64 clocks), the only published controller timer value found (a DDR3-era controller); AMD PG313/PG276 and Intel UG-20031 expose the idle count without a default. Must be >= 1. |
 | `memory.power_down_threshold_ns` | double | the sourced tXP | Power-down entry threshold (ns) for the gap-measured residency. `<= 0` or absent = the generation's sourced tXP (DDR3/DDR4 6 ns, DDR5/LPDDR5 7.5 ns). GDDR6 and HBM have no tabulated tXP: without this key their gap-measured residency is not used and the phase-granular estimate is reported, with a line saying so. |
-| `memory.channels_per_die` | int | channels / core dies | 1.12.18, stacked parts (HBM) only: the channel-to-die layout the fabric's TSV crossings are charged under. Channel c (the folded chip slot) sits on core die c / channels_per_die + 1, counted up from the base logic die (0), which holds the hub. Default: channels spread evenly from the bottom (HBM3: 16 channels over 8 core dies = 2 per die). A STATED layout (JESD238 leaves the channel-to-die map to the vendor), and the run says so. Must be >= 1; a layout needing more core dies than the stack has is refused (rc 2); ignored, with a warning, on a part that is not stacked. |
-| `memory.array_pg` | bool | `false` | Array-PERIPHERY power gating over the measured idle residency: retention-free on the NVMs; on SRAM the periphery gates (its leakage to CACTI's Vcc_min/Vdd, 0.35) and the cell array holds its data at retention voltage (its leakage to CACTI's SRAM-cell Vcc_min/Vdd, 0.65), the two split by CACTI's own cell / periphery leakage figures. Refused on every DRAM technology (a DRAM cell must be refreshed, so the array cannot be gated), and refused together with any `cache.cacti.power_gating.*` flag (one leakage gated twice). |
+| `memory.channels_per_die` | int | channels / core dies | 1.12.18, stacked parts (HBM) only: the channel-to-die layout the fabric's TSV crossings are charged under. Channel c (the folded chip slot) sits on core die c / channels_per_die + 1, counted up from the base logic die (0), which holds the hub. Default: channels spread evenly from the bottom (HBM3: 16 channels over 8 core dies = 2 per die). A stated layout (JESD238 leaves the channel-to-die map to the vendor), and the run says so. Must be >= 1; a layout needing more core dies than the stack has is refused (rc 2); ignored, with a warning, on a part that is not stacked. |
+| `memory.array_pg` | bool | `false` | Array-periphery power gating over the measured idle residency: retention-free on the NVMs; on SRAM the periphery gates (its leakage to CACTI's Vcc_min/Vdd, 0.35) and the cell array holds its data at retention voltage (its leakage to CACTI's SRAM-cell Vcc_min/Vdd, 0.65), the two split by CACTI's own cell / periphery leakage figures. Refused on every DRAM technology (a DRAM cell must be refreshed, so the array cannot be gated), and refused together with any `cache.cacti.power_gating.*` flag (one leakage gated twice). |
 | `memory.nvm_write_budget.enabled` | bool | `false` | The device write-power budget for an NVM array (1.12.114). When on, each of the device's M PE memory interfaces starts a write at most every M x (one write's energy) / budget, so the device's time-averaged write power stays within the budget (shared equally; an idle interface's share is not lent). The budget and the write energy are both supply-side: each NVM write energy carries its write pump's efficiency. PCM, STT_MRAM and RERAM each have a default (below), taken per device (the device as one chip), unscaled; on SRAM or DRAM the option is refused. Off or on, an NVM run prints whether the budget would bind and by how much (`[nvm] write budget`). |
 | `memory.nvm_write_budget.mw` | float (mW) | PCM: 90.2; STT_MRAM: 96.0; RERAM: 130.5 | The budget; a given value overrides the default. PCM default: Jiang, Zhao, Yang, Zhang, ISCA 2014, Table 4 (22 nm PCM, 1 GB chip): the RESET charge pump's output, 7 mA at 5 V = 35 mW, drawn at the 0.388 supply efficiency the PCM writes are priced with (Luo, Hu, Shi, Xue, Zhuge, ASP-DAC 2016): 35 mW / 0.388 = 90.2 mW per chip, so the budget and the write energy carry one efficiency. STT_MRAM and RERAM (no chip-level write budget is published for either): the method of Xu et al., HPCA 2015, Sec. 4.3, which gives an NVM chip the write power of a DRAM chip on the same interface, (IDD4W - IDD3N) x VDD from the DRAM records (`params/dram`): STT_MRAM on DDR4 (DDR4-2400 x8, (123 - 43) mA x 1.2 V = 96.0 mW; IPP4W = IPP3N, no VPP increment), RERAM on DDR3 (DDR3-1600 x8, (125 - 38) mA x 1.5 V = 130.5 mW). The device is taken as one chip in every case. |
 | `memory.nvm_write_verify.reram_rounds` | float | `13` | Program-verify rounds per RERAM write access (>= 1). Default 13: the open SLC write-verify macro EMBER (TSMC 40 nm, Levy et al., JSSC 2024), whose energy and bandwidth against pulse count give 12.9 and 13.2 rounds per word. With the shipped cell the rounds set the write time and energy through the same macro's measured fits: (0.71 + 6.06 R) ns per bit of a 48-bit word and (41.37 + 27.91 R) pJ per bit, every 48-bit word of an access written in parallel (3.82 us and 404 pJ/bit at 13). A cell file without the fits keeps the earlier rule: the cell pulses per bit scale with the rounds (3.2 per 13 rounds, never below one pulse), the write energy adds one word read per round and the write latency one pulse and one read per round. Reads are unchanged. Part of the NVSim characterisation key. |
@@ -448,30 +447,22 @@ memory:
 
 Per-technology bank counts, and what a request of `banks: 16` actually runs.
 
-CORRECTED IN 1.11.84, on FOUR of its eight rows. The previous version said
-`banks: 16` ran "16, as asked" on DDR3, DDR4, DDR5-3200, LPDDR5 and GDDR6.
-Measured, it runs 64, 128, 128, 16 and 32. Only the LPDDR5 row was right, and
-it was right by coincidence: LPDDR5's preset count IS 16, so nothing is
-substituted there. HBM2, HBM3 and DDR5-4800 were already correct.
-`memory.banks` is INERT for every DRAM technology: the organisation comes
-from the preset, and the knob only ever decided whether a warning printed.
-Measured at config-load scope on 1.11.83 -- DDR4 at `banks:` 16, 32, 128, 256
-and 1024 produces BYTE-IDENTICAL output, and `banks: 1` differs from
-`banks: 16` by exactly one line, the warning itself. DDR3, LPDDR5 and GDDR6
-behave the same (16 against 64: zero differing lines).
+`memory.banks` is inert for every DRAM technology: the organisation comes from the
+preset (measured on 1.11.83: DDR4 at `banks:` 16, 32, 128, 256 and 1024 gives
+byte-identical output, and `banks: 1` differs from `banks: 16` only by the warning
+line; DDR3, LPDDR5 and GDDR6 behave the same). Since 1.11.84 the run prints a
+warning on every DRAM run whose `memory.banks` differs from the preset's count;
+nothing else about such a run changes. (Before 1.11.84 this table claimed that
+`banks: 16` ran 16 banks on DDR3, DDR4, DDR5-3200, LPDDR5 and GDDR6; only the
+LPDDR5 row was right.)
 
-Since 1.11.84 the run says so on every DRAM cell whose `memory.banks` differs
-from the preset's count, which includes every corpus config (they set 16).
-Nothing about those runs changed -- they always simulated the preset's count;
-only the silence ended.
-
-| technology | minimum per chip | what `banks: 16` ACTUALLY runs |
+| technology | minimum per chip | what `banks: 16` actually runs |
 |---|---:|---|
 | DDR3 | 8 (8 banks/BG x 1 BG) | **64** (8 x 1 x 8 chips/rank) |
 | DDR4 | 16 (4 x 4) | **128** (4 x 4 x 8 chips/rank) |
-| DDR5 (every grade; until (1.12.141) grade 3200 ran the 8 Gb part: 16 = 2 x 8 per chip, 128 in all) | 32 (4 x 8) | **256** (the 16 Gb part's 8 chips x 32) |
-| LPDDR5 | 16 (4 x 4) | 16 -- its preset count IS 16, so no substitution |
-| GDDR6 | 16 (4 x 4) per channel | 16 per channel, as asked, on each of the device's 2 channels (32 in all); since (1.12.52) the channels are the channel tier, not chips/rank, so no substitution (as LPDDR5) |
+| DDR5 (every grade; until 1.12.141 grade 3200 ran the 8 Gb part: 16 = 2 x 8 per chip, 128 in all) | 32 (4 x 8) | **256** (the 16 Gb part's 8 chips x 32) |
+| LPDDR5 | 16 (4 x 4) | 16 -- its preset count is 16, so no substitution |
+| GDDR6 | 16 (4 x 4) per channel | 16 per channel, as asked, on each of the device's 2 channels (32 in all); since 1.12.52 the channels are the channel tier, not chips/rank, so no substitution (as LPDDR5) |
 | HBM2 | 32 (4 x 8) per channel | **256** |
 | HBM3 | 32 (4 x 8) per channel | **512** |
 
@@ -520,7 +511,7 @@ memory:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `memory.controller.type` | string | `"auto"` | Controller type: `auto`, `simple`, `weavesimple`, `ramulator`. `md1`/`weavemd1` were removed (M/D/1 queuing is always active in `simple`): they are accepted with a warning and run `simple`. `ramulator` on a non-DRAM technology is refused (1.11.106; it used to run `simple`). Any other word is refused. Since (1.12.147) (user ruling 2026-10-28) a `ramulator` controller that is built (the `HOST_MC` placement) is a replayed controller: Ramulator2 epoch replay, charged in the bound phase, an M/D/1 bootstrap before the first replayed epoch; the weave-timed Ramulator controller is removed. |
+| `memory.controller.type` | string | `"auto"` | Controller type: `auto`, `simple`, `weavesimple`, `ramulator`. `md1`/`weavemd1` were removed (M/D/1 queuing is always active in `simple`): they are accepted with a warning and run `simple`. `ramulator` on a non-DRAM technology is refused (1.11.106; it used to run `simple`). Any other word is refused. Since 1.12.147 a `ramulator` controller that is built (the `HOST_MC` placement) is a replayed controller: Ramulator2 epoch replay, charged in the bound phase, an M/D/1 bootstrap before the first replayed epoch; the weave-timed Ramulator controller is removed. |
 | `memory.controller.bandwidth` | string | `""` | Bandwidth with units. Formats: `"25.6 GB/s"`, `"19200 MB/s"`, `"1 TB/s"`, `"6400000 KB/s"`, `"6400"` (bare number = MB/s). A value that does not parse is refused (1.11.106; it used to keep the default with a warning). On SRAM and the NVMs a value above the array's own cap (banks x line / access time from the array model, printed on the `[bw]` line) is refused (1.11.106; it used to be clamped in silence). On a DRAM technology under `simple`/`weavesimple` a value above the part's rank bandwidth is clamped to it with a warning. |
 | `memory.controller.bound_latency` | int | `-1` | Bound latency for Weave controllers (cycles). |
 | `memory.controller.ramulator_config` | string | `""` | Path to custom Ramulator2 YAML config. Overrides auto-generated config. |
@@ -528,7 +519,7 @@ memory:
 | `memory.controller.write_low_watermark` | float | `0.3333` (16/48) | Since 1.12.18. Write mode ends when the write queue holds less than this fraction of its size while a read is pending. Default: the published 16-of-48 low water mark (same source). |
 
 **Auto-derivation rules** (when `type: auto`):
-- DRAM technologies -> `ramulator` (cycle-accurate Ramulator2, by epoch replay: the PE memory interfaces' replay, or at `HOST_MC` the replayed host-side controllers, since (1.12.147))
+- DRAM technologies -> `ramulator` (cycle-accurate Ramulator2, by epoch replay: the PE memory interfaces' replay, or at `HOST_MC` the replayed host-side controllers, since 1.12.147)
 - SRAM -> `simple` (fixed latency from CACTI)
 - NVM (STT-MRAM, PCM, ReRAM) -> `simple` (fixed latency from NVSim)
 - In-order/out-of-order cores auto-upgrade a `simple` controller to `weavesimple`
@@ -567,7 +558,7 @@ cache:
 | `cache.mode` | string | `rw` | Mode of the characterization cache (the warehouse of CACTI/NVSim results, not a simulated cache): `rw`, `ro`, `wo` or `off`, with the aliases `on` (= `rw`), `read-only` / `readonly` (= `ro`), `write-only` / `writeonly` (= `wo`) and `none` / `disable` / `disabled` (= `off`), any case. Any other word is refused (1.11.106; it used to run `rw` in silence), whether it comes from this key, `--cache` or `PIMID_CACHE_MODE`. The command line (`--cache`, `--no-cache`) wins over the environment, which wins over this key. See [cache_warehouse.md](cache_warehouse.md). |
 | `cache.dir` | string | `<pimid>/cache` | Warehouse root directory. Absent: `cache/` in the PIMID tree, located from the running binary. `--cache-dir` and `PIMID_CACHE_DIR` override it. |
 | `cache.enabled` | bool | `true` | `false` = `mode: off`. Read only when `cache.mode` is absent. |
-| `cache.pg` | bool | follows `pim.pe.pg` | Whether the shared L2/L3 power-gate (over their own measured residency) when `pim.pe.pg` gates the PEs. It takes effect only together with `pim.pe.pg: true` in device scope: `false` then keeps the shared caches ungated; with `pim.pe.pg` off nothing is gated, whatever this key says. Read outside the `cache.l2` block since 1.11.106 (it used to be read only when a `cache.l2` section was present). |
+| `cache.pg` | bool | follows `pim.pe.pg` | Whether the shared L2/L3 power-gate (over their own measured residency) when `pim.pe.pg` gates the PEs. It takes effect only together with `pim.pe.pg: true` in a device run: `false` then keeps the shared caches ungated; with `pim.pe.pg` off nothing is gated, whatever this key says. Read outside the `cache.l2` block since 1.11.106 (it used to be read only when a `cache.l2` section was present). |
 
 ### L1 Data Cache (`cache.l1d`)
 
@@ -597,7 +588,7 @@ cache:
 |-----|------|---------|-------------|
 | `cache.l2.enabled` | bool | `true` | Enable L2 cache. |
 | `cache.l2.size_kb` | int | `2048` | L2 size in KB (per instance if clustered). |
-| `cache.l2.ways` | int | record (`8`) | L2 associativity. Absent: the cache record's 8 (since 1.11.95; the device-scope timing model used to build 16 ways while McPAT priced 8). |
+| `cache.l2.ways` | int | record (`8`) | L2 associativity. Absent: the cache record's 8 (since 1.11.95; the device-run timing model used to build 16 ways while McPAT priced 8). |
 | `cache.l2.banks` | int | record (slice rule) | As `cache.l1d.banks`, for the L2. |
 | `cache.l2.count` | int | `1` | Number of L2 instances. `>1` = clustered (independent L2s). |
 | `cache.l2.latency_ns` | double | `-1.0` | Override latency (ns). |
@@ -678,7 +669,7 @@ noc:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `noc.topology` | string | `"MESH_2D"` | Network topology: `MESH_2D` (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`, `H_TREE` or `CUSTOM`, in any case, for every memory family. Any other word is refused (1.11.106; on an SRAM/NVM device it used to run a 1 x N mesh with XY routing in silence). A DRAM device then applies its own rule: the tier tree, or the in-die `MESH_2D` / `RING` / `CROSSBAR` of 1.11.103. An SRAM or NVM device at the `BANK` placement with the key absent (or `H_TREE`) is built as its elements' local groups under the die; a named flat fabric as that fabric ((1.12.247)). See [NoC Topologies](#noc-topologies). |
+| `noc.topology` | string | `"MESH_2D"` | Network topology: `MESH_2D` (alias `MESH`), `TORUS_2D`, `RING`, `CROSSBAR`, `FAT_TREE`, `BUS`, `H_TREE` or `CUSTOM`, in any case, for every memory family. Any other word is refused (1.11.106; on an SRAM/NVM device it used to run a 1 x N mesh with XY routing in silence). A DRAM device then applies its own rule: the tier tree, or the in-die `MESH_2D` / `RING` / `CROSSBAR` of 1.11.103. An SRAM or NVM device at the `BANK` placement with the key absent (or `H_TREE`) is built as its elements' local groups under the die; a named flat fabric as that fabric (1.12.247). See [NoC Topologies](#noc-topologies). |
 | `noc.routing` | string | `""` | Routing algorithm. Empty = auto-derived from topology. See [Routing Algorithms](#routing-algorithms). |
 | `noc.model` | string | `"detailed"` | Network model: `detailed` (Garnet cycle-accurate; the default) or `analytical` (closed-form hop-count + M/D/1 + MLP). No other values are accepted. |
 | `noc.router_pipe_stages` | int | `1` | Pipeline stages of every router (cycles a flit spends in a router): the detailed network's routers on every topology, the analytical model's per-hop router term and the analytical DRAM hierarchy at every level, and the router stages priced. At least 1. Per level, a topology file's `pipe` line overrides it (see [network.md](network.md#topology-file-noctopology_file)). |
@@ -694,7 +685,7 @@ noc:
 | `noc.topology_file` | string | `""` | Path to topology file (required for `CUSTOM` topology). |
 | `noc.routing_table_file` | string | `""` | Path to routing table file (for `TABLE` routing). |
 | `noc.ring_direction` | string | `bidirectional` | `RING` direction: `bidirectional` (`bi`) or `unidirectional` (`uni`), any case. Any other word is refused. |
-| `noc.clock_mhz` | int | unset | Sets the WHOLE device clock (`sys.frequency`), not a separate NoC clock domain: the element, its caches and every fabric that runs at the device clock. The generated DRAM tree's network has its own clock (`noc.fabric_clock_mhz`). Overrides `system.frequency_mhz` and `pim.pe.frequency_mhz`; the run prints a NOTE naming the key it overrode. |
+| `noc.clock_mhz` | int | unset | Sets the whole device clock (`sys.frequency`), not a separate NoC clock domain: the element, its caches and every fabric that runs at the device clock. The generated DRAM tree's network has its own clock (`noc.fabric_clock_mhz`). Overrides `system.frequency_mhz` and `pim.pe.frequency_mhz`; the run prints a NOTE naming the key it overrode. |
 | `noc.flit_size_bits` | int | `128` | Garnet flit width in bits, a multiple of 8 between 8 and 4096 (refused otherwise, rc 1). Absent on an SRAM, PCM, ReRAM or STT-MRAM device at `BANK` with no flat topology named: the bank's access width (the die's link width, 512 bits for a 64 B line). Reaches Garnet's network-interface flit and the topology emitter (a ladder rung runs at its true width up to the flit). |
 | `noc.header_bits` | int | `64` | Data-message header in bits. The derived data message is `system.cache_line_size` x 8 + this (576 bits for 64 B lines). Must be >= 0. |
 | `noc.data_message_bits` | int | derived | Data-message size in bits. `0` or absent = `system.cache_line_size` x 8 + `noc.header_bits`. Sets a packet's flit count (message bits / flit width). |
@@ -757,17 +748,21 @@ Valid boundary names: `subarray_bank`, `bank_bankgroup`, `bankgroup_chip`, `chip
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `noc.bridges.<name>.model` | string | `""` | Bridge model: `simple`, `detailed`, or `""` (auto). `md1` accepted as alias for `simple`. |
-| `noc.bridges.<name>.count` | int | - | REFUSED at load (rc 2, "parsed but NOT IMPLEMENTED", since 1.11.57): the bridge override interface carries router and link parameters only, so a bridge count would change nothing. |
+| `noc.bridges.<name>.count` | int | - | Refused at load (rc 2, "parsed but NOT IMPLEMENTED", since 1.11.57): the bridge override interface carries router and link parameters only, so a bridge count would change nothing. |
 | `noc.bridges.<name>.lower_width_bits` | int | `-1` | Lower-side link width in bits. |
-| `noc.bridges.<name>.lower_frequency_mhz` | double | - | REFUSED at load, as `count`: no bridge clock reaches the model. |
+| `noc.bridges.<name>.lower_frequency_mhz` | double | - | Refused at load, as `count`: no bridge clock reaches the model. |
 | `noc.bridges.<name>.upper_width_bits` | int | `-1` | Upper-side link width in bits. |
-| `noc.bridges.<name>.upper_frequency_mhz` | double | - | REFUSED at load, as `count`. |
-| `noc.bridges.<name>.fifo_depth` | int | - | REFUSED at load, as `count`: no FIFO depth reaches the model. |
+| `noc.bridges.<name>.upper_frequency_mhz` | double | - | Refused at load, as `count`. |
+| `noc.bridges.<name>.fifo_depth` | int | - | Refused at load, as `count`: no FIFO depth reaches the model. |
 | `noc.bridges.<name>.latency_ns` | double | `-1.0` | Bridge base latency in nanoseconds. |
 | `noc.bridges.<name>.latency_cycles` | int | `-1` | Bridge latency in cycles (backward compat). |
 | `noc.bridges.<name>.width_bits` | int | `-1` | Single-width field (sets both lower + upper). |
-
-Bridge router params: same as per-level (`router_bypass`, `virtual_networks`, `virtual_channels_per_vn`, `input_buffer_depth`, `output_buffer_depth`). `router_latency` and `router_pipeline` are refused at load, as on a level (also under `noc.gateways`).
+| `noc.bridges.<name>.router_bypass` | bool | - | The bridge's router; unset, as `noc.levels.<level>.router_bypass`. |
+| `noc.bridges.<name>.virtual_networks` | int | `-1` | As `noc.levels.<level>.virtual_networks`, for the bridge's router. |
+| `noc.bridges.<name>.virtual_channels_per_vn` | int | `-1` | As `noc.levels.<level>.virtual_channels_per_vn`. |
+| `noc.bridges.<name>.input_buffer_depth` | int | `-1` | As `noc.levels.<level>.input_buffer_depth`. |
+| `noc.bridges.<name>.output_buffer_depth` | int | `-1` | As `noc.levels.<level>.output_buffer_depth`. |
+| `noc.bridges.<name>.router_latency`, `noc.bridges.<name>.router_pipeline` | - | - | Refused at load, as on a level (also under `noc.gateways`): router timing is pipeline stages (`noc.router_pipe_stages`). |
 
 **Bridge latency formula**: `base_latency + max(ingress_time, egress_time)`, where ingress/egress depend on link width and frequency.
 
@@ -785,21 +780,22 @@ simulation:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `simulation.parallel` | bool | `true` | Parallelize the simulation whenever it is safe to do so; `false` forces a serial simulation. Since (1.12.123) the timing plugin runs the cores of a shared-memory run (serial, OpenMP, co-sim) one at a time in a fixed order (see [architecture.md](architecture.md), "A parallel workload is timed by the model"), whatever this key says; the key still sizes the scheduler that order runs in, and the results do not depend on it. MPI workloads are always simulated serially (one rank at a time, in the fixed rank order since (1.12.126)) regardless of this key; it is accepted today and starts being honored when parallel MPI simulation becomes safe. |
-| `simulation.phase_length` | int | `10000` | ZSim phase length, in core cycles: each core advances this many of its own cycles per phase (the scheduler's bound-weave quantum). Since (1.12.227) the DRAM epoch replay's epoch does not follow it: it is set in cycles, `simulation.dram_epoch_cycles`. |
+| `simulation.parallel` | bool | `true` | Parallelize the simulation whenever it is safe to do so; `false` forces a serial simulation. Since 1.12.123 the timing plugin runs the cores of a shared-memory run (serial, OpenMP, co-simulation) one at a time in a fixed order (see [architecture.md](architecture.md), "A parallel workload is timed by the model"), whatever this key says; the key still sizes the scheduler that order runs in, and the results do not depend on it. MPI workloads are always simulated serially (one rank at a time, in the fixed rank order since 1.12.126) regardless of this key; it is accepted today and starts being honored when parallel MPI simulation becomes safe. |
+| `simulation.phase_length` | int | `10000` | ZSim phase length, in core cycles: each core advances this many of its own cycles per phase (the scheduler's bound-weave quantum). Since 1.12.227 the DRAM epoch replay's epoch does not follow it: it is set in cycles, `simulation.dram_epoch_cycles`. |
 | `simulation.max_instructions` | long | `1000000000000` | Runaway guard: total-instruction budget across all cores; the run terminates (rc=0, stats dumped) when reached. The default (1e12) is effectively unlimited -- if you lower it, make sure it exceeds the workload's full instruction count, or the run is silently truncated mid-kernel (watch for "Max total instructions reached" in the log / a missing BENCH_DONE). |
 | `simulation.stats_interval` | int | `100000` | Statistics collection interval. |
-| `simulation.det_epoch_phases` | int | `1` | Epoch length, in phases, of the epoch-frozen NoC feedback (and, until 1.12.145, of the DRAM epoch replay) under `detailed`: thread-MPI and, since 1.12.18, single-process runs (serial, OpenMP, co-sim OpenMP). Records are stamped on the core's ROI-relative clock (single-process: a device PE's origin starts at its own baseline at roi_begin and travels with its clock -- a PE synced to a waker or a lock releaser takes that core's origin, so PEs joined by a sync share one axis; co-sim: counted from the host's offload doorbell; host cores keep their own baseline), folded at the consistent cut at the phase barrier (sleeping, exited and vacated cores exempt), and an access in epoch k is priced from epoch k-2's frozen per-pair NoC table and DRAM service latency (the read lag absorbs the up-to-one-phase skew between cores; see [network.md](network.md)). START-UP BIAS: the first 2 x det_epoch_phases x phase_length cycles of the ROI (20k PE cycles at the defaults) are priced from the bootstrap (the NoC table frozen at the ROI baseline, the analytical DRAM service). The default is 1 since (1.12.187) (it was 4): with 4-phase epochs a burst measured in one epoch was charged to every access of the next 40 000 cycles, and on a few shared lines read by every PE the charge settled in one of two states that a few hundred start-up instructions decided (device OpenMP gemv on HBM3: 53 660 or 88 066 cycles); one-phase epochs follow the load, as the DRAM replay's do. Single-process run time (roiWallSource 3): the latest ROI end on the cores' own clocks, the axis the records carry. Larger = looser, with more lag; `1` = per phase. Must be >= 1. Handed to the timing plugin as `PIMID_DET_EPOCH_PHASES`, which the key overrides. Since (1.12.145) the DRAM epoch replay has its own epoch, `simulation.dram_epoch_phases`; since (1.12.227) it is set in cycles, `simulation.dram_epoch_cycles`. |
-| `simulation.dram_price_window` | int | `8` | (1.12.153) The DRAM epoch replay's price window, in epochs: an access is charged the weighted mean service latency over the epoch it reads (see `simulation.dram_epoch_cycles`) and the window - 1 finalized epochs before it, per memory interface and access kind (reads; writes, at the time the controller takes them; a host prefetcher's reads), each epoch weighed by its request count. `1` = the epoch read alone (the rule before (1.12.153)). Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_PRICE_WINDOW`, which the key overrides. |
+| `simulation.det_epoch_phases` | int | `1` | Epoch length, in phases, of the epoch-frozen NoC feedback (and, until 1.12.145, of the DRAM epoch replay) under `detailed`: thread-MPI and, since 1.12.18, single-process runs (serial, OpenMP, co-simulation OpenMP). Records are stamped on the core's ROI-relative clock (single-process: a device PE's origin starts at its own baseline at roi_begin and travels with its clock -- a PE synced to a waker or a lock releaser takes that core's origin, so PEs joined by a sync share one axis; co-simulation: counted from the host's offload doorbell; host cores keep their own baseline), folded at the consistent cut at the phase barrier (sleeping, exited and vacated cores exempt), and an access in epoch k is priced from epoch k-2's frozen per-pair NoC table and DRAM service latency (the read lag absorbs the up-to-one-phase skew between cores; see [network.md](network.md)). START-UP bias: the first 2 x det_epoch_phases x phase_length cycles of the ROI (20k PE cycles at the defaults) are priced from the bootstrap (the NoC table frozen at the ROI baseline, the analytical DRAM service). The default is 1 since 1.12.187 (it was 4): with 4-phase epochs a burst measured in one epoch was charged to every access of the next 40 000 cycles, and on a few shared lines read by every PE the charge settled in one of two states that a few hundred start-up instructions decided (device OpenMP gemv on HBM3: 53 660 or 88 066 cycles); one-phase epochs follow the load, as the DRAM replay's do. Single-process run time (roiWallSource 3): the latest ROI end on the cores' own clocks, the axis the records carry. Larger = looser, with more lag; `1` = per phase. Must be >= 1. Handed to the timing plugin as `PIMID_DET_EPOCH_PHASES`, which the key overrides. Since 1.12.145 the DRAM epoch replay has its own epoch, `simulation.dram_epoch_phases`; since 1.12.227 it is set in cycles, `simulation.dram_epoch_cycles`. |
+| `simulation.dram_price_window` | int | `8` | (1.12.153) The DRAM epoch replay's price window, in epochs: an access is charged the weighted mean service latency over the epoch it reads (see `simulation.dram_epoch_cycles`) and the window - 1 finalized epochs before it, per memory interface and access kind (reads; writes, at the time the controller takes them; a host prefetcher's reads), each epoch weighed by its request count. `1` = the epoch read alone (the rule before 1.12.153). Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_PRICE_WINDOW`, which the key overrides. |
 | `simulation.dram_epoch_cycles` | int | `10000` | (1.12.227) Epoch length, in cycles, of the DRAM epoch replay. It becomes a whole number of phases of `simulation.phase_length`: the nearest, at least 1, and the run says so when it is not exact. At the default phase length this is one phase, as before; a shorter `simulation.phase_length` no longer shortens the DRAM epoch with it. Must be >= 1. Ignored when `simulation.dram_epoch_phases` is set. |
-| `simulation.dram_epoch_phases` | int | `1` | Epoch length, in phases, of the DRAM epoch replay (device and host memory interfaces), when it is set; otherwise `simulation.dram_epoch_cycles` sets it (a note says which applies). An access in epoch k is priced from the newest epoch at or before k-2 the controller has been fed (its measured mean, or while it is in flight the mean with its unfinished requests counted at their age). It was `det_epoch_phases` (4) until (1.12.145). Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_EPOCH_PHASES`, which the key overrides. |
+| `simulation.dram_epoch_phases` | int | `1` | Epoch length, in phases, of the DRAM epoch replay (device and host memory interfaces), when it is set; otherwise `simulation.dram_epoch_cycles` sets it (a note says which applies). An access in epoch k is priced from the newest epoch at or before k-2 the controller has been fed (its measured mean, or while it is in flight the mean with its unfinished requests counted at their age). It was `det_epoch_phases` (4) until 1.12.145. Must be >= 1. Handed to the timing plugin as `PIMID_DRAM_EPOCH_PHASES`, which the key overrides. |
 | `simulation.pim_runtime.*` | map | see below | PIM runtime primitives (1.12.18): the parallel runtime's own code is not executed on a PE; each runtime event is charged its primitive. [Section below](#pim-runtime-primitives-simulationpim_runtime). |
 | `simulation.lock_sync` | bool | `true` | 1.12.18: model the lock word. A lock handed from one thread to another carries the releaser's clock: when a thread takes a word (an atomic read-modify-write -- `LOCK`-prefixed RMW or `XCHG` with memory -- that changes it from its free value) that another thread released (the holder wrote the free value back, by an atomic RMW or a plain store), the acquirer's clock becomes max(own, release time), on the same clock domain only (host cores with host cores, device PEs with device PEs). This makes spinning locks (taken without a futex sleep on a lightly loaded simulation host) serialize like sleeping ones; atomic counters and a thread re-taking its own lock never sync. Per-core stats `lockSyncs` / `lockSyncCycles` (device PEs: the jumps are waiting, kept out of `cycles`); the run log prints a `[lock-sync]` ROI line. Thread-MPI runs never use it (the transport places rank clocks). `false` turns it off. A timing switch, so it lives here, not under `power.models`. Handed to the timing plugin as `PIMID_LOCK_SYNC`, which the key overrides. |
 | `simulation.mpi_contention_points` | int | `64` | Number of contention points on which the MPI transport reserves message time (keyed by destination PE modulo the count; fewer points, more collisions). Applies under `detailed`. Must be >= 1; the transport caps it at 256 without a message. Handed to the MPI shim as `PIMID_MPI_CONTEND_POINTS`, which the key overrides. |
+
 ### PIM runtime primitives (`simulation.pim_runtime`)
 
-1.12.18 (user rulings 2026-10-23). OpenMP and MPI runtime overhead is modelled
-"the PIM way, not as full SW overhead": a PE is **not** charged for executing
+1.12.18. OpenMP and MPI runtime overhead is modelled the way a PIM device incurs
+it, not as full software overhead: a PE is **not** charged for executing
 the parallel runtime's own code -- libgomp (team launch, thread start and wake,
 barriers, locks and critical sections, the runtime's atomics, reduction
 bookkeeping) and the thread-MPI shim `libpimid_mpi` (argument and chunk
@@ -853,11 +849,11 @@ cycles`. Setting `<event>_cycles` replaces the whole model for that event.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | `false`: the runtime's code is executed and priced like kernel code (the pre-1.12.18 model). |
-| `apply_to` | `pe` \| `all` | `pe` | Which cores the model applies to. `pe`: device PEs only -- a host CPU really runs libgomp and the MPI library, so host cores (co-sim, host-only baselines) execute them. `all`: host cores too. |
+| `apply_to` | `pe` \| `all` | `pe` | Which cores the model applies to. `pe`: device PEs only -- a host CPU really runs libgomp and the MPI library, so host cores (co-simulation, host-only baselines) execute them. `all`: host cores too. |
 | `cycle_basis` | `pe_cycles` \| `time` | `pe_cycles` | `pe_cycles`: the published cycle counts are PE cycles. `time`: they are cycles of a `source_clock_mhz` clock, converted through time to the PE clock (x PE MHz / `source_clock_mhz`). |
 | `source_clock_mhz` | float | `350` | Clock of the published cycles (PrIM's UPMEM DPU: 350 MHz). Used by `cycle_basis: time`. |
-| `barrier_table` | map P: cycles | `{2: 224, 4: 504, 8: 1201, 16: 2777}` | Barrier cost per participant count for participants that share one PE (see "Barriers and launches among PEs" above), from PrIM (Gomez-Luna et al., IEEE Access 2022, arXiv 2105.03814) Appendix Fig. 21 (reduction final step, 1 DPU, int64): (BARRIER tree - HANDS tree) / log2 T = (528-304)/1, (1776-768)/2, (4996-1392)/3, (13760-2654)/4 at T = 2/4/8/16; consistent with the SDK's barrier.c (about 12-15 lock-serialised instructions x 11 cycles per arrival). Linear interpolation in P (P = 1: 0); above the largest P, linear extrapolation from the last two points, printed as an extrapolation. |
-| `reduction_table` | map P: cycles | `{2: 304, 4: 768, 8: 1392, 16: 2654}` | OpenMP reduction combine per reduction: PrIM Fig. 21 HANDS tree (measured, includes the adds), interpolated like `barrier_table`. |
+| `barrier_table` | map P: cycles | `{2: 224, 4: 504, 8: 1201, 16: 2777}` | Barrier cost per participant count for participants that share one PE (see "Barriers and launches among PEs" above), from PrIM (Gomez-Luna et al., IEEE Access 2022, arXiv 2105.03814) Appendix Fig. 21 (reduction final step, 1 DPU, int64): (barrier tree - hands tree) / log2 T = (528-304)/1, (1776-768)/2, (4996-1392)/3, (13760-2654)/4 at T = 2/4/8/16; consistent with the SDK's barrier.c (about 12-15 lock-serialised instructions x 11 cycles per arrival). Linear interpolation in P (P = 1: 0); above the largest P, linear extrapolation from the last two points, printed as an extrapolation. |
+| `reduction_table` | map P: cycles | `{2: 304, 4: 768, 8: 1392, 16: 2654}` | OpenMP reduction combine per reduction: PrIM Fig. 21 hands tree (measured, includes the adds), interpolated like `barrier_table`. |
 | `omp_launch_cycles` | float | binomial broadcast among PEs + `barrier_table` of a PE's group | Parallel-region launch (`GOMP_parallel*`), charged on the master before it wakes the team: among PEs a binomial broadcast over the NoC; among threads sharing one PE one barrier (UPMEM tasklets are resident; a fork/join is a barrier_wait). |
 | `omp_barrier_cycles` | float | dissemination barrier among PEs + `barrier_table` of a PE's group | Explicit and implicit barriers (`GOMP_barrier`, `GOMP_loop_end`, `GOMP_sections_end`, `GOMP_parallel_end`, and the end of every region body), per participant. |
 | `omp_lock_acquire_cycles` | float | `11` | `GOMP_critical_start`, `GOMP_atomic_start`, `GOMP_ordered_start`, `omp_set_lock` / `omp_test_lock` (and nest / name variants). UPMEM SDK syslib/mutex.h: one `acquire` instruction; latency 11 cycles (revolver pipeline: one thread's instructions dispatch 11 cycles apart, PrIM Sec. 2.2; uPIMulator Table I). Charged after the acquisition. Under contention the critical sections serialise through the lock-word / futex ordering; the primitive is per acquire. |
@@ -878,7 +874,7 @@ Each run prints the parameters in force and, at the stats dump, one
 primitive cycles charged, runtime instructions and memory accesses not
 executed) and a `[pim-runtime] ROI total:` line.
 
-Example (temporary test values, not defaults):
+Example (illustrative values, not defaults):
 
 ```yaml
 simulation:
@@ -919,10 +915,10 @@ power:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `power.enabled` | bool | `true` | Enable McPAT power analysis. CLI `--power`/`--no-power` overrides. |
-| `power.models.dram_refresh_counted` | bool | `true` | Since 1.12.18. With the DRAM controller replayed (Ramulator2), refresh is charged from the refresh commands it COUNTED (energy per command: VDD x (IDD5 - IDD2N) x tRFC + VPP x (IPP5B - IPP2N) x tRFC from the datasheet row; since 1.12.18 the excess is over precharged standby, IDD2N, because a REFab interrupts whatever state the unit held) in place of the datasheet duty inside the background. `false` keeps the datasheet duty; the report says so. |
+| `power.models.dram_refresh_counted` | bool | `true` | Since 1.12.18. With the DRAM controller replayed (Ramulator2), refresh is charged from the refresh commands it counted (energy per command: VDD x (IDD5 - IDD2N) x tRFC + VPP x (IPP5B - IPP2N) x tRFC from the datasheet row; since 1.12.18 the excess is over precharged standby, IDD2N, because a REFab interrupts whatever state the unit held) in place of the datasheet duty inside the background. `false` keeps the datasheet duty; the report says so. |
 | `power.models.dram_activates_counted` | bool | `true` | Since 1.12.18. Charge every ACT command the replayed controller issued at the energy model's activate + precharge energy, and the per-access terms at the column burst only. `false` weights the per-access terms by the measured row-miss fraction instead (the two are never both charged). |
 | `power.models.dram_bank_open_measured` | bool | `true` | Since 1.12.18. Use the replayed controller's measured bank-open time to split DRAM background between active (IDD3N) and precharge (IDD2N) standby. `false` uses the traffic-phase fraction. |
-| `power.models.dram_data_pattern` | bool | `true` | ((1.12.61), user ruling 2026-10-25). The column-burst read and write energy at the run's measured line data (1.12.58 counters), where the part record carries a `data_pattern` block: DDR3 by the 1s fraction (Ghose et al., SIGMETRICS 2018, Table 5, I/O-corrected), HBM2 by the DQ pin-transition rate (Olgun et al., MICRO 2026; the authors' relative model). Normalised at uniform-random data. ACT carries no data term. `false` prices the record's burst as is. |
+| `power.models.dram_data_pattern` | bool | `true` | (1.12.61). The column-burst read and write energy at the run's measured line data (1.12.58 counters), where the part record carries a `data_pattern` block: DDR3 by the 1s fraction (Ghose et al., SIGMETRICS 2018, Table 5, I/O-corrected), HBM2 by the DQ pin-transition rate (Olgun et al., MICRO 2026; the authors' relative model). Normalised at uniform-random data. ACT carries no data term. `false` prices the record's burst as is. |
 | `power.models.dram_dbi` | bool | `true` | (1.12.58). Data bus inversion where the standard has it, applied per byte to the run's measured line data before the DQ termination duty is taken: DDR4 x8/x16 read and write (invert a byte with more than four 0 bits, DBI_n LOW), LPDDR5 read and write DBI-DC (invert a byte with more than four 1 bits, DMI HIGH), GDDR6 read and write DBIdc (the POD rule, JESD250D). DDR5 has none (JESD79-5D), x4 DDR4 has none. `false` prices the raw data. The duty itself is always the measured one; a run with no readable line data keeps the formula's 0.5 and says so. |
 | `power.models.mc_command_ops` | bool | `true` | Since 1.12.18. Charge each refresh command the replayed controller issued as one pass of the memory controller's transaction engine (McPAT). There is no share-of-peak background; idle clocking is the clock-network model's. `false` prices the controller from its data transactions and leakage only. |
 | `power.report_detail` | string | `"standard"` | Report level: `summary` (one line), `standard` (component breakdown), `verbose` (+ per-component area, XML dump). |
@@ -930,41 +926,41 @@ power:
 | `power.device_tech_node_nm` | int | `22` | Device-only process node override. Leaves the host node untouched. |
 | `power.host_tech_node_nm` | int | inherits device | Host-only process node override. When unset, the host **inherits the device node** (uniform process); the legacy hardcoded 7nm host default is removed. |
 | `power.models.ucie_link` | bool | `true` | McPAT's UCIe link model for the `interposer` class (1.12.18): the link energy is measured crossing bytes x 8 x (analog PHY + digital interface + transaction layer, the last at the digital interface's figure) pJ/bit from the published two-node rows (22 nm, 3 nm; selected by `power.link.process_node_nm`; `power.link.pj_per_bit_override` replaces the whole per-bit figure), computed inside the McPAT fork, and McPAT's controller dynamic is not charged on top. `false` runs the pre-1.12.18 path (McPAT controller dynamic + the band's applied pJ/bit) and the run prints a `[link]` line saying so. See [power.md](power.md#the-host-device-link-ucie). |
-| `power.periphery_device` | string | `lstp` | CACTI device column the DRAM-periphery LEAKAGE ratio is taken from: `hp`, `lstp`, `lop` or `comm-dram` (`lp-dram` is unpopulated at 22 nm). Default `lstp` since 1.11.97 (it was `comm-dram`); the area and dynamic factors keep the comm-dram geometry. Any other word is refused (rc 1); a set value is printed as the user's. |
+| `power.periphery_device` | string | `lstp` | CACTI device column the DRAM-periphery leakage ratio is taken from: `hp`, `lstp`, `lop` or `comm-dram` (`lp-dram` is unpopulated at 22 nm). Default `lstp` since 1.11.97 (it was `comm-dram`); the area and dynamic factors keep the comm-dram geometry. Any other word is refused (rc 1); a set value is printed as the user's. |
 | `power.models.clock_network` | bool | `true` | Price each component's clock distribution network (1.12.18; the model is the McPAT fork's, `external/mcpat/logic.h` ClockNetwork, after Wattch, Brooks/Tiwari/Martonosi ISCA 2000). `false`: clock distribution is not priced and the run says so ("not priced, user option"). |
-| `power.logic_reference_mhz` | double | unset | Clock (MHz) of the LOGIC-process design a DRAM-periphery PE is compared against. PIMID divides it by the CV/I delay ratio read from the CACTI columns to bound the PE clock, and warns when the requested PE clock exceeds the bound. Unset: in co-sim the host's clock is used; in device scope the bound is skipped with a printed reason. Must be above 0 and at most 20000 (refused otherwise, rc 1). |
-| `power.models.noc_links` | bool | `true` | 1.12.18: price the in-memory fabric's LINKS. Each tree level's up-links (one per tree node below the root, a node built as part of a link included), and every level with no branch router and no endpoint, become a links-only McPAT instance: wire from McPAT's interconnect over CACTI's wire tables (type Global_ho since the user ruling of 2026-10-25: repeaters 0.8x the delay-optimal size at 1.4x its spacing, Ho 2003; Global before) at the level's process node (the DRAM array's CACTI table on the die, `power.tech_node_nm` off it), length derived by McPAT from the die area and the parent level's region count (H-tree, CACTI 6.0 HPL-2009-85), activity = the level's MEASURED link flit traversals re-cut at the level's width. A flat mesh gets McPAT's own mesh links with the measured link traversals. Bus levels keep their bus (it is the level's wire). Endpoint-to-router links are not priced. `false`: the pre-1.12.18 behaviour; the run prints that the links are NOT priced BY USER OPTION. |
-| `power.models.fabric_tsv` | bool | `true` | 1.12.18: price the die crossings of a stacked part's (HBM) chip-tier up-links as CACTI-3DD TSVs (Coarse column) in the McPAT fork. Each transfer is charged the die boundaries it actually crosses under the stated channel-to-die layout (`memory.channels_per_die`): a PE on core die a to the base-die hub and up to core die b crosses a + b, PE <-> hub crosses a. zsim counts the crossings per packet (Garnet path walk and analytical tier walk) and the run prints their distribution; the TSV count priced for leakage and area is the sum of the die index over the built channel routers, x flit bits, both directions. `false`: NOT priced BY USER OPTION. |
-| `power.models.vector_moves_split` | bool | `true` | 1.12.18. The decoder counts pure vector moves (movss/movsd/movaps/movd/movq loads, stores, register copies) inside the FP class; with this on, McPAT prices them as FP register-file and load/store activity (one read and/or one write by form) and NOT as FPU accesses, FPU result-bus traffic or soft-float work. Instruction counts and timing are unchanged. `false`: moves are priced as FP arithmetic, as before 1.12.18, and the run says so. |
-| `power.models.mcpat_fu_base_energy` | bool | `false` | 1.12.18 (user ruling 2026-10-23). McPAT charges every out-of-order core a FIXED base energy per functional-unit type (ALU 89 mW, MUL 2 x 89 mW, FPU 3 x 89 mW at 1.2 V, scaled by Vdd^2; Wattch average, `external/mcpat/logic.cc` FunctionalUnit) x execution time, whatever the activity. That term is the idle clocking of the units, which the gated clock network (`power.models.clock_network`) now prices, so by default it is REMOVED and the run prints the amount (`[mcpat fu]`). `true` charges it as upstream McPAT does. In-order and embedded cores never had it. |
-| `power.models.mcpat_layout_energy_overhead` | bool | `false` | 1.12.18 (user ruling 2026-10-24). Upstream McPAT multiplies every array's dynamic and short-circuit energy by its two layout AREA overheads (macro 1.1 x chip 1.2 = 1.32) "to maintain constant power density". CACTI already computes energy from its own layout and wires, and PIMID's direct CACTI pricing never applies it, so by default the overheads stay on area only. McPAT's short-circuit factor (`sckt_co_eff`, 1.13; McPAT MICRO 2009) is kept. `true` restores upstream behaviour. |
-| `power.models.fpu_published` | bool | `true` | 1.12.18 (user ruling 2026-10-23). The decoder counts FP operations by type and precision (add/sub, multiply, FMA, divide/sqrt, x87; single/double; scalar lanes of packed forms). Priced in the McPAT fork per scalar operation, each source scaled from its PRINTED node and supply to the run node with CACTI's technology tables (minimum-inverter switched capacitance ratio x (Vdd / Vdd_source)^2): FP32 add 0.9 pJ and mult 3.7 pJ (M. Horowitz, ISSCC 2014, Fig. 1.1.9, 45 nm 0.9 V); FP32 FMA 14.86 pJ and FP64 FMA 52.98 pJ (S. Galal, PhD thesis, Stanford 2012, Table 4.2, 45 nm 0.9 V, DYNAMIC power / frequency at 2.08 / 1.81 GHz: 30.9 / 95.9 mW; the table's leakage 1.2 / 4.6 mW is not added, McPAT charges the FPU leakage; 1.12.18 ruling 2026-10-24); FP64 add 5.0 pJ and mult 19.4 pJ (Galal Fig. 3.7, the knee of the DP adder/multiplier frontier; Pmin 2.5 / 9.68 pJ is an asymptote; a ~2 GHz unit is likely above the knee -- printed caveat). Guards printed (WARNING outside their range): FPnew (Mach et al., IEEE TVLSI 2021, 22FDX 0.8 V: FP64 FMA 26.7 pJ, FP32 FMA 9.44 pJ), Keckler et al., IEEE Micro 2011 Table 1 (40 nm 0.9 V: DFMA 50 pJ). Divide/sqrt and x87 keep McPAT's per-op energy. FPU area and leakage: `power.models.fu_area_published`. `false`: McPAT's per-op energy for every FP operation. |
-| `power.models.int_alu_published` | bool | `true` | 1.12.18 (user ruling 2026-10-23 #3). The x86 decoder counts scalar GPR integer operations by class and operand width (add/logic 8/16/32/64 bit, multiply 8/16/32/64 bit, divide). In the McPAT fork the ALU prices 8- and 32-bit add/logic at M. Horowitz, ISSCC 2014, Fig. 1.1.9 (45 nm, 0.9 V: Add 8 bit 0.03 pJ, 32 bit 0.1 pJ) and the MUL unit 8- and 32-bit multiplies (Mult 8 bit 0.2 pJ, 32 bit 3.1 pJ), scaled to the run node with CACTI's tables (minimum-inverter switched capacitance ratio x (Vdd / 0.9 V)^2). 16- and 64-bit operations and divide keep McPAT's per-op energy, as do moves, LEA and NOPs. ALU/MUL area and leakage: `power.models.fu_area_published`. `false`: McPAT's per-op energy for every integer operation. |
-| `power.models.fu_area_published` | bool | `true` | 1.12.29 (user ruling 2026-10-25). Replaces McPAT's functional-unit AREA literals (`external/mcpat/logic.cc` FunctionalUnit: FPU 4.47 mm^2 embedded / 8.47 mm^2 server at 90 nm x (F/90)^2; ALU 280 x 260 um^2 (x2 server) and MUL 3x the ALU, x logic_scaling_co_eff) by published areas, per unit, chosen by the core's datapath width: FP 32 bit = the RI5CY transprecision FPU (W_fpu 32: FP32/FP16/FP16alt FMA, COMP, CONV, no DIVSQRT), 69 kGE; FP 64 bit (device scope) = the Ariane transprecision FPU (W_fpu 64, FP64..FP8, DIVSQRT, COMP, CONV), 247 kGE = 0.049 mm^2; 32-bit integer ALU (incl. RI5CY's iterative divider) 10 kGE and multiplier 18 kGE (S. Mach et al., "FPnew", IEEE TVLSI 29(4) 2021, GF 22FDX, 1 GE = 0.199 um^2: Sec. IV-A.2 / Fig. 4, Sec. IV-B.2 / Fig. 6, Table IV). Node scaling: area x (F / 22 nm)^2, the feature-size-squared rule McPAT applies to its own FPU literal. McPAT's macro layout overhead and, on DRAM silicon, the DRAM-periphery area factor still apply (the published figures are cell area). The unit's leakage (area x density x Isub/Ig) follows the area by the same ratio. McPAT's literal kept (printed): 64-bit integer ALU/MUL, and the host's FPU (x86-64 FP/SIMD datapath >= 128 bit; no FPnew configuration matches). Guards printed: Gautschi et al., TVLSI 2017 Sec. IV-F (65 nm, 8.3 kGE ALU, 12.6 kGE multiplier; 1 GE from Table V); FP32-only RI5CY FPU 36 kGE. `false`: McPAT's literals for every unit. |
-| `power.models.clock_global_local` | bool | `true` | 1.12.18 (user ruling 2026-10-23 #4). In every component's clock tree (`power.models.clock_network`) the GLOBAL part -- (1.12.30) the H-tree to the leaf-cluster buffers, L = 1.5 D (sqrt(N/k) - 1), k = `power.clock.leaf_cluster_sinks` -- switches every cycle the component is powered; the LOCAL part -- the cluster nets and the register clock pins -- is gated by the component's measured activity (Wattch, ISCA 2000, Sec. 2.2.1 conditional clocking of units; Sec. 3.2: Alpha 21264 34% clock incl. unit clock nodes vs Pentium Pro 7.9% global network). Only power gating (`pg` flags, off by default) stops the global part, for the measured gated residency. The ungated reference stays printed. `false`: the whole tree gated by activity (pre-ruling). |
-| `power.clock.leaf_cluster_sinks` | int >= 1 | `30` | (1.12.30, user ruling 2026-10-25, F2). Register sinks per leaf clock cluster (one local clock buffer each) in every component clock tree. Default 30 = the OpenROAD TritonCTS sink-cluster size cap (default 30); IBM US 8,458,634 B2 (a local clock buffer drives at most 24, 26 or 32 latches) brackets it. The global H-tree (CACTI repeated global wire) reaches the ceil(N/k) cluster buffers; each cluster's net is unrepeated local wire over its k register cells. The die-level trunk (`power.models.clock_die_trunk`) is not clustered. Below 1 is refused. |
-| `power.models.idle_halt` | bool | `true` | PIMID 1.12.18 (user ruling 2026-10-23, idle halt). A core or PE with nothing to run is HALTED, as real chips do (x86 HLT / C1, ARM WFI): its whole clock tree, the global part included, is off while halted; its leakage stays (only power gating, `pg`, off by default, removes leakage). Running time is MEASURED per core: a device PE's busy cycles (its own ROI activity; time blocked in a futex or lock wait, or with no thread, is halted), a host core's zsim unhalted cycles (the core recorder subtracts the time its thread is descheduled). McPAT prices a device's PEs (and a host's cores) as ONE homogeneous core group, so the core clock's global part is charged x the group's MEAN running fraction (= the sum of the cores' running times), printed with every core's running cycles (`[power] idle halt`); the local part stays gated by the measured activity. Memory controllers, NoC routers and caches keep global-on / local-gated (they keep serving refresh, traffic and snoops). A core group with no per-core record keeps the global part every powered cycle and the run says so. `[mcpat clock] coreN runtime idle halt` prints the HALTED (not charged) energy. `false`: the global part runs every powered cycle (the clock_global_local behaviour). |
-| `power.models.host_noc` | bool | `true` | 1.12.19. Price the host CPU's on-chip network in McPAT as the topology the timing model ran (`system.hosts[].noc.topology`), from the data messages and hops it measured (zsim hostFabric, ROI): `ring` = 3-port stops (two directions + local) traversed hops + 1 times per flit and two neighbour links per stop traversed hops times (link length since the user ruling of 2026-10-25: the ring loop's, 2 x sqrt(host die area) / stops, from the Nehalem-EX floorplan of two columns of core/slice rows with the rings through the slice columns, Rusu ISSCC 2009 / JSSC 2010; before: McPAT's 1-D mesh derivation, half of it); `crossbar` = one router with a port per core, L3 slice and memory controller plus a port wire per agent over the host die; `bus` = a 256-b data bus and a 48-b command/address bus (one command per access; 48 b = the cores' physical address width, a modelling choice). Flits 256 b (the Nehalem-EX data ring, 32 B per direction, Hot Chips 21 2009; Westmere-EP's own width taken as the same); McPAT's clock network applies. Ledger `<host>.noc`. Control messages ride three more networks of the data network's shape, 64 b wide (request, snoop, acknowledge; power.md). A 1-core host has no fabric and no NoC term. `false`: the pre-1.12.23 leakage-only placeholder (a 1x1 router and a bus, zero accesses). |
-| `power.models.per_die_process` | bool | `true` | PIMID 1.12.18 (user ruling, per-die process). Honour `system.devices[].process` (see [Devices](#devices)): every component is priced at the die it sits on, each McPAT component carrying its die's technology (its own InputParameter: node and CACTI device type). `false`: the block is ignored with a printed line; one technology per McPAT chip, as before. Without a process block nothing changes either way. |
-| `power.models.clock_die_trunk` | bool | `true` | PIMID 1.12.18 (user ruling "each die has its own clock tree"). One die-level H-tree trunk per die and clock domain, feeding the component clock trees on that die and ENDING at each component tree's root (leaves = component tree roots, no register pins), so no part of it is inside a component tree: Wattch/CACTI model of `power.models.clock_network` (CACTI Global wire at the die's node), L = 1.5 D (sqrt(N) - 1) over the die (the DRAM die: the calibrated die area, one trunk per DRAM die that holds the device's DRAM-side components -- the built fabric's stack core dies or chips; the logic die: the area McPAT gives the components on it). Charged every cycle any component on the die is clocked: a die with a memory controller, router or cache is on every powered cycle; a die whose cores are all halted has its trunk off (max of its leaves' on-fractions). A trunk on the DRAM die takes the comm-dram periphery factors like the trees beside it. In the ledger once per die: `device.logic_die.clock_trunk`, `device.dram_die<k>.clock_trunk`, `<host>.die.clock_trunk` (system scope: `<node>.<die>.clock_trunk`). `false`: not priced; the run says so. |
-| `power.models.l1d_access_width` | bool | `true` | 1.12.18 (user ruling 2026-10-23 #6). The L1D access CACTI prices is the 16 B one load/store moves in the timing core (zsim's Westmere-class OOO core, one 128-bit load port), not the 64 B line: McPAT charges one access per load/store uop. The fork reads McPAT's own output_width field of `dcache_config` and charges a line fill as line/16 writes; Horowitz ISSCC 2014 "Cache (64bit) 32KB 20 pJ" (scaled) is printed as the guard (`[mcpat l1]`). `false`: full-line access (upstream). |
-| `power.models.tlb_btb_measured` | bool | `true` | 1.12.18 (user ruling 2026-10-23 #5, input fix). Host cores: ITLB accesses = instruction fetches (icache reads), DTLB = data accesses (dcache reads + writes) -- 64-bit mode always pages; device elements keep 0. BTB reads = every branch-class instruction, writes = mispredictions + indirect target rewrites (McPAT's own BTB definition). `false`: TLB accesses 0 and BTB = indirect resolutions only. |
-| `power.models.frontend_from_timing` | bool | `true` | 1.12.18 (user ruling 2026-10-23). Size McPAT's instruction buffer from the timing core's own front end instead of the 32-entry preset: OOO 28 instructions (zsim OOOCore uopQueue), in-order one issue group, ALU element 1 (its implied fetch register). A buffer that holds no more than one fetch group is the IF/ID pipeline latch McPAT's pipeline model already prices, so the fork builds no separate array for it (no double count). The ALU element's instruction store (`pim.pe.imem_bytes`) is a plain RAM either way (since 1.11.3). `false`: the 32-entry preset. |
-| `power.models.dram_io_share_split` | bool | `true` | 1.12.18. An IDD row that folded the DQ I/O energy into its burst current (HBM2 and HBM3: `idd.io_share` in params/dram/hbm2.yaml and hbm3.yaml, from the 1.11.91 derivation) has that share removed from the array burst; the I/O of an access that crosses the DQ is priced once, by the IDDQ term. Since 1.12.18 an `io_share` ANCHORED on a published I/O energy (`anchor_read_pj_bit`, `anchor_write_pj_bit`, `channel_gbps`, `anchor_source`, all four or none; the loader refuses a share that is not anchor x channel_gbps / vdd to 0.05 mA) prices that crossing I/O at the share itself, reads and writes (HBM3: the Samsung 4 nm HBM3 PHY, JSSC 2024 Table II, 0.29 R / 0.25 W pJ/b, unscaled; HBM2: the Samsung HBM2E PHY, Hot Chips 32, 0.56 R / 1.07 W pJ/b, unscaled), and the record's `iddq_band_pj_bit` becomes a guard printed beside it. The optional `read_energy_guard` block (published older-generation pJ/b and the generational gain) prints `[guard]` lines comparing the derived total read energy, WARNING when outside; never priced. `false`: the share stays inside every burst (a crossing access then also pays the IDDQ band: I/O counted twice), as before 1.12.18. |
+| `power.logic_reference_mhz` | double | unset | Clock (MHz) of the logic-process design a DRAM-periphery PE is compared against. PIMID divides it by the CV/I delay ratio read from the CACTI columns to bound the PE clock, and warns when the requested PE clock exceeds the bound. Unset: in co-simulation the host's clock is used; in a device run the bound is skipped with a printed reason. Must be above 0 and at most 20000 (refused otherwise, rc 1). |
+| `power.models.noc_links` | bool | `true` | 1.12.18: price the in-memory fabric's links. Each tree level's up-links (one per tree node below the root, a node built as part of a link included), and every level with no branch router and no endpoint, become a links-only McPAT instance: wire from McPAT's interconnect over CACTI's wire tables (type Global_ho: repeaters 0.8x the delay-optimal size at 1.4x its spacing, Ho 2003; Global before) at the level's process node (the DRAM array's CACTI table on the die, `power.tech_node_nm` off it), length derived by McPAT from the die area and the parent level's region count (H-tree, CACTI 6.0 HPL-2009-85), activity = the level's measured link flit traversals re-cut at the level's width. A flat mesh gets McPAT's own mesh links with the measured link traversals. Bus levels keep their bus (it is the level's wire). Endpoint-to-router links are not priced. `false`: the pre-1.12.18 behaviour; the run prints that the links are not priced by user option. |
+| `power.models.fabric_tsv` | bool | `true` | 1.12.18: price the die crossings of a stacked part's (HBM) chip-tier up-links as CACTI-3DD TSVs (Coarse column) in the McPAT fork. Each transfer is charged the die boundaries it actually crosses under the stated channel-to-die layout (`memory.channels_per_die`): a PE on core die a to the base-die hub and up to core die b crosses a + b, PE <-> hub crosses a. zsim counts the crossings per packet (Garnet path walk and analytical tier walk) and the run prints their distribution; the TSV count priced for leakage and area is the sum of the die index over the built channel routers, x flit bits, both directions. `false`: not priced by user option. |
+| `power.models.vector_moves_split` | bool | `true` | 1.12.18. The decoder counts pure vector moves (movss/movsd/movaps/movd/movq loads, stores, register copies) inside the FP class; with this on, McPAT prices them as FP register-file and load/store activity (one read and/or one write by form) and not as FPU accesses, FPU result-bus traffic or soft-float work. Instruction counts and timing are unchanged. `false`: moves are priced as FP arithmetic, as before 1.12.18, and the run says so. |
+| `power.models.mcpat_fu_base_energy` | bool | `false` | 1.12.18. McPAT charges every out-of-order core a fixed base energy per functional-unit type (ALU 89 mW, MUL 2 x 89 mW, FPU 3 x 89 mW at 1.2 V, scaled by Vdd^2; Wattch average, `external/mcpat/logic.cc` FunctionalUnit) x execution time, whatever the activity. That term is the idle clocking of the units, which the gated clock network (`power.models.clock_network`) now prices, so by default it is removed and the run prints the amount (`[mcpat fu]`). `true` charges it as upstream McPAT does. In-order and embedded cores never had it. |
+| `power.models.mcpat_layout_energy_overhead` | bool | `false` | 1.12.18. Upstream McPAT multiplies every array's dynamic and short-circuit energy by its two layout area overheads (macro 1.1 x chip 1.2 = 1.32) "to maintain constant power density". CACTI already computes energy from its own layout and wires, and PIMID's direct CACTI pricing never applies it, so by default the overheads stay on area only. McPAT's short-circuit factor (`sckt_co_eff`, 1.13; McPAT MICRO 2009) is kept. `true` restores upstream behaviour. |
+| `power.models.fpu_published` | bool | `true` | 1.12.18. The decoder counts FP operations by type and precision (add/sub, multiply, FMA, divide/sqrt, x87; single/double; scalar lanes of packed forms). Priced in the McPAT fork per scalar operation, each source scaled from its printed node and supply to the run node with CACTI's technology tables (minimum-inverter switched capacitance ratio x (Vdd / Vdd_source)^2): FP32 add 0.9 pJ and mult 3.7 pJ (M. Horowitz, ISSCC 2014, Fig. 1.1.9, 45 nm 0.9 V); FP32 FMA 14.86 pJ and FP64 FMA 52.98 pJ (S. Galal, PhD thesis, Stanford 2012, Table 4.2, 45 nm 0.9 V, dynamic power / frequency at 2.08 / 1.81 GHz: 30.9 / 95.9 mW; the table's leakage 1.2 / 4.6 mW is not added, McPAT charges the FPU leakage; 1.12.18 rule); FP64 add 5.0 pJ and mult 19.4 pJ (Galal Fig. 3.7, the knee of the DP adder/multiplier frontier; Pmin 2.5 / 9.68 pJ is an asymptote; a ~2 GHz unit is likely above the knee -- printed caveat). Guards printed (WARNING outside their range): FPnew (Mach et al., IEEE TVLSI 2021, 22FDX 0.8 V: FP64 FMA 26.7 pJ, FP32 FMA 9.44 pJ), Keckler et al., IEEE Micro 2011 Table 1 (40 nm 0.9 V: DFMA 50 pJ). Divide/sqrt and x87 keep McPAT's per-op energy. FPU area and leakage: `power.models.fu_area_published`. `false`: McPAT's per-op energy for every FP operation. |
+| `power.models.int_alu_published` | bool | `true` | 1.12.18. The x86 decoder counts scalar GPR integer operations by class and operand width (add/logic 8/16/32/64 bit, multiply 8/16/32/64 bit, divide). In the McPAT fork the ALU prices 8- and 32-bit add/logic at M. Horowitz, ISSCC 2014, Fig. 1.1.9 (45 nm, 0.9 V: Add 8 bit 0.03 pJ, 32 bit 0.1 pJ) and the MUL unit 8- and 32-bit multiplies (Mult 8 bit 0.2 pJ, 32 bit 3.1 pJ), scaled to the run node with CACTI's tables (minimum-inverter switched capacitance ratio x (Vdd / 0.9 V)^2). 16- and 64-bit operations and divide keep McPAT's per-op energy, as do moves, LEA and NOPs. ALU/MUL area and leakage: `power.models.fu_area_published`. `false`: McPAT's per-op energy for every integer operation. |
+| `power.models.fu_area_published` | bool | `true` | 1.12.29. Replaces McPAT's functional-unit area literals (`external/mcpat/logic.cc` FunctionalUnit: FPU 4.47 mm^2 embedded / 8.47 mm^2 server at 90 nm x (F/90)^2; ALU 280 x 260 um^2 (x2 server) and MUL 3x the ALU, x logic_scaling_co_eff) by published areas, per unit, chosen by the core's datapath width: FP 32 bit = the RI5CY transprecision FPU (W_fpu 32: FP32/FP16/FP16alt FMA, COMP, CONV, no DIVSQRT), 69 kGE; FP 64 bit (device elements) = the Ariane transprecision FPU (W_fpu 64, FP64..FP8, DIVSQRT, COMP, CONV), 247 kGE = 0.049 mm^2; 32-bit integer ALU (incl. RI5CY's iterative divider) 10 kGE and multiplier 18 kGE (S. Mach et al., "FPnew", IEEE TVLSI 29(4) 2021, GF 22FDX, 1 GE = 0.199 um^2: Sec. IV-A.2 / Fig. 4, Sec. IV-B.2 / Fig. 6, Table IV). Node scaling: area x (F / 22 nm)^2, the feature-size-squared rule McPAT applies to its own FPU literal. McPAT's macro layout overhead and, on DRAM silicon, the DRAM-periphery area factor still apply (the published figures are cell area). The unit's leakage (area x density x Isub/Ig) follows the area by the same ratio. McPAT's literal kept (printed): 64-bit integer ALU/MUL, and the host's FPU (x86-64 FP/SIMD datapath >= 128 bit; no FPnew configuration matches). Guards printed: Gautschi et al., TVLSI 2017 Sec. IV-F (65 nm, 8.3 kGE ALU, 12.6 kGE multiplier; 1 GE from Table V); FP32-only RI5CY FPU 36 kGE. `false`: McPAT's literals for every unit. |
+| `power.models.clock_global_local` | bool | `true` | 1.12.18. In every component's clock tree (`power.models.clock_network`) the global part -- (1.12.30) the H-tree to the leaf-cluster buffers, L = 1.5 D (sqrt(N/k) - 1), k = `power.clock.leaf_cluster_sinks` -- switches every cycle the component is powered; the local part -- the cluster nets and the register clock pins -- is gated by the component's measured activity (Wattch, ISCA 2000, Sec. 2.2.1 conditional clocking of units; Sec. 3.2: Alpha 21264 34% clock incl. unit clock nodes vs Pentium Pro 7.9% global network). Only power gating (`pg` flags, off by default) stops the global part, for the measured gated residency. The ungated reference stays printed. `false`: the whole tree gated by activity (pre-rule). |
+| `power.clock.leaf_cluster_sinks` | int >= 1 | `30` | (1.12.30). Register sinks per leaf clock cluster (one local clock buffer each) in every component clock tree. Default 30 = the OpenROAD TritonCTS sink-cluster size cap (default 30); IBM US 8,458,634 B2 (a local clock buffer drives at most 24, 26 or 32 latches) brackets it. The global H-tree (CACTI repeated global wire) reaches the ceil(N/k) cluster buffers; each cluster's net is unrepeated local wire over its k register cells. The die-level trunk (`power.models.clock_die_trunk`) is not clustered. Below 1 is refused. |
+| `power.models.idle_halt` | bool | `true` | PIMID 1.12.18 (idle halt). A core or PE with nothing to run is halted, as real chips do (x86 HLT / C1, ARM WFI): its whole clock tree, the global part included, is off while halted; its leakage stays (only power gating, `pg`, off by default, removes leakage). Running time is measured per core: a device PE's busy cycles (its own ROI activity; time blocked in a futex or lock wait, or with no thread, is halted), a host core's zsim unhalted cycles (the core recorder subtracts the time its thread is descheduled). McPAT prices a device's PEs (and a host's cores) as one homogeneous core group, so the core clock's global part is charged x the group's mean running fraction (= the sum of the cores' running times), printed with every core's running cycles (`[power] idle halt`); the local part stays gated by the measured activity. Memory controllers, NoC routers and caches keep global-on / local-gated (they keep serving refresh, traffic and snoops). A core group with no per-core record keeps the global part every powered cycle and the run says so. `[mcpat clock] coreN runtime idle halt` prints the halted (not charged) energy. `false`: the global part runs every powered cycle (the clock_global_local behaviour). |
+| `power.models.host_noc` | bool | `true` | 1.12.19. Price the host CPU's on-chip network in McPAT as the topology the timing model ran (`system.hosts[].noc.topology`), from the data messages and hops it measured (zsim hostFabric, ROI): `ring` = 3-port stops (two directions + local) traversed hops + 1 times per flit and two neighbour links per stop traversed hops times (link length: the ring loop's, 2 x sqrt(host die area) / stops, from the Nehalem-EX floorplan of two columns of core/slice rows with the rings through the slice columns, Rusu ISSCC 2009 / JSSC 2010; before: McPAT's 1-D mesh derivation, half of it); `crossbar` = one router with a port per core, L3 slice and memory controller plus a port wire per agent over the host die; `bus` = a 256-b data bus and a 48-b command/address bus (one command per access; 48 b = the cores' physical address width, a modelling choice). Flits 256 b (the Nehalem-EX data ring, 32 B per direction, Hot Chips 21 2009; Westmere-EP's own width taken as the same); McPAT's clock network applies. Ledger `<host>.noc`. Control messages ride three more networks of the data network's shape, 64 b wide (request, snoop, acknowledge; power.md). A 1-core host has no fabric and no NoC term. `false`: the pre-1.12.23 leakage-only placeholder (a 1x1 router and a bus, zero accesses). |
+| `power.models.per_die_process` | bool | `true` | PIMID 1.12.18 (per-die process). Honour `system.devices[].process` (see [Devices](#devices)): every component is priced at the die it sits on, each McPAT component carrying its die's technology (its own InputParameter: node and CACTI device type). `false`: the block is ignored with a printed line; one technology per McPAT chip, as before. Without a process block nothing changes either way. |
+| `power.models.clock_die_trunk` | bool | `true` | PIMID 1.12.18 (each die has its own clock tree). One die-level H-tree trunk per die and clock domain, feeding the component clock trees on that die and ending at each component tree's root (leaves = component tree roots, no register pins), so no part of it is inside a component tree: Wattch/CACTI model of `power.models.clock_network` (CACTI Global wire at the die's node), L = 1.5 D (sqrt(N) - 1) over the die (the DRAM die: the calibrated die area, one trunk per DRAM die that holds the device's DRAM-side components -- the built fabric's stack core dies or chips; the logic die: the area McPAT gives the components on it). Charged every cycle any component on the die is clocked: a die with a memory controller, router or cache is on every powered cycle; a die whose cores are all halted has its trunk off (max of its leaves' on-fractions). A trunk on the DRAM die takes the comm-dram periphery factors like the trees beside it. In the ledger once per die: `device.logic_die.clock_trunk`, `device.dram_die<k>.clock_trunk`, `<host>.die.clock_trunk` (in a co-simulation: `<node>.<die>.clock_trunk`). `false`: not priced; the run says so. |
+| `power.models.l1d_access_width` | bool | `true` | 1.12.18. The L1D access CACTI prices is the 16 B one load/store moves in the timing core (zsim's Westmere-class OOO core, one 128-bit load port), not the 64 B line: McPAT charges one access per load/store uop. The fork reads McPAT's own output_width field of `dcache_config` and charges a line fill as line/16 writes; Horowitz ISSCC 2014 "Cache (64bit) 32KB 20 pJ" (scaled) is printed as the guard (`[mcpat l1]`). `false`: full-line access (upstream). |
+| `power.models.tlb_btb_measured` | bool | `true` | 1.12.18 (input fix). Host cores: ITLB accesses = instruction fetches (icache reads), DTLB = data accesses (dcache reads + writes) -- 64-bit mode always pages; device elements keep 0. BTB reads = every branch-class instruction, writes = mispredictions + indirect target rewrites (McPAT's own BTB definition). `false`: TLB accesses 0 and BTB = indirect resolutions only. |
+| `power.models.frontend_from_timing` | bool | `true` | 1.12.18. Size McPAT's instruction buffer from the timing core's own front end instead of the 32-entry preset: OOO 28 instructions (zsim OOOCore uopQueue), in-order one issue group, ALU element 1 (its implied fetch register). A buffer that holds no more than one fetch group is the IF/ID pipeline latch McPAT's pipeline model already prices, so the fork builds no separate array for it (no double count). The ALU element's instruction store (`pim.pe.imem_bytes`) is a plain RAM either way (since 1.11.3). `false`: the 32-entry preset. |
+| `power.models.dram_io_share_split` | bool | `true` | 1.12.18. An IDD row that folded the DQ I/O energy into its burst current (HBM2 and HBM3: `idd.io_share` in params/dram/hbm2.yaml and hbm3.yaml, from the 1.11.91 derivation) has that share removed from the array burst; the I/O of an access that crosses the DQ is priced once, by the IDDQ term. Since 1.12.18 an `io_share` anchored on a published I/O energy (`anchor_read_pj_bit`, `anchor_write_pj_bit`, `channel_gbps`, `anchor_source`, all four or none; the loader refuses a share that is not anchor x channel_gbps / vdd to 0.05 mA) prices that crossing I/O at the share itself, reads and writes (HBM3: the Samsung 4 nm HBM3 PHY, JSSC 2024 Table II, 0.29 R / 0.25 W pJ/b, unscaled; HBM2: the Samsung HBM2E PHY, Hot Chips 32, 0.56 R / 1.07 W pJ/b, unscaled), and the record's `iddq_band_pj_bit` becomes a guard printed beside it. The optional `read_energy_guard` block (published older-generation pJ/b and the generational gain) prints `[guard]` lines comparing the derived total read energy, WARNING when outside; never priced. `false`: the share stays inside every burst (a crossing access then also pays the IDDQ band: I/O counted twice), as before 1.12.18. |
 | `power.models.dram_vpp_dynamic` | bool | `true` | 1.12.18. Price the VPP (wordline pump) rail's active rows the record publishes: activate + precharge VPP x (IPP0 x tRC - IPP3N x tRAS - IPP2N x (tRC - tRAS)), burst VPP x (IPP4R/IPP4W - IPP3N) x tBurst, refresh VPP x (IPP5B - IPP3N) x tRFC (inside the refresh terms). DDR5 (Micron 16 Gb Rev A T6 / Rev D T8), DDR4 (MT40A Rev B T148; IPP5B computed from IPP5R), LPDDR5 (the 1.8 V VDD1 rail, Micron Y52P T18) and GDDR6 (Samsung K4Z80325BC T82; the activation on the IDD7 route, `idd.vpp_actpre_pj_override`); a column the cited sheet does not publish is reported as such and prices nothing. `false`: the VPP rail is standby only, as before. |
-| `power.models.flush_writebacks_replayed` | bool | `true` | 1.12.18. The co-sim coherence flush's writebacks are sent to the host memory controllers at flush time (and through the host DRAM replay when it is on, Ramulator source_id 1): they count once in the controller's writes (McPAT MC memory_writes, the host-originated array class) and their ACTs/row state are the replayed controller's. `false`: they are charged array-side only with the 0.5 row-miss fallback, as before. |
-| `power.models.passthrough_as_wire` | - | - | Removed ((1.12.231)): refused at load. A node of the detailed DRAM tree with two attachments and the same width and clock on both links is built as part of a link and priced as one (`noc.single_path_as_link`). |
-| `power.models.sharer_bits_from_children` | bool | `true` | 1.12.18 (user ruling "sharer bits from the real child count"). The SBT directory of an L2/L3 (`power.models.coherence_directory`) widens each line by one sharer bit per child cache the directory tracks: an L2 by the L1s zsim gives it (L1I + L1D per core / L2 instances: 2 for a private L2), the L3 by the L2s (or by every L1 when there is no L2). Passed to the McPAT fork as L2/L3 param `dir_sharers`; McPAT keeps its byte rounding, ceil(n/8)*8 bits (McPAT 1.0, Li et al., MICRO 2009, `sharedcache.cc`). `false`: McPAT's ceil(number_of_cores/8)*8. |
+| `power.models.flush_writebacks_replayed` | bool | `true` | 1.12.18. The co-simulation coherence flush's writebacks are sent to the host memory controllers at flush time (and through the host DRAM replay when it is on, Ramulator source_id 1): they count once in the controller's writes (McPAT MC memory_writes, the host-originated array class) and their ACTs/row state are the replayed controller's. `false`: they are charged array-side only with the 0.5 row-miss fallback, as before. |
+| `power.models.passthrough_as_wire` | - | - | Removed (1.12.231): refused at load. A node of the detailed DRAM tree with two attachments and the same width and clock on both links is built as part of a link and priced as one (`noc.single_path_as_link`). |
+| `power.models.sharer_bits_from_children` | bool | `true` | 1.12.18 (sharer bits from the real child count). The SBT directory of an L2/L3 (`power.models.coherence_directory`) widens each line by one sharer bit per child cache the directory tracks: an L2 by the L1s zsim gives it (L1I + L1D per core / L2 instances: 2 for a private L2), the L3 by the L2s (or by every L1 when there is no L2). Passed to the McPAT fork as L2/L3 param `dir_sharers`; McPAT keeps its byte rounding, ceil(n/8)*8 bits (McPAT 1.0, Li et al., MICRO 2009, `sharedcache.cc`). `false`: McPAT's ceil(number_of_cores/8)*8. |
 | `power.models.coherence_directory` | bool | `true` | 1.12.18: the in-cache coherence directory of every non-terminal cache (zsim keeps a sharer bitset per line in L2/L3), priced by McPAT as SBT (`merged_dir`, Li et al., MICRO 2009): each line widens by its sharer bits and the INV/INVX/FWD the children received are home-node write accesses. `false`: not priced; the run says so ("NOT PRICED by user option"). |
-| `power.models.nondram_array_system` | bool | `true` | 1.12.18: system-scope energy and leakage of an SRAM / STT_MRAM / PCM / RERAM main-memory array (CACTI 7 / NVSim, the device-scope call, at the owning node's process node), summed into System Total Power. Its area is counted either way. `false`: not priced; the run says so. |
+| `power.models.nondram_array_system` | bool | `true` | 1.12.18: in a co-simulation, the energy and leakage of an SRAM / STT_MRAM / PCM / RERAM main-memory array (CACTI 7 / NVSim, the device-run call, at the owning node's process node), summed into System Total Power. Its area is counted either way. `false`: not priced; the run says so. |
 | `power.models.tlb_published_geometry` | bool | `true` | 1.12.18. A host `ooo_core` whose TLB accesses are counted (`power.models.tlb_btb_measured`) gets the TLB arrays of the core the timing model mirrors (Westmere/Nehalem, Intel 64 and IA-32 Architectures Optimization Reference Manual 248966-031 sec. 2.5.4: ITLB 128 + 7, DTLB 64 + 32 entries, 4-way; from the core record) instead of a 1-entry array. The second-level TLB has no McPAT structure and is not priced (stated). An in-order host and every device element keep the 1-entry array (no TLB in their timing model). `false`: the 1-entry array. |
 | `power.models.dram_vpp_standby_ratio` | bool | `true` | (1.12.142). HBM2/HBM3: price the VPP rail's standby as the record's `idd.vpp_standby.ratio` x the VDD standby power (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynamic' / 'idle VDD dynamic' ratio). `false` leaves it unpriced (`+ipp=n/a`). No effect on a record with an `ipp` row. |
 | `power.models.iddq_write_termination_once` | bool | `true` | 1.12.18. Where the record states that the sheet measured IDDQ4W with the DRAM's write termination enabled (`iddq.wr_includes_rtt_wr`; DDR5: Micron DDR5 core sheet Rev D Table 387 pp.449-452, notes 2-4: RON RZQ/7, RTT_NOM RZQ/6, RTT_WR RZQ/2), a crossing write is charged the IDDQ4W excess only and the separately computed termination is printed as a guard, so the termination is charged once. Not applied to an anchored I/O share or a banded technology (HBM). `false`: both are charged. |
-| `power.models.host_uncore_static` | bool | `true` | (1.12.97). System scope: the host socket's core-count-independent uncore (I/O and system agent, root complex, interrupt and power management, clock generation), once per host, ledger `<host>.uncore_static` = max(0, `power.host_uncore.w_per_socket` - the run's MC leakage, MC PHY static and die clock trunk). `false`: not charged. |
-| `power.models.host_uncore_load` | bool | `true` | (1.12.154). System scope: the host uncore's rise above the awake-idle floor under load (the raised uncore clock and voltage), ledger `<host>.uncore_load` = max(0, `power.host_uncore.load_w_per_mb_llc` x the host L3 MB x the busiest host core's running fraction - the run's McPAT L3, NoC and MC clock networks). Needs `power.models.host_uncore_static`. `false`: not charged. |
+| `power.models.host_uncore_static` | bool | `true` | (1.12.97). In a co-simulation: the host socket's core-count-independent uncore (I/O and system agent, root complex, interrupt and power management, clock generation), once per host, ledger `<host>.uncore_static` = max(0, `power.host_uncore.w_per_socket` - the run's MC leakage, MC PHY static and die clock trunk). `false`: not charged. |
+| `power.models.host_uncore_load` | bool | `true` | (1.12.154). In a co-simulation: the host uncore's rise above the awake-idle floor under load (the raised uncore clock and voltage), ledger `<host>.uncore_load` = max(0, `power.host_uncore.load_w_per_mb_llc` x the host L3 MB x the busiest host core's running fraction - the run's McPAT L3, NoC and MC clock networks). Needs `power.models.host_uncore_static`. `false`: not charged. |
 | `power.host_uncore.load_w_per_mb_llc` | float (W/MB) | `0.31` | (1.12.154). 6.2 W between the 1.2 and 2.7 GHz uncore clock on one Xeon E5-2620 v4 socket with a 20 MB LLC at no LLC/memory traffic (Gholkar et al., SC19, Fig. 2a). |
 | `power.host_uncore.w_per_socket` | float (W) | `18.5` | (1.12.97). The intercept of a least-squares line over the package C1E power of 34 Haswell-EP SKUs (Intel 330783-002, Sec. 2.10: C1E = 18.5 W + 1.91 W/core). |
-| `power.models.host_mc_phy_static` | bool | `true` | 1.12.18. System scope: the PHY static power (CACTI-IO: phase rotator, receiver and PLL static) of each host memory controller whose accesses drive the DRAM's DQ pins, the same evaluation device scope charges at a crossing placement. One ledger entry per host controller, `<host>.memory_controllers_phy`; the shared array's memory term carries none. Not charged for SRAM / NVM memories. `false`: not charged. |
+| `power.models.host_mc_phy_static` | bool | `true` | 1.12.18. In a co-simulation: the PHY static power (CACTI-IO: phase rotator, receiver and PLL static) of each host memory controller whose accesses drive the DRAM's DQ pins, the same evaluation a device run charges at a crossing placement. One ledger entry per host controller, `<host>.memory_controllers_phy`; the shared array's memory term carries none. Not charged for SRAM / NVM memories. `false`: not charged. |
 
 **Process-node resolution.** The device node defaults to 22nm (unchanged; device
 power flows are bit-identical at default). The host node, when not given its own
@@ -979,15 +975,15 @@ silently clamping sub-22 requests to 22 -- is removed; CACTI's 16nm table is a
 stub, so the reject guards a live failure mode). DRAM memory domains carry no
 free node at all: their periphery class is derived from the memory technology
 and printed. `power.device_corner` (`hp` default, `lstp`, `lop`) selects the
-CACTI device column for LOGIC-family components; it is refused, with a printed
+CACTI device column for logic-family components; it is refused, with a printed
 reason, for DRAM-periphery components (one commodity-DRAM column per table).
 An SRAM or NVM memory array (STT_MRAM, PCM, RERAM) is characterised at the configured corner for its
-power and, from the (1.12.112) release, for its timing too: its access and write times, the devices M/D/1 cap andnthe PE interfaces bank model follow `power.device_corner`, which stays a configuration option (`hp`, `lstp`,
+power and, since 1.12.112, for its timing too: its access and write times, the device's M/D/1 cap and the PE interfaces' bank model follow `power.device_corner`, which stays a configuration option (`hp`, `lstp`,
 `lop`; PCM has no `lstp` or `lop` design point and is refused there).
-1.12.18 (user ruling 2026-10-24, final): PEs on a LOGIC die -- a DDR-family
+PEs on a logic die (1.12.18) -- a DDR-family
 RANK/CHANNEL placement (a DIMM-buffer-style die), the HBM logic/base die, any
 device whose PEs are priced in the logic family under the per-die process
-rule -- stay on `hp` when `power.device_corner` is not written, and the WHOLE
+rule -- stay on `hp` when `power.device_corner` is not written, and the whole
 logic die (PEs, NoC routers, memory controllers) is priced at one corner (one
 die, one process). Two alternatives were tried and rejected: `lop` raised the
 PE leakage (CACTI's 22 nm lop off-current exceeds hp's above ~60 C: 17.85 ->
@@ -1005,7 +1001,7 @@ access time against one PE cycle. McPAT has no logic (ALU/bypass) delay model, s
 not checked, and the run says so.
 
 `power.interconnect_projection` (`conservative` default, `aggressive`) selects
-the ITRS wire projection, and feeds BOTH CACTI and McPAT so one die is modelled
+the ITRS wire projection, and feeds both CACTI and McPAT so one die is modelled
 with one metal stack. Conservative is the default on physics, not caution: the
 aggressive column sets copper barrier thickness to zero at every node, which no
 process can build, and holds the scattering coefficient at 1.00, which
@@ -1013,15 +1009,15 @@ measurement contradicts once wire dimensions approach the electron mean free
 path. An invalid value is a FATAL configuration error.
 
 `power.subarray_pitch_factor` (default `1.0`, range `[1.0, 10.0]`) is an
-additional AREA penalty for a PE laid out on the memory array's bitline pitch.
+additional area penalty for a PE laid out on the memory array's bitline pitch.
 It is distinct from the DRAM-periphery area factor: that one prices the
-DEVICE (a DRAM-process transistor is larger), this one prices the LAYOUT (a
+device (a DRAM-process transistor is larger), this one prices the layout (a
 circuit pressed against the array cannot be wider than the pitch it sits on,
 however small its transistors are). Vogelsang (MICRO 2010) draws the same
 distinction between on-pitch circuitry -- sense-amp stripes, local wordline
 drivers -- and off-pitch circuitry limited by wiring.
 
-It applies ONLY at `SUBARRAY` placement on a DRAM technology, and setting it
+It applies only at `SUBARRAY` placement on a DRAM technology, and setting it
 anywhere else prints that it was ignored rather than discarding it silently.
 Values below 1.0 are refused: the knob multiplies a penalty, so below 1 it
 would claim the PE is denser than the baseline it is measured against. Values
@@ -1031,7 +1027,7 @@ logic-process area, which leaves roughly 1.25x for pitch once the 2.44x device
 factor is applied. Their unit is bank-shared rather than subarray-pressed, so
 this is a warning and not a refusal.
 
-SRAM and NVM technologies never take this factor: their PEs are LOGIC-family
+SRAM and NVM technologies never take this factor: their PEs are logic-family
 (SRAM is a logic process; MRAM/PCM/ReRAM place their storage element in the
 metal stack above conventional logic transistors), so no periphery transform
 is applied at all.
@@ -1058,15 +1054,15 @@ refresh power as a 45 C one. The multiplier on tREFI is now:
 | DDR3/DDR4/DDR5, LPDDR5, GDDR6 | 1x | 0.5x | 0.5x (held) | JESD79-5D Table 70 (tREFI 3.9 us -> 1.95 us); JESD79-3E / Micron extended-temperature 2x refresh; JESD209-5C Table 240 NOTE 2 + MR4 derating |
 | HBM2, HBM3 | 1x | 0.5x | 0.25x | AMD PG276 p.23 (3.9 -> 1.95 us at 85-95 C); AMD DS923 note 16 (>= 4x above 95 C); Intel UG-20031 Table 30 / Agilex M HBM2E IP UG Table 5 (TEMP[2:0] ladder) |
 
-The cold-end rungs the HBM controllers expose (2x and 4x SLOWER refresh below
-vendor-specific thresholds) are deliberately NOT credited: they would grant a
+The cold-end rungs the HBM controllers expose (2x and 4x slower refresh below
+vendor-specific thresholds) are deliberately not credited: they would grant a
 refresh-power discount on a threshold no standard fixes. Above 105 C no source
 specifies a rate (HBM CATTRIP is 120 C); the last rung is held. The default
 350 K sits inside the nominal range, so results at the default are unchanged
 from earlier releases -- the ladder engages only when a config states a
 temperature above 85 C.
 
-**Static terms held at every temperature ((1.12.159)).** These are measured idle or standby figures whose sources
+**Static terms held at every temperature (1.12.159).** These are measured idle or standby figures whose sources
 state no temperature dependence, so they are held at their sources' values. Every run says so on a
 "[config] held at their sources' values" line:
 - host memory-controller PHY idle;
@@ -1098,7 +1094,7 @@ measured standby is a 54.2 C value.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `power.termination_pj_per_bit` | float | unset (model) | Prices BOTH read and write DQ termination at the stated pJ/bit, overriding the read/write split loops. Use it to state an ODT-on operating point for LPDDR5 (whose JEDEC default is ODT disabled, JESD209-5C Table 84) or a non-default RTT for any DDR family. Wired since 1.11.63; earlier releases named the key in console messages but did not parse it. The override replaces termination only: since 1.11.91 a DQ-crossing access also pays the DQ output rail (IDDQ, printed `iddq=`), which this key does not change. |
+| `power.termination_pj_per_bit` | float | unset (model) | Prices both read and write DQ termination at the stated pJ/bit, overriding the read/write split loops. Use it to state an ODT-on operating point for LPDDR5 (whose JEDEC default is ODT disabled, JESD209-5C Table 84) or a non-default RTT for any DDR family. Wired since 1.11.63; earlier releases named the key in console messages but did not parse it. The override replaces termination only: since 1.11.91 a DQ-crossing access also pays the DQ output rail (IDDQ, printed `iddq=`), which this key does not change. |
 
 ### McPAT Overrides
 
@@ -1116,10 +1112,11 @@ power:
     interconnect_projection_type: 0
 ```
 
-These overrides feed the **McPAT power/area model only** -- they do NOT change
-ZSim cycle timing. The timing microarchitecture is fixed per core model
-(`ooo_core` is Westmere-class with a 128-entry ROB and 4-wide issue at compile
-time; `in_order_core` issue width defaults to 2, env-tunable via
+These overrides feed the **McPAT power/area model only** -- they do not change
+ZSim cycle timing. The timing microarchitecture is set per core model
+(`ooo_core` issues 4 wide; its window comes from the core record: a processing
+element's is the Westmere-class 128-entry ROB, a host core's is `ooo_host`, Golden
+Cove's 512-entry ROB; `in_order_core` issue width defaults to 2, env-tunable via
 `PIMID_INORDER_WIDTH`).
 
 | Override Key | Type | Description |
@@ -1143,8 +1140,8 @@ time; `in_order_core` issue width defaults to 2, env-tunable via
 
 Only these sixteen names are accepted: any other name under
 `power.mcpat_overrides` is refused at load (1.11.106; it used to be stored and
-never read), and every value must be a number. In the three `noc.<level>.*`
-names, `<level>` is the level's index counted from the PE's own level:
+never read), and every value must be a number. In the three `noc.<index>.*`
+names, `<index>` is the level's index counted from the PE's own level:
 `noc.0.duty_cycle` is the PE's level, `noc.1.duty_cycle` the next one up. An
 override for a level that is not priced (no branch router and no endpoint) is
 reported as ignored.
@@ -1173,18 +1170,18 @@ blocks is refused (1.11.106).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `power.link.enabled` | bool | `true` | Price the host-device link (its energy and its controller). A declared link enables pricing by default; an explicit `false` keeps the link's timing and drops its energy. |
-| `power.link.link_type` | string | the attachment's class | Link class: `pcie_gen3`, `pcie_gen4`, `pcie_gen5`, `cxl_2_0`, `cxl_3_0`, `nvlink_3_0`, `nvlink_4_0`, `nvlink_c2c`, `ualink_1_0`, `interposer` or `dram_channel` (see [Link Types](#link-types-system-scope)). Absent: the class follows `system.devices[].attachment`. A named class overrides that default with a `[link]` note; a `system.network.links[].type` is the authoritative type when one is declared. Any other word is refused. |
-| `power.link.model` | string | `"simple"` | Link timing model word: `simple` (includes M/D/1 queuing; `md1` is an alias), `analytical` or `detailed`; any other word is refused. Read only under `scope: cosim`, where it is the system network's model when `system.network.model` is not given (1.12.2: a given `system.network` block is honoured there, as at system scope; giving both model keys with different words is refused, rc 2). Under `scope: system` `system.network.model` governs and this key is not used. |
-| `power.link.base_latency_ns` | double | `500.0` | Per-transaction overhead (ns). When not set, the class's preset ([Link Types](#link-types-system-scope)); `dram_channel` the part's tRCD + tCL. |
+| `power.link.link_type` | string | the attachment's class | Link class: `pcie_gen3`, `pcie_gen4`, `pcie_gen5`, `cxl_2_0`, `cxl_3_0`, `nvlink_3_0`, `nvlink_4_0`, `nvlink_c2c`, `ualink_1_0`, `interposer` or `dram_channel` (see [Link Types](#link-types-co-simulation)). Absent: the class follows `system.devices[].attachment`. A named class overrides that default with a `[link]` note; a `system.network.links[].type` is the authoritative type when one is declared. Any other word is refused. |
+| `power.link.model` | string | `"simple"` | Link timing model word: `simple` (includes M/D/1 queuing; `md1` is an alias), `analytical` or `detailed`; any other word is refused. Validated and printed on the `Interconnect:` line; it does not set the system network's model, which is `system.network.model` (the retired `scope: cosim` form used it as that model). |
+| `power.link.base_latency_ns` | double | `500.0` | Per-transaction overhead (ns). When not set, the class's preset ([Link Types](#link-types-co-simulation)); `dram_channel` the part's tRCD + tCL. |
 | `power.link.bandwidth_GBs` | double | `63.0` | Peak bandwidth (GB/s), one direction. When not set, the class's preset (rate x lanes x encoding x data-link share); `dram_channel` the part's channel bandwidth. |
 | `power.link.num_lanes` | int | `16` | Lane count of a PCIe / CXL link (1, 2, 4, 8 or 16): the link controller McPAT prices and the preset bandwidth. NVLink, UALink and an interposer have their own lane structure. |
-| `power.link.num_units` | int | `1` | Link units of the host-link controller. Read only by the system-scope `trace` method's power path; the `exec` co-simulation prices one unit per device, and device scope prices no host link. |
+| `power.link.num_units` | int | `1` | Link units of the host-link controller. Read only by the co-simulation `trace` method's power path; the `exec` co-simulation prices one unit per device, and a device run prices no host link. |
 | `power.link.num_channels` | int | `16` | Channel count of the same controller, read on the same path as `num_units` and only when `num_lanes` <= 0 (the lane count is used otherwise). |
-| `power.link.duty_cycle` | double | measured | Link duty-cycle OVERRIDE (0-1), printed beside the measured value. Absent: the co-simulation derives it from the measured crossing bytes over the link's capacity and the run's time (since 1.11.40); the `trace` path takes 0.01. |
+| `power.link.duty_cycle` | double | measured | Link duty-cycle override (0-1), printed beside the measured value. Absent: the co-simulation derives it from the measured crossing bytes over the link's capacity and the run's time (since 1.11.40); the `trace` path takes 0.01. |
 | `power.link.total_load_perc` | double | `0` | Link-controller load fraction (0-1). Read only by the `trace` method's power path (absent: 0, said so); the `exec` co-simulation uses the measured duty. |
 | `power.link.pj_per_bit_override` | double | unset | Link energy in pJ/bit, replacing the class's cited value; the printed band is then omitted (an overridden figure has no sourced range). Also prices a `dram_channel` crossing, which otherwise carries no separate link energy. |
-| `power.link.process_node_nm` | int | the die's node | Process node (nm) of the die the `interposer` link sits on; it selects the UCIe energy row McPAT prices the link with (1.12.18, user ruling 2026-10-23). Exactly two values are accepted: `22` and `3`; anything else is refused at load. Absent: the node of the die McPAT prices (`power.tech_node_nm`, default 22 -> the 22 nm row); a die at a node other than 22 with no key is refused by McPAT, naming the two supported nodes. 3 nm is not a CACTI node, so this key is separate from `power.tech_node_nm`: it changes ONLY the link's per-bit energy, not the die's CACTI/McPAT tables. Rows (pJ/bit, analog PHY + digital interface): 3 nm advanced 0.29 + 0.10, 3 nm standard 0.52 + 0.10, 22 nm standard 1.2 + 0.192 (digital: lower bound), 22 nm advanced 0.669 + 0.192 (lower bound); sources and derivations in [power.md](power.md#the-host-device-link-ucie). With `power.link.pj_per_bit_override` no row is needed. A `power.link` section holding only this key does not mark the link timing as configured. Alias `power.pcie.process_node_nm`. |
-| `power.link.controller_clock_mhz` | int | the class's published clock | Link controller clock (MHz, > 0; 0 or a negative value is refused) for ANY link class (1.12.18). Absent: PCIe/CXL take the PIPE-derived clock; `interposer` takes the UCIe D2D adapter clock McPAT derives as lanes x lane rate / (8 x 64 B FDI) (64 x 16 GT/s -> 2000 MHz; sources in [power.md](power.md#the-host-device-link-ucie)); `nvlink_*` and `ualink_1_0` have no default controller clock and are REFUSED at load without this key (they used to run on a 1000 MHz ASSUMED clock). A given value is printed as the user's. |
+| `power.link.process_node_nm` | int | the die's node | Process node (nm) of the die the `interposer` link sits on; it selects the UCIe energy row McPAT prices the link with (1.12.18). Exactly two values are accepted: `22` and `3`; anything else is refused at load. Absent: the node of the die McPAT prices (`power.tech_node_nm`, default 22 -> the 22 nm row); a die at a node other than 22 with no key is refused by McPAT, naming the two supported nodes. 3 nm is not a CACTI node, so this key is separate from `power.tech_node_nm`: it changes only the link's per-bit energy, not the die's CACTI/McPAT tables. Rows (pJ/bit, analog PHY + digital interface): 3 nm advanced 0.29 + 0.10, 3 nm standard 0.52 + 0.10, 22 nm standard 1.2 + 0.192 (digital: lower bound), 22 nm advanced 0.669 + 0.192 (lower bound); sources and derivations in [power.md](power.md#the-host-device-link-ucie). With `power.link.pj_per_bit_override` no row is needed. A `power.link` section holding only this key does not mark the link timing as configured. Alias `power.pcie.process_node_nm`. |
+| `power.link.controller_clock_mhz` | int | the class's published clock | Link controller clock (MHz, > 0; 0 or a negative value is refused) for any link class (1.12.18). Absent: PCIe/CXL take the PIPE-derived clock; `interposer` takes the UCIe D2D adapter clock McPAT derives as lanes x lane rate / (8 x 64 B FDI) (64 x 16 GT/s -> 2000 MHz; sources in [power.md](power.md#the-host-device-link-ucie)); `nvlink_*` and `ualink_1_0` have no default controller clock and are refused at load without this key (they used to run on a 1000 MHz assumed clock). A given value is printed as the user's. |
 | `power.link.header_bytes` | int | the class's | Protocol framing bytes per transaction: charged by the timing model and priced at the link's pJ/bit. Absent: the class's value (PCIe 24, the MWr header with framing and DLL, Neugebauer et al. SIGCOMM 2018; CXL, NVLink and UALink 16; `interposer` and `dram_channel` 0). `0` is a real value. |
 | `power.link.coherence_extra_ns` | double | `0.0` | Average extra latency (ns) of a coherent access over the link. |
 
@@ -1216,7 +1213,7 @@ system:
 
 A host has no PEs and no placement level: a `pim` block written on a host node
 is dropped with a `[config] WARNING` naming the node and the keys, and the run
-continues on the node's other keys (1.12.6, ruling 1; the key schema refused
+continues on the node's other keys (1.12.6, the key schema refused
 it through 1.12.5).
 
 ```yaml
@@ -1241,7 +1238,7 @@ system:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.hosts[].name` | string | - | Host node name (required). Under `scope: cosim` the [`host:` block](#host-block-host-scope-cosim) is `system.hosts[0]`, named `host`, and its keys are the keys below written without the `system.hosts[]` prefix (1.12.2). |
+| `system.hosts[].name` | string | - | Host node name (required). The retired flat `host:` block (see [Host Block](#host-block-host-scope-cosim----retired-in-1128)) was `system.hosts[0]`, named `host`. |
 | `system.hosts[].core_type` | string | `"ooo_core"` | Host core type. |
 | `system.hosts[].num_cores` | int | `4` | Number of host cores. |
 | `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window of the run | What the host may address (1.12.12). Given, the ranges must contain every device's and memory's window (a host that does not reach a node is not supported; refused naming the node); a range covering addresses no node owns is kept with a WARNING. `system.hosts[].address` is refused by name: a host has no window of its own. |
@@ -1275,11 +1272,11 @@ system:
 | `system.hosts[].fp_emulation_cycles` | int | `0` | Cycles the host charges per FP-class instruction when `floating_point: false`. |
 | `system.hosts[].issue_width` | int | `2` | An `in_order_core` host's issue width, 1-6 (1.11.107; as `pim.pe.issue_width`, which a host could not set: before it only `PIMID_INORDER_WIDTH` narrowed an in-order host). Emitted as the host group's `issueWidth` and priced by McPAT at the same width. Refused (rc 2) on any other host core type, where it would change nothing, and outside 1-6. |
 | `system.hosts[].branch_predictor` | string | the core record (`pag`) | An `in_order_core` host's branch predictor, `pag` or `none` (1.12.1; as `pim.pe.branch_predictor`). Emitted as the host group's `branchPredictor` and priced by McPAT the same way (`none`: no predictor). Refused (rc 2) on any other host core type, where it would change nothing, and for any other word. With `issue_width: 1` and `none` an in-order host is the scalar single-issue PE. |
-| `system.hosts[].pg` | bool | `false` | Power-gate the host as ONE piece: cores and host memory controller share one domain and one idle residency. Since 1.11.106 the residency is 1 minus the MEASURED union of core-active and host-MC-active phases; it used to take max(core, mc), which understates activity and over-credits the gating. A stats file without the union counter falls back to the max and the `[pg]` line says it over-credits. |
+| `system.hosts[].pg` | bool | `false` | Power-gate the host as one piece: cores and host memory controller share one domain and one idle residency. Since 1.11.106 the residency is 1 minus the measured union of core-active and host-MC-active phases; it used to take max(core, mc), which understates activity and over-credits the gating. A stats file without the union counter falls back to the max and the `[pg]` line says it over-credits. |
 | `system.hosts[].workload` | map | - | Per-host workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
-| `system.hosts[].workload.env` | map | `{}` | Environment for the node's workload, read since 1.11.106 (documented earlier and ignored). The system runs as ONE simulated process, so the map joins that process's environment, the top-level `workload.env`. Nodes are applied in file order, hosts before devices; a name already set with a different value takes the node's value and the run prints a NOTE naming both values. A value that is not a map of `NAME: value` is refused. |
+| `system.hosts[].workload.env` | map | `{}` | Environment for the node's workload, read since 1.11.106 (documented earlier and ignored). The system runs as one simulated process, so the map joins that process's environment, the top-level `workload.env`. Nodes are applied in file order, hosts before devices; a name already set with a different value takes the node's value and the run prints a NOTE naming both values. A value that is not a map of `NAME: value` is refused. |
 
-#### Host Memory Path (co-sim)
+#### Host Memory Path (co-simulation)
 
 The host main-memory idle latency is a physical composition (tRCD + tCAS)
 plus a **calibrated host-path adder** so the effective idle latency matches
@@ -1293,7 +1290,7 @@ composition.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.hosts[].memory.dram_replay` | bool | `true` | 1.12.18 (ruling 17): replay the host memory through Ramulator2 per epoch (as the device memory). Host accesses are priced at the replayed controller's measured service latency plus the host-path adder (the M/D/1 latency serves the first epoch only), and the host energy uses the controller's measured row behaviour, counted activates, counted refresh commands and bank-open time. A shared array (the device is the host's memory) uses the device's replay instance; a decoupled host memory gets its own. `false` = the M/D/1 host controller, for timing and energy inputs alike; the `[mem] host DRAM controller:` line says which ran. Off by construction for a non-DRAM host memory, trace-method MPI, and a shared array whose device memory is not replayed. |
+| `system.hosts[].memory.dram_replay` | bool | `true` | 1.12.18: replay the host memory through Ramulator2 per epoch (as the device memory). Host accesses are priced at the replayed controller's measured service latency plus the host-path adder (the M/D/1 latency serves the first epoch only), and the host energy uses the controller's measured row behaviour, counted activates, counted refresh commands and bank-open time. A shared array (the device is the host's memory) uses the device's replay instance; a decoupled host memory gets its own. `false` = the M/D/1 host controller, for timing and energy inputs alike; the `[mem] host DRAM controller:` line says which ran. Off by construction for a non-DRAM host memory, trace-method MPI, and a shared array whose device memory is not replayed. |
 | `system.hosts[].memory.latency_adder_ns` | double | `-1` | Aggregate host-path adder (ns). `-1` = auto per-tech default (DDR5 77, HBM3 203). |
 | `system.hosts[].memory.host_path.fabric_ns` | double | `-1` | IO-die / mesh / interconnect traversal (core->MC). `-1` = per-tech default. |
 | `system.hosts[].memory.host_path.coherence_ns` | double | `-1` | Snoop / directory / coherence-engine latency. `-1` = per-tech default. |
@@ -1305,19 +1302,19 @@ Validity: `latency_adder_ns` and any `host_path.*` are **mutually exclusive**
 merges over the per-tech default split (e.g. `coherence_ns: 0` = a
 "no coherence machinery" what-if).
 
-#### Host NoC (co-sim)
+#### Host NoC (co-simulation)
 
-Host-side fabric. A 1-core host has no fabric (crossbar degenerates:
-core->caches->MC direct); a multi-core host adds a fixed one-hop crossbar
-latency on the host memory path (port contention priced by the host memory controller: the replayed Ramulator2 controller since 1.12.18, the M/D/1 queue with `memory.dram_replay: false`).
+Host-side fabric. A 1-core host has no fabric (core->caches->MC direct); a
+multi-core host adds the fabric's latency on the host memory path (`ring`, the
+default since 1.12.23: the stops crossed; `crossbar`: `hop_cycles`) (port contention priced by the host memory controller: the replayed Ramulator2 controller since 1.12.18, the M/D/1 queue with `memory.dram_replay: false`).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `system.hosts[].noc.topology` | string | `"ring"` | 1.12.23 (user ruling 2026-10-24): `ring` (default), `crossbar` or `bus`; any other word is refused (rc 1). The same topology runs the timing (zsim host fabric: L2 <-> L3 and LLC <-> memory-controller accesses) and the power (`power.models.host_noc`). `ring`: the published Nehalem-EX ring (Kottapalli and Baxter, Hot Chips 21, 2009): one stop per core (its L2 and the L3 slices it holds) and per host memory controller, two counter-rotating rings, 1 cycle per stop, the shorter direction; zero-load (per-segment contention is not modelled; the memory controller keeps its queue); a GET pays request + response hops, a dirty writeback the data hops. `crossbar`: the pre-1.12.23 uniform hop of `hop_cycles` per access, now on the L2 <-> L3 path too. `bus`: one shared bus, 1 command beat + the line's data beats (line / 256 b) per access; an access waits for it, at most one transaction of each other core (round-robin arbitration). The L3 slice of a line is a hash of its address (a multiplicative hash). Before 1.12.23: | Host fabric topology. Only the crossbar is modelled: any other word is accepted with a WARNING (1.11.106; it used to be accepted in silence) and the fabric still runs as the analytic crossbar (one uniform hop plus the host memory controller's queue). The host NoC has no power model. |
-| `system.hosts[].noc.model` | string | `"analytical"` | `analytical`. No host Garnet is instantiated: any other word (`detailed` included) is accepted with a WARNING and runs the analytical model of the chosen topology (1.12.23). |
+| `system.hosts[].noc.topology` | string | `"ring"` | 1.12.23: `ring` (default), `crossbar` or `bus`; any other word is refused (rc 1). The same topology runs the timing (zsim host fabric: L2 <-> L3 and LLC <-> memory-controller accesses) and the power (`power.models.host_noc`). `ring`: the published Nehalem-EX ring (Kottapalli and Baxter, Hot Chips 21, 2009): one stop per core (its L2 and the L3 slices it holds) and per host memory controller, two counter-rotating rings, 1 cycle per stop, the shorter direction; zero-load (per-segment contention is not modelled; the memory controller keeps its queue); a get pays request + response hops, a dirty writeback the data hops. `crossbar`: the pre-1.12.23 uniform hop of `hop_cycles` per access, now on the L2 <-> L3 path too. `bus`: one shared bus, 1 command beat + the line's data beats (line / 256 b) per access; an access waits for it, at most one transaction of each other core (round-robin arbitration). The L3 slice of a line is a hash of its address (a multiplicative hash). Before 1.12.23: | Host fabric topology. Only the crossbar is modelled: any other word is accepted with a WARNING (1.11.106; it used to be accepted in silence) and the fabric still runs as the analytic crossbar (one uniform hop plus the host memory controller's queue). The host NoC has no power model. |
+| `system.hosts[].noc.model` | string | `"analytical"` | `analytical`. No host Garnet is instantiated: any other word (`detailed` included) is accepted with a warning and runs the analytical model of the chosen topology (1.12.23). |
 | `system.hosts[].noc.hop_cycles` | int | `4` | Core->LLC/MC one-hop latency (core clock) of the `crossbar` topology. Applied only when `num_cores > 1`. |
 
-#### Separate Host Memory (co-sim)
+#### Separate Host Memory (co-simulation)
 
 Retired (1.12.10). A separate host main memory is a `system.memories[]`
 entry (see [Memories](#memories)); the `system.hosts[].mem` block below is
@@ -1356,11 +1353,11 @@ system:
         binary: ./pim_kernel
 ```
 
-**One vocabulary (1.11.107).** A device node is a device-scope configuration
+**One vocabulary (1.11.107).** A device node is a device-run configuration
 plus its node keys (`name`, `type`, `attachment`, `is_default_mem`,
 `workload`): it takes every `pim.*`, `memory.*`, `noc.*`, `cache.*`, `core.*`
 and `technology.node_nm` key, read by the same code as at the top level, and a
-key means there what it means at the top level. Until 1.11.106 a device-scope
+key means there what it means at the top level. Until 1.11.106 a device
 key written inside a node was ignored in silence; 1.11.106 refused it.
 
 - **The flat node keys are aliases.** `pe_type` = `pim.pe.type` (or
@@ -1373,11 +1370,11 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   latency override, as the flat key), with `cache.l2_kb` / `cache.l3_kb` and
   `cache.l2.enabled` / `cache.l3.enabled` also one quantity (a node's level is
   present when its size is above 0). **Giving both forms of one quantity in a
-  node is refused** (rc 2), naming both; so are the device-scope pairs of
+  node is refused** (rc 2), naming both; so are the device-key pairs of
   [Loader Rules](#loader-rules) (`pim.pe.core_type` / `pim.pe.type`,
   `pim.pe.placement` / `pim.placement`, ...) inside a node.
 - **What a node does not give.** A per-node key (the set under "Per node"
-  below) that the TOP LEVEL gives is the node's default: a top-level
+  below) that the top level gives is the node's default: a top-level
   `pim.pe.issue_width`, `pim.pe.branch_predictor`, `pim.pe.type`,
   `pim.pe.count`, `pim.pe.frequency_mhz` / `noc.clock_mhz`,
   `memory.technology`, a `pim.pe.*` factor or flag, the `pg` flags or a cache
@@ -1401,14 +1398,14 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   (1.12.1), `lanes`, `imem_bytes`, `arch_int_regs`, `arch_fp_regs`, `pg`),
   `pim.mc.pg`, `noc.pg` and the cache sizes, ways, banks and latencies. A node's
   `pim.pe.arch_int_regs` / `arch_fp_regs`, `lanes`, `imem_bytes` and
-  `operand_width` price THAT node's cores in McPAT (1.11.107; McPAT used the
+  `operand_width` price that node's cores in McPAT (1.11.107; McPAT used the
   run's values for every node).
-- **The built device.** The system model builds ONE device configuration -- the
-  first compute device with PEs -- and every other device-scope key the node
+- **The built device.** The system model builds one device configuration -- the
+  first compute device with PEs -- and every other device key the node
   gives (`pim.placement.*`, `pim.mapping`, `pim.mc.*`, `noc.model`,
   `noc.topology`, `noc.levels`, `noc.bridges`, `memory.banks`,
   `memory.dram`, `memory.timing`, `memory.controller`, ...) takes effect
-  through it, as at device scope.
+  through it, as in a device run.
 - **Run-wide keys.** The device node's `memory.dram.ddr5_speed_grade` and
   `memory.dram.device_width` set every DRAM model of the run -- the device's,
   and the shared array when the device is the host's main memory; a memory
@@ -1435,7 +1432,7 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
   (`system.memories[]`; `type: memory` through 1.12.6) has no PEs, fabric or caches: `pe_type`, `num_pes` and any
   `pim`, `noc`, `cache` or `core` key on it is dropped with a `[config]
   WARNING` naming the node and the keys, and the run continues (1.12.6,
-  ruling 1; refused 1.11.107 to 1.12.5). A `pim` block on a host node (a
+  refused 1.11.107 to 1.12.5). A `pim` block on a host node (a
   placement level among its keys) is dropped the same way (1.12.6; the key
   schema refused it before).
 
@@ -1443,30 +1440,30 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 |-----|------|---------|-------------|
 | `system.devices[].name` | string | - | Device name (required). |
 | `system.devices[].type` | string | retired | Retired (1.12.7): the list says what a node is. `type: compute` is dropped with a warning; a `type: memory` entry under `devices` is read as a memory and moved to `system.memories[]` with a warning naming its place; any other word is dropped as a retired key. Through 1.12.6 it chose between a compute device and a memory-only device. |
-| `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the DEFAULT host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-system-scope). |
+| `system.devices[].attachment` | string | `"external"` | `internal` or `external`; any other word is refused (1.11.106; it used to run as `external` and, since 1.11.103, take the PCIe class). Since 1.11.103 it also picks the default host-device link class (`interposer` for an internal on-package part, `dram_channel` for an internal DDR-family part, `pcie_gen5` for an external device); a named `system.network.links[].type` / `power.link.link_type` overrides it with a printed note. See [Link Types](#link-types-co-simulation). |
 | `system.devices[].pe_type` | string | the top-level `pim.pe.type`, else `"alu_core"` | PE core type (compute devices only). Alias of `pim.pe.type` / `pim.pe.core_type` in the node. |
 | `system.devices[].pim.pe.issue_width` | int | the top-level `pim.pe.issue_width`, else `2` | Per-device in-order issue width (as `pim.pe.issue_width`, 1-6; the node's own). |
 | `system.devices[].pim.pe.branch_predictor` | string | the top-level `pim.pe.branch_predictor`, else the core record (`pag`) | Per-device in-order branch predictor, `pag` or `none` (1.12.1; as `pim.pe.branch_predictor`; the node's own). Refused (rc 2) when the node gives it and the node's PE type (`pe_type` / `pim.pe.type`) is not `in_order_core`. An inherited top-level value names the top-level key in the `[params] <node>: in_order branch predictor` line. |
 | `system.devices[].num_pes` | int | the top-level `pim.pe.count`, else `0` | Number of PEs (compute devices only). Alias of `pim.pe.count` in the node. |
 | `system.devices[].frequency_mhz` | double | the top-level `pim.pe.frequency_mhz` / `noc.clock_mhz`, else `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
 | `system.devices[].tech_node_nm` | int | the device node (`22`) | Device technology node. Alias of `technology.node_nm` in the node. |
-| `system.devices[].process` | map | absent (today's pricing) | PIMID 1.12.18 (user ruling, per-die process; `power.models.per_die_process`). One block per die the device has; every component is priced at the die it physically sits on. Where a component sits follows the placement matrix: at a DRAM-periphery placement (SUBARRAY..CHIP, and CHANNEL on LPDDR/GDDR/HBM) the PEs, their caches and element controllers and the NoC levels marked on the DRAM die are on the DRAM die (priced at the DRAM die's node through the CACTI periphery transform); the off-die NoC levels (rank/channel/system tier) and the link controller on the logic die; at a logic placement (RANK and above, LOGIC_DIE) every logic component is on the logic die. The fabric's on-die links and TSVs take the DRAM die's node, its off-die links the logic die's. The memory array itself is the memory model's (`memory.technology`). One device is built, so two devices giving different blocks are refused. Absent: every number is today's. |
+| `system.devices[].process` | map | absent (today's pricing) | PIMID 1.12.18 (per-die process; `power.models.per_die_process`). One block per die the device has; every component is priced at the die it physically sits on. Where a component sits follows the placement matrix: at a DRAM-periphery placement (SUBARRAY..CHIP, and CHANNEL on LPDDR/GDDR/HBM) the PEs, their caches and element controllers and the NoC levels marked on the DRAM die are on the DRAM die (priced at the DRAM die's node through the CACTI periphery transform); the off-die NoC levels (rank/channel/system tier) and the link controller on the logic die; at a logic placement (RANK and above, LOGIC_DIE) every logic component is on the logic die. The fabric's on-die links and TSVs take the DRAM die's node, its off-die links the logic die's. The memory array itself is the memory model's (`memory.technology`). One device is built, so two devices giving different blocks are refused. Absent: every number is today's. |
 | `system.devices[].process.logic_die.node_nm` | int | the chip node (DRAM-periphery placement: the McPAT chip node for the off-die routers and `power.tech_node_nm` for the off-die links, as before; logic placement: `tech_node_nm`) | Node of the logic / base die. One of 22, 32, 45, 65, 90 (the nodes CACTI tabulates); anything else is refused (rc 1). The UCIe link keeps its own `power.link.process_node_nm` (22 or 3). |
-| `system.devices[].process.logic_die.device_type` | string | `power.device_corner` if written, else `hp` (1.12.18, user ruling 2026-10-24: whole logic die at one corner; lop and lstp tried and rejected) | CACTI logic device of the logic die: `hp`, `lstp` or `lop`; anything else is refused. |
-| `system.devices[].process.dram_die.generation` | string | the device's `memory.technology` | The DRAM generation of the core dies (a DRAM technology: DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3): its CACTI DRAM table (32 nm for DDR3, 22 nm otherwise) is the DRAM die's node. Give this OR `node_nm`, not both (refused). |
+| `system.devices[].process.logic_die.device_type` | string | `power.device_corner` if written, else `hp` (1.12.18, whole logic die at one corner; lop and lstp tried and rejected) | CACTI logic device of the logic die: `hp`, `lstp` or `lop`; anything else is refused. |
+| `system.devices[].process.dram_die.generation` | string | the device's `memory.technology` | The DRAM generation of the core dies (a DRAM technology: DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3): its CACTI DRAM table (32 nm for DDR3, 22 nm otherwise) is the DRAM die's node. Give this or `node_nm`, not both (refused). |
 | `system.devices[].process.dram_die.node_nm` | int | the generation's CACTI table | Node of the DRAM core dies (22, 32, 45, 65, 90; refused otherwise). The DRAM-periphery factors are read from this node's table; a node whose table does not populate the family's column is refused by the factor derivation (FATAL, rc 2). |
 | `system.devices[].process.dram_die.family` | string | `comm-dram` | The CACTI DRAM periphery device the DRAM die is built from (the column the area and dynamic factors are read from): `comm-dram` or `lp-dram` (all-zero at 22 nm: refused there by the factor derivation; real data at 32 and 45 nm). The leakage column stays `power.periphery_device`. |
 | `system.devices[].memory` | map | - | Device memory: every `memory.*` key (1.11.107; `technology`, `banks` and `ports_per_bank` only before). |
-| `system.devices[].is_default_mem` | bool | derived | `true`: this PIM device IS the host's main memory (host tech = device tech by construction). Since 1.12.10 the system decides: a `system.memories[]` entry present makes that memory the host's and the device not (`false`); a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`. |
+| `system.devices[].is_default_mem` | bool | derived | `true`: this PIM device is the host's main memory (host tech = device tech by construction). Since 1.12.10 the system decides: a `system.memories[]` entry present makes that memory the host's and the device not (`false`); a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`. |
 | `system.devices[].pim` | map | - | Device PIM block: every `pim.*` key (1.11.107), each meaning what its top-level `pim.*` key means; `mc.type` accepts `simple` only (1.11.106). |
 | `system.devices[].noc` | map | - | Device NoC: every `noc.*` key (1.11.107). `model` is `analytical` or `detailed` (as the top-level `noc.model`; anything else is refused; absent = the top-level `noc.model`); `topology` is upper-cased and checked against the `noc.topology` list (1.11.106); `pg` gates the fabric. |
-| `system.devices[].cache` | map | - | Device caches: the flat keys `l1d_kb`, `l1i_kb`, `l2_kb`, `l3_kb` and per level `<level>_latency_ns`, `<level>_ways`, `<level>_banks` (as the host's), or their device-scope forms `cache.<level>.size_kb` / `.ways` / `.banks` / `.latency_ns` and `cache.l2.enabled` / `cache.l3.enabled` (1.11.107; one form per quantity). A level is present when its size is above 0; `cache.l3.enabled: true` needs `cache.l3.size_kb`. Since 1.11.107 a device node's L3 is priced by McPAT as well as built (it was built and left out of the node's McPAT description). |
+| `system.devices[].cache` | map | - | Device caches: the flat keys `l1d_kb`, `l1i_kb`, `l2_kb`, `l3_kb` and per level `<level>_latency_ns`, `<level>_ways`, `<level>_banks` (as the host's), or their device-key forms `cache.<level>.size_kb` / `.ways` / `.banks` / `.latency_ns` and `cache.l2.enabled` / `cache.l3.enabled` (1.11.107; one form per quantity). A level is present when its size is above 0; `cache.l3.enabled: true` needs `cache.l3.size_kb`. Since 1.11.107 a device node's L3 is priced by McPAT as well as built (it was built and left out of the node's McPAT description). |
 | `system.devices[].workload` | map | - | Per-device workload: `binary`, `args`, `env`. A node without a `binary` inherits the top-level binary and args. |
 | `system.devices[].workload.env` | map | `{}` | As `system.hosts[].workload.env`: joins the one simulated process's environment (1.11.106). |
 
 ### Address map (1.12.12)
 
-The address configuration layer (1.12.12; rulings of 2026-10-15). A device or
+The address configuration layer (1.12.12). A device or
 a memory declares its window with `address: { base, size }`; a host or a
 device declares what it may address with `allowed_address_ranges`, a list of
 `{ base, size }` ranges. A byte count is written as an integer (bytes), a
@@ -1509,7 +1506,7 @@ system:
   does not reach a node is not supported); a device's ranges must stay
   inside its own window and cover it (a device that reaches another node's
   memory, or free address space, is not supported). A host range that
-  covers addresses no node owns is kept with a WARNING.
+  covers addresses no node owns is kept with a warning.
 - **Refused by name.** `allowed_address_ranges` on a memory (a memory
   addresses nothing); `address` on a host (a host has no window of its own;
   the memory it owns is the `system.memories[]` entry); either key in a
@@ -1526,8 +1523,8 @@ system:
 
 A memory is a memory without PEs (1.12.7; the `type: memory` device of
 1.11.90 to 1.12.6, read by the same code). Since 1.12.10 a memory declared
-beside the device is the HOST's own main memory (ruling 2: "it is a memory in
-the system"): its `memory.technology` and `memory.dram.ddr5_speed_grade`
+beside the device is the host's own main memory (it is a memory in
+the system): its `memory.technology` and `memory.dram.ddr5_speed_grade`
 (`3200` / `4800` / `5600`) are honoured in the host memory's idle latency,
 per-channel bandwidth and array energy, so the host's memory and the PIM device
 may run at different speeds. The device is then not the host's memory
@@ -1571,13 +1568,13 @@ system:
 | `system.memories[].memory` | map | - | Every `memory.*` key, as in a device node. |
 | `system.memories[].workload` | map | - | Accepted as on a device node; a memory runs nothing. |
 
-### Host-Device Bridge (co-sim)
+### Host-Device Bridge (co-simulation)
 
 Two-layer host<->device link (`protocol` x `phy`). Carries only boundary
 traffic (launch cmd/ack, Case-1 flush, Case-2 DMA). All fields optional;
 unset fields default from the **device** memory technology. Supersedes the
-flat `system.network.links[].type` charge whenever a system-scope config is
-emitted. (1.12.99) (user ruling 2026-10-27): over a host-device link class other
+flat `system.network.links[].type` charge whenever a co-simulation config is
+emitted. Since 1.12.99, over a host-device link class other
 than `dram_channel` the unset latency is the link's per-transaction latency +
 the technology row's (disjoint: host-side and device-side), the bandwidth the
 narrower of the link and the row's aggregate, the link's coherence extra and
@@ -1606,7 +1603,7 @@ system:
 **Validity (illegal combos = config error):** `cxl_mem` requires `serdes`;
 `loadstore` requires `on_die`; `native` is forbidden on `serdes`.
 
-### Coherence (co-sim)
+### Coherence (co-simulation)
 
 Case-1 (unified address space) flush accounting, charged on the host core at
 `roi_begin`. `mode: separate` = Case-2 cache bypass (no flush; the bridge
@@ -1616,23 +1613,23 @@ bulk-DMA path prices the crossing). Baselines never flush.
 |-----|------|---------|-------------|
 | `system.coherence.mode` | string | `"unified"` | `unified` (Case 1: flush inputs + invalidate outputs) or `separate` (Case 2: cache bypass, no flush). |
 | `system.coherence.writeback_bw_gbs` | double | `-1` | Host cache writeback bandwidth (GB/s). `-1` = auto = host memory aggregate BW. |
-| `system.coherence.flush_fixed_ns` | double | `200` | Fixed flush/wbinvd latency (ns), charged PER RANK (each core issues its own flush; ruling 5a, 1.11.62). A stated constant -- see the stated-constant register. |
+| `system.coherence.flush_fixed_ns` | double | `200` | Fixed flush/wbinvd latency (ns), charged per rank (each core issues its own flush; 1.11.62). A stated constant -- see the stated-constant register. |
 
-`system.coherence.footprint_bytes` is REFUSED at config time (since 1.11.59;
-key retired at 1.11.40): the flush footprint is MEASURED from the host's dirty
+`system.coherence.footprint_bytes` is refused at config time (since 1.11.59;
+key retired at 1.11.40): the flush footprint is measured from the host's dirty
 cache lines. Since 1.11.62 each arriving rank walks the registry and charges
-the DELTA dirtied since the previous walk:
+the delta dirtied since the previous walk:
 `flush_cycles(rank) = flush_fixed_ns + ceil(delta / writeback_bytes_per_cycle)`.
 `PIMID_DEBUG_COHERENCE` prints the resolved fixed charge at emit;
 `PIMID_FLUSH_TRACE=1` prints each walk (rank, delta, cumulative).
 
-### Data placement (co-sim)
+### Data placement (co-simulation)
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `system.page_placement` | string | `first_touch` | Where a co-simulation's host-initialised data lives in the device memory. `first_touch`: a page the host initialised is placed by the first element that touches it inside the ROI; until then the host's own accesses see it interleaved over the device's units, page by page. `standalone`: every page a host thread touches before the ROI is claimed by the element that thread will run on (thread i on element i modulo the element count), as a device run's elements claim the pages they touch while initialising; the elements' in-ROI first touches are then the device run's. Compute-unit (`alu_core`) elements only (another element type is refused, rc 1); refused in a device run (no `system.hosts[]`), rc 1; no effect under `PIMID_COSIM_NO_OFFLOAD`. Any other word is refused. See [cosim.md](cosim.md), Parity. |
 
-### Kernel Launch (co-sim)
+### Kernel Launch (co-simulation)
 
 Offload launch cost tree, charged on the host core at the offload doorbell
 (before device migration). `total = doorbell + dispatch + bridge(cmd) +
@@ -1680,7 +1677,7 @@ system:
 | `system.network.virtual_channels_per_vn` | int | `4` | VCs per virtual network: the detailed host network's routers, and the queueing term of the simple model (its service capacity is VCs x 2 vnets). Earlier releases defaulted to `1`; give `1` to reproduce them. |
 | `system.network.input_buffer_depth` | int | `4` | Input buffer depth. On the detailed host network: unset, each link's buffer holds its credit round trip; given (`4` is the depth of earlier releases), every buffer takes it. |
 | `system.network.output_buffer_depth` | int | `4` | Output buffer depth. |
-| `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-system-scope) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` (PCIe / CXL only: 1, 2, 4, 8 or 16; other classes have a fixed lane structure and refuse it) sets the width the preset bandwidth and the link energy follow (it was refused from 1.11.57 to (1.12.99), when no lane count scaled the link). **Superseded by [`system.bridge`](#host-device-bridge-co-sim)** for the host<->device boundary charge in co-sim; still parsed for backward compatibility. |
+| `system.network.links` | list | `[]` | Per-link overrides: `{src, dst, type, base_latency_ns, bandwidth_GBs}`. `src` and `dst` are required (an entry missing either is refused, since 1.11.71), and one of them must name a device node: an entry whose pair names no device is refused (1.11.106; it used to be dropped with a warning). `type` is a [link class](#link-types-co-simulation) (absent: the attachment's class) and its preset fills the timing fields not set. `lanes` (PCIe / CXL only: 1, 2, 4, 8 or 16; other classes have a fixed lane structure and refuse it) sets the width the preset bandwidth and the link energy follow (it was refused from 1.11.57 to (1.12.99), when no lane count scaled the link). **Superseded by [`system.bridge`](#host-device-bridge-co-simulation)** for the host<->device boundary charge in co-simulation; still parsed for backward compatibility. |
 
 ### Host Block (`host`, `scope: cosim`) -- retired in 1.12.8
 
@@ -1689,8 +1686,8 @@ The flat spelling put the device at the left margin, which holds no hardware sin
 since 1.12.9 a `scope:` word (`cosim` included) is ignored with a warning; write
 `system.hosts[]` / `system.devices[]`. The section is kept for the record of 1.12.2 to 1.12.7.
 
-`scope: cosim` is system scope with its two nodes given by the flat keys
-(1.12.2, ruling 2b). The `host:` block is `system.hosts[0]`, named `host`: it
+`scope: cosim` is a co-simulation with its two nodes given by the flat keys
+(1.12.2). The `host:` block is `system.hosts[0]`, named `host`: it
 is read by the code that reads a declared host node, with that node's defaults
 (below; the caches' ways and banks are the cache record's), its refusals (the
 key paths print as `host.<key>`) and its pricing. The top-level device keys
@@ -1699,7 +1696,7 @@ named `device`, built where a declared device node is built, so the system
 steps after the load (the DRAM part records, the cache and core records, the
 link class, the device's memory-hierarchy derivation) run on it as on a
 declared node. A `system:` block may carry `frequency_mhz`, `network`,
-`bridge`, `coherence` and `launch`, read as at system scope; a `scope: cosim`
+`bridge`, `coherence` and `launch`, read as in a co-simulation; a `scope: cosim`
 config that also declares `system.hosts[]` / `system.devices[]` is refused
 (rc 2, since 1.11.90). The system network is `system.network` where given;
 otherwise CROSSBAR with `power.link.model` as its model, plus the host-device
@@ -1747,21 +1744,21 @@ other keys fill the fields a run without a host node falls back to.
 | `HBM3` | Ramulator2 | High Bandwidth Memory 3 |
 | `SRAM` | CACTI | Static RAM |
 | `STT_MRAM` | NVSim | Spin-Transfer Torque MRAM (aliases: `STT-MRAM`, `STTMRAM`, `MRAM`) |
-| `PCM` | NVSim | Phase-Change Memory (alias: `PCRAM`). `3DXPOINT` is refused: no 3D XPoint cell is modelled (it was priced as this 1T PCM cell until the (1.12.113) release) |
+| `PCM` | NVSim | Phase-Change Memory (alias: `PCRAM`). `3DXPOINT` is refused: no 3D XPoint cell is modelled (it was priced as this 1T PCM cell until 1.12.113) |
 | `RERAM` | NVSim | Resistive RAM (aliases: `RESISTIVE`, `MEMRISTOR`) |
 
 ### PE Types
 
 | Value | ZSim Core | Description |
 |-------|-----------|-------------|
-| `compute_unit` | ALU | A datapath rather than a processor: register file, arithmetic units, result bus and a resident instruction store; no caches, no speculation. Sized by `lanes` / `operand_width` / `floating_point` / `imem_bytes`. Aliases: `alu_core` (names the entire existing sweep corpus, so it is permanent), `ComputeUnit`, `cu`, `compute_unit_pe`. Bare `alu` and `ALU` were RETIRED and are now rejected. |
+| `compute_unit` | ALU | A datapath rather than a processor: register file, arithmetic units, result bus and a resident instruction store; no caches, no speculation. Sized by `lanes` / `operand_width` / `floating_point` / `imem_bytes`. Aliases: `alu_core` (names the entire existing sweep corpus, so it is permanent), `ComputeUnit`, `cu`, `compute_unit_pe`. Bare `alu` and `ALU` were retired and are now rejected. |
 | `in_order_core` | InOrder | Decode-driven in-order pipeline: real RAW/port stalls, issue width `pim.pe.issue_width` (default 2), branch predictor `pim.pe.branch_predictor` (`pag` default, or `none`), mispredict bubbles, contention-aware two-phase bound/weave. With issue width 1 and `none` it is the scalar single-issue PE. Aliases: `InOrder`, `in-order`, `in_order`. |
-| `ooo_core` | Out-of-order | Decode-driven out-of-order superscalar (128-entry ROB, 4-wide, BTB+RAS branch prediction). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
+| `ooo_core` | Out-of-order | Decode-driven out-of-order superscalar (4-wide, BTB+RAS branch prediction; the window is the core record's: a 128-entry ROB on a processing element, `ooo_host`'s 512-entry ROB on a host core). Aliases: `OOO`, `OoO`, `ooo`, `out-of-order`. |
 | `null_core` | Null | No timing model: IPC = 1 instruction counting; drops all memory accesses. Aliases: `Null`, `null`. |
 
 Any other value (including the removed `timing_core`) is rejected with an error.
-`simple_core` and its aliases `Simple` / `simple` were RETIRED in 1.12.1 (ticket
-#114) and are refused with a message naming the replacement: `in_order_core`
+`simple_core` and its aliases `Simple` / `simple` were retired in 1.12.1 and are
+refused with a message naming the replacement: `in_order_core`
 with `pim.pe.issue_width: 1` and `pim.pe.branch_predictor: none`.
 
 ### NoC Topologies
@@ -1783,9 +1780,9 @@ with `MESH` as an alias of `MESH_2D`; any other word is refused at load
 `TORUS_2D`, `RING`, `FAT_TREE` and `BUS`, also upper-cased at load. The host
 fabric (`system.hosts[].noc`) is analytical: the ring, crossbar or bus of `system.hosts[].noc.topology` (1.12.19; the analytic crossbar before).
 
-**Inside a DRAM device (1.11.103, ruling 9)** the datapath above the die is
+**Inside a DRAM device (1.11.103)** the datapath above the die is
 the tree whatever the configuration says, and a named `MESH_2D`, `RING` or
-`CROSSBAR` is the fabric INSIDE EACH DIE: a grid of the die's organisations
+`CROSSBAR` is the fabric inside each DIE: a grid of the die's organisations
 at the placement tier (bank groups x banks [x subarrays]), one router with
 its own endpoint per node, the die's exit to its chip router at node (0,0)
 or at the crossbar's hub, links at the placement tier's ladder rung. The
@@ -1822,7 +1819,7 @@ fabric a DRAM device runs the tree.
 | `RANK` | L4 | PE at rank level |
 | `CHANNEL` | L5 | PE at channel level (aggregation tier; on-die for the channel-centric LPDDR/GDDR/HBM families) |
 | `LOGIC_DIE` | L6 | PE on the logic/base die (HBM) |
-| `HOST_MC` | L7 | PE shares host memory controller (no PE-MC needed); the top rung, priced as the host path (since 1.11.94). On a DRAM technology the shared controllers (one per channel) are replayed through Ramulator2 and charged in the bound phase at the measured service latency (since (1.12.147), user ruling 2026-10-28; see [memory.md](memory.md)); `pim.mc.epoch_replay` does not apply (there is no weave-timed alternative). An `alu_core` element at this tier has no memory interface and issues no DRAM request. |
+| `HOST_MC` | L7 | PE shares host memory controller (no PE-MC needed); the top rung, priced as the host path (since 1.11.94). On a DRAM technology the shared controllers (one per channel) are replayed through Ramulator2 and charged in the bound phase at the measured service latency (since 1.12.147, see [memory.md](memory.md)); `pim.mc.epoch_replay` does not apply (there is no weave-timed alternative). An `alu_core` element at this tier has no memory interface and issues no DRAM request. |
 
 The same family words apply to the two other places that name L0
 (1.11.74): the L0 count under `memory` -- `subarrays_per_bank` (DRAM; legacy
@@ -1845,16 +1842,16 @@ silence).
 No other values are accepted (legacy names `simple`, `md1`, `calibrated`, `calqueue`, `curve`, `injector`, `parallel` were removed).
 
 Under `detailed`, thread-MPI per-access latency is priced from **measured**
-Garnet congestion via epoch-frozen deterministic feedback (1.9.0); OMP keeps
-the rolling-EWMA live feedback. Env `PIMID_MPI_ANALYTICAL_PRICING=1` forces the
+Garnet congestion via epoch-frozen deterministic feedback (1.9.0), and since
+1.12.18 single-process runs (serial, OpenMP) use the same epoch-frozen feedback. Env `PIMID_MPI_ANALYTICAL_PRICING=1` forces the
 analytical override on the MPI path (A/B only; not the default). See
 [network.md](network.md) "Thread-MPI per-access pricing".
 
-### Link Types (system scope)
+### Link Types (co-simulation)
 
 The same eleven classes are accepted by `system.network.links[].type` and
 `power.link.link_type`; any other word is refused. The timing columns are the
-ONE preset a class fills the unset fields with, wherever it is named or
+one preset a class fills the unset fields with, wherever it is named or
 defaulted (`power.link`, `system.network.links[]`, the attachment's class).
 Bandwidth is computed, one direction: lane rate x lanes x encoding x the data
 link layer's share, / 8 (PCIe: 57.88 of 62.96 Gb/s, Neugebauer et al.,
@@ -1875,7 +1872,7 @@ or an entry's `lanes` (1, 2, 4, 8, 16).
 | `interposer` | 5 ns | 128 GB/s | 0 B | 0 ns | One UCIe advanced-package module, 64 lanes x 16 GT/s (the rate the UCIe energy rows are measured at; UCIe 1.1: 256 GB/s per module at 32 GT/s). Latency: UCIe 1.1 KPI < 2 ns Tx + Rx one way; 4.2 ns measured end to end (ISSCC 2026 8.3) |
 | `dram_channel` | tRCD + tCL | channels x channel width x data rate | 0 B | 0 ns | The device's own DRAM channel (1.11.103): a DIMM-resident DDR-family device. Timing from the part record; no separate link energy (the channel's I/O and termination are in the DRAM energy model) and no link controller (the host memory controller is priced as itself). |
 
-**Default class (1.11.103, ruling COSIM-LINK-CLASS).** When no class is
+**Default class (1.11.103).** When no class is
 named, the class follows the attachment the device's placement implies: an
 on-package part (an HBM stack, SRAM, the NVMs) with `attachment: internal`
 takes `interposer`; a DDR-family part (DDR3/DDR4/DDR5/LPDDR5/GDDR6) with
@@ -2008,7 +2005,7 @@ system:
             model: detailed
 ```
 
-### System Scope with Host + Device
+### Co-simulation with Host + Device
 
 This build prices one memory per role, so it refuses a second device node
 (see [cosim.md](cosim.md), Limitations). The second device of the layout is

@@ -1,4 +1,4 @@
-/* stencil_2d_omp.c — 2D 5-point Jacobi stencil (nearest-neighbor average)
+/* stencil_2d_omp.c -- 2D 5-point Jacobi stencil (nearest-neighbor average)
  * OpenMP parallel version. Grid is N*N, runs for iter iterations. */
 #include <stdio.h>
 #include <stdlib.h>

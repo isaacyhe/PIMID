@@ -370,7 +370,7 @@ public:
     /**
      * @brief Same traversal, expressed in NANOSECONDS.
      *
-     * 1.11.56 (audit B051): every level carries its own frequency_GHz, and
+     * 1.11.56: every level carries its own frequency_GHz, and
      * DQ-side levels run at the data rate while the array side runs at the
      * core clock. getTransferLatency() returns cycles OF THAT LEVEL, and the
      * caller sums seven of them plus six bridge results into one integer it
@@ -384,7 +384,7 @@ public:
                                 bool with_router = true);   // (1.12.234): false = the level crossed at a node built as a link (no router stages)
 
     /**
-     * @brief Bridge crossing time in NANOSECONDS (audit B051).
+     * @brief Bridge crossing time in NANOSECONDS.
      *
      * A bridge spans two clock domains. The crossing is store-and-forward,
      * so the serialisation cost is the SLOWER of ingest and egress, and the
@@ -400,7 +400,7 @@ public:
 
     /**
      * @brief Replace the per-level link widths and bandwidths with the ones
-     *        the DRAM architecture object reports (audit D064/D065).
+     *        the DRAM architecture object reports.
      *
      * Widths are in bits at each tier's own port; bandwidths are GB/s. The
      * level frequency is back-derived so width x frequency reproduces the
@@ -408,7 +408,7 @@ public:
      * rate and the array side at the core clock without this class needing
      * to know which is which. A non-positive entry leaves that level alone.
      */
-    /* 1.11.57 (audit C005): this also re-derives every tier bridge's ingress
+    /* 1.11.57: this also re-derives every tier bridge's ingress
      * and egress link from the two levels it joins. A bridge's two links ARE
      * those levels' links; the literal table they used to come from described
      * neither, and since B051 made the bridge return TIME its clocks divide a
@@ -417,7 +417,7 @@ public:
     void applySourcedLadder(const int width_bits[7], const double bandwidth_GBs[7]);
 
     /**
-     * @brief Set the rank (L4) and channel (L5) node counts (audit C006).
+     * @brief Set the rank (L4) and channel (L5) node counts.
      *
      * These two are the only rungs of the ladder with no other configuration
      * surface: initialize() carries subarrays/banks/bank-groups/chips and
@@ -630,7 +630,7 @@ private:
     int num_banks_per_bg_;
     int num_bg_per_chip_;
     int num_chips_per_rank_;
-    /* 1.11.57 (audit C006): has a caller supplied the rank and channel node
+    /* 1.11.57: has a caller supplied the rank and channel node
      * counts, or are L4 and L5 still on the assumed 2? Governs the notice
      * initialize() prints; it never silently changes a number. */
     bool top_level_nodes_set_ = false;

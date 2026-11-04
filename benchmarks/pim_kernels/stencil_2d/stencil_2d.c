@@ -1,5 +1,5 @@
-/* stencil_2d.c — 2D 5-point Jacobi stencil (nearest-neighbor average)
- * Serial baseline. Grid is N×N, runs for iter iterations. */
+/* stencil_2d.c -- 2D 5-point Jacobi stencil (nearest-neighbor average)
+ * Serial baseline. Grid is NxN, runs for iter iterations. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

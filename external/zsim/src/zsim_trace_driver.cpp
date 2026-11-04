@@ -33,11 +33,11 @@
 #include "contention_sim.h"
 #include "core.h"
 #include "decoder_simple.h"
-#include "ooo_core.h"      // 1.11.100 (H40): CtrlFlowKind, the terminator codes the branch feed carries
-#include "x86_decoder.h"   // 1.11.100 (C6/H37): the same decoder the execution path uses
-#include "dram_epoch_replay.h"   // 1.11.100 (H36): the replay window opens at roi_begin
+#include "ooo_core.h"      // 1.11.100: CtrlFlowKind, the terminator codes the branch feed carries
+#include "x86_decoder.h"   // 1.11.100: the same decoder the execution path uses
+#include "dram_epoch_replay.h"   // 1.11.100: the replay window opens at roi_begin
 #include <map>
-#include <deque>   // 1.11.100 (H42): deferred events of parked threads
+#include <deque>   // 1.11.100: deferred events of parked threads
 #include <fstream>
 #include <string>
 #include "event_queue.h"
@@ -126,12 +126,12 @@ enum PimidEventType : uint16_t {
     EVT_TASK_END        = 0x0042,
     EVT_OFFLOAD_START   = 0x0070,
     EVT_OFFLOAD_END     = 0x0071,
-    EVT_ROI_BEGIN       = 0x0080,   // 1.11.100 (H36)
+    EVT_ROI_BEGIN       = 0x0080,   // 1.11.100
     EVT_ROI_END         = 0x0081,
 };
 static const uint16_t FLAG_DEVICE_DOMAIN = 0x0020;
 
-/* 1.11.100 (review C6 / H37): the blocks of the trace -- instruction bytes
+/* 1.11.100: the blocks of the trace -- instruction bytes
  * read from "<trace>.blocks" (written at translation by the trace plugin) and
  * decoded ONCE per block address with x86dec::createDecodedBblInfo, the
  * decoder the execution path runs, so the in-order and out-of-order cores
@@ -139,13 +139,13 @@ static const uint16_t FLAG_DEVICE_DOMAIN = 0x0020;
  * (or no side file at all) is a synthetic block of the event's instruction
  * count and byte size, and the run says how many. */
 struct TraceBlock { uint32_t n = 0, bytes = 0; std::vector<uint8_t> lens; std::vector<uint8_t> data; };
-/* 1.11.100 (H40): a block's TERMINATOR, classified from its last instruction's
+/* 1.11.100: a block's TERMINATOR, classified from its last instruction's
  * bytes exactly as the execution plugin classifies a translation block at
  * translation (qemu_zsim_plugin.cpp tb_trans_cb): a conditional jcc gives a
  * direction feed, a direct call (E8) a RAS push, an indirect call (FF /2,/3)
  * a BTB check plus a RAS push, an indirect jmp (FF /4,/5) a BTB check, a ret
  * (C3/C2) a RAS pop. A direct jmp (E9/EB) is fed as CF_DIR_JMP since 1.12.1
- * (ticket #114): the decode resteer of the predictor-less in-order mode; the
+ *: the decode resteer of the predictor-less in-order mode; the
  * OOO and PAg in-order cores ignore it. The outcome is
  * resolved from the NEXT block's start address and fed to the core through
  * branchPtr BEFORE that block's bbl(), as the execution path does. */
@@ -233,7 +233,7 @@ static const CachedBlock& blockFor(uint64_t addr, uint32_t nInsns, uint32_t byte
     if (g_decodeBlocks && bi != g_blocks.end() && bi->second.n > 0 && bi->second.n <= 1024) {
         const TraceBlock& b = bi->second;
         cb.bbl = x86dec::createDecodedBblInfo(addr, reinterpret_cast<const uint8_t (*)[16]>(b.data.data()), b.lens.data(), b.n, b.bytes);
-        classifyTerminator(b, addr, cb.term);   // 1.11.100 (H40)
+        classifyTerminator(b, addr, cb.term);   // 1.11.100
         g_decodedBlocks++;
     } else {
         cb.bbl = createSimpleBblInfo(nInsns > 0 ? nInsns : 1, bytes > 0 ? bytes : (nInsns > 0 ? nInsns : 1) * 4);
@@ -242,7 +242,7 @@ static const CachedBlock& blockFor(uint64_t addr, uint32_t nInsns, uint32_t byte
     return g_bblCache.emplace(key, cb).first->second;
 }
 
-/* 1.11.100 (H40): the per-thread pending terminator, resolved by the next
+/* 1.11.100: the per-thread pending terminator, resolved by the next
  * block's address and fed through branchPtr as the execution plugin's
  * tb_exec_cb feeds it (same gates: an out-of-order or in-order core bound to
  * the thread, the PIMID_OOO_NOBRANCH / PIMID_INORDER_NOBRANCH escapes). With no
@@ -254,7 +254,7 @@ static uint8_t  g_ctrlPending[MAX_THREADS];
 static uint64_t g_ctrlPc[MAX_THREADS], g_ctrlRet[MAX_THREADS];
 static uint64_t g_brFed = 0, g_ctrlFed = 0, g_roiInsns = 0, g_roiInsnsHeader = 0, g_feedDropped = 0;
 static bool g_oooNoBranch = false, g_inorderNoBranch = false;
-static bool g_dropFeedOnce[MAX_THREADS];   // set by a leave: the execution path's first block after a leave is not fed (H40)
+static bool g_dropFeedOnce[MAX_THREADS];   // set by a leave: the execution path's first block after a leave is not fed
 static void feedTerminator(uint32_t tid, uint64_t nextAddr, const BlockTerm& t) {
     bool feed = false;
     if (cores[tid]) {
@@ -277,7 +277,7 @@ static void feedTerminator(uint32_t tid, uint64_t nextAddr, const BlockTerm& t) 
     if (t.kind) { g_ctrlPending[tid] = t.kind; g_ctrlPc[tid] = t.termPc; g_ctrlRet[tid] = t.termRet; }
 }
 
-/* 1.11.100 (review H38): the host and device core masks of the run, built
+/* 1.11.100: the host and device core masks of the run, built
  * as the execution plugin builds them (ALU and null cores are device
  * elements), and each thread's domain. A thread whose events carry
  * FLAG_DEVICE_DOMAIN (an offload region, the ROI in device scope) runs on
@@ -298,7 +298,7 @@ static void buildDomainMasks() {
     if (!g_hasHost) g_hostMask = g_deviceMask;
 }
 static uint64_t g_barriersTaken = 0, g_barriersSkipped = 0, g_roiBegins = 0, g_roiEnds = 0;
-static bool g_roiDeviceWindow = false, g_cosimNoOffload = false;   // 1.11.100 (H43): the ROI window is the offload window
+static bool g_roiDeviceWindow = false, g_cosimNoOffload = false;   // 1.11.100: the ROI window is the offload window
 
 /* ---- CID/Core management (mirrors qemu_zsim_plugin.cpp) ---- */
 
@@ -368,13 +368,13 @@ void SimEnd() {
     info("Dumping termination stats");
     zinfo->trigger = 20000;
     for (StatsBackend* backend : *(zinfo->statsBackends)) {
-        /* 1.11.100 (H41): as the execution plugin's dumpTerminationStats --
+        /* 1.11.100: as the execution plugin's dumpTerminationStats --
          * replay the controller's pending epochs and fold its totals before
          * the dump. Without it the trace path reported a replay with zero
          * requests and zero epochs for the ROI (the pre-ROI epochs were
          * replayed at roi_begin; the ROI's own were never replayed). */
         if (zinfo->dramReplay) zinfo->dramReplay->finalize();
-        if (zinfo->hostDramReplay) zinfo->hostDramReplay->finalize();   // 1.12.18 (ruling 17 / R0605)
+        if (zinfo->hostDramReplay) zinfo->hostDramReplay->finalize();   // 1.12.18
         backend->dump(false);
     }
 
@@ -425,7 +425,7 @@ static void JoinBbl(THREADID tid, ADDRINT addr, BblInfo* bbl) {
 static InstrFuncPtrs joinPtrs = {JoinLoad, JoinStore, JoinBbl, NopBranch,
                                   NopPredLoad, NopPredStore, FPTR_JOIN, {0}};
 
-/* 1.11.100 (H42): the execution path's phase barrier, driven by ONE host
+/* 1.11.100: the execution path's phase barrier, driven by ONE host
  * thread. Every thread stays joined to its core; a core that crosses the
  * phase end PARKS its thread (TakeBarrier counts the crossing; the thread's
  * later events are deferred) and the driver ends the phase when every joined
@@ -475,7 +475,7 @@ static void leaveIdleThreads(bool everyEmpty) {
 }
 
 uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
-    /* 1.11.100 (H42): the core crossed the phase end. The execution path's
+    /* 1.11.100: the core crossed the phase end. The execution path's
      * thread blocks in the scheduler's barrier until every thread arrives;
      * one host thread cannot block, so the thread is parked (one crossing
      * per call: a core that crosses two phase ends in one block waits for
@@ -497,7 +497,7 @@ uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
 }
 
 static void Join(uint32_t tid) {
-    /* 1.11.100 (H42): every thread stays joined (one per core). A thread
+    /* 1.11.100: every thread stays joined (one per core). A thread
      * beyond its mask's cores would wait in the scheduler for a context,
      * which one host thread cannot do: refuse instead of hanging. */
     {
@@ -505,7 +505,7 @@ static void Join(uint32_t tid) {
         uint32_t cap = 0, used = 0;
         for (uint32_t c = 0; c < zinfo->numCores; c++) if (m[c]) cap++;
         for (uint32_t t = 0; t < zinfo->numCores; t++) { uint32_t c = getCid(t); if (c != INVALID_CID && c != UNINITIALIZED_CID && c < zinfo->numCores && m[c]) used++; }
-        if (used >= cap) panic("[trace] thread %u needs a core but all %u cores of its %s mask hold a thread: the replay runs one thread per core (H42)", tid, cap, thread_on_device[tid] ? "device" : "host");
+        if (used >= cap) panic("[trace] thread %u needs a core but all %u cores of its %s mask hold a thread: the replay runs one thread per core", tid, cap, thread_on_device[tid] ? "device" : "host");
     }
 
     uint32_t cid = zinfo->sched->join(procIdx, tid);
@@ -526,14 +526,14 @@ static void Join(uint32_t tid) {
 static void initThread(uint32_t tid) {
     if (thread_initialized[tid]) return;
     thread_initialized[tid] = true;
-    /* 1.11.100 (H38): the mask of the thread's domain, not the whole process */
+    /* 1.11.100: the mask of the thread's domain, not the whole process */
     zinfo->sched->start(procIdx, tid, thread_on_device[tid] ? g_deviceMask : g_hostMask);
     fPtrs[tid] = joinPtrs;
     clearCid(tid);
     info("Trace thread %d initialized (domain=%s)", tid, thread_on_device[tid] ? "DEVICE" : "HOST");
 }
 
-/* 1.11.100 (H38): move a thread between the host and device masks, as the
+/* 1.11.100: move a thread between the host and device masks, as the
  * execution plugin's migrateThreadToDomain does: leave, finish, restart. */
 static void migrateThread(uint32_t tid, bool toDevice) {
     if (thread_on_device[tid] == toDevice) return;
@@ -552,7 +552,7 @@ static void migrateThread(uint32_t tid, bool toDevice) {
     initThread(tid);
 }
 
-/* 1.11.100 (H36): roi_begin as the execution path does it -- every core's
+/* 1.11.100: roi_begin as the execution path does it -- every core's
  * baseline, the power-gating window, the traffic-counter groups, the fabric
  * and the controller replay; roi_end ends the simulation (device scope). */
 static void traceRoiBegin() {
@@ -565,11 +565,11 @@ static void traceRoiBegin() {
         zinfo->garnetNetwork->markRoiBegin();
     }
     if (zinfo->dramReplay) zinfo->dramReplay->markRoi();
-    if (zinfo->hostDramReplay) zinfo->hostDramReplay->markRoi();   // 1.12.18 (ruling 17 / R0605)
+    if (zinfo->hostDramReplay) zinfo->hostDramReplay->markRoi();   // 1.12.18
     zinfo->hierarchy.mpiNocBaselined = true;
     zinfo->hierarchy.mpiNocRoiBasePhase = zinfo->numPhases;
     g_roiBegins++;
-    info("[roi] trace replay: roi_begin -- %u cores baselined, %u stat groups rebased (1.11.100 H36)", zinfo->numCores, groups);
+    info("[roi] trace replay: roi_begin -- %u cores baselined, %u stat groups rebased (1.11.100)", zinfo->numCores, groups);
 }
 
 /* ---- BblInfo cache for synthetic compute events ---- */
@@ -643,14 +643,14 @@ static void writeSimpleStats(const char* outputDir, uint64_t hierCycles = 0) {
 
 /* ---- Library entry point ---- */
 
-/* ---- 1.11.100 (H42): one event, on its thread's core ---- */
+/* ---- 1.11.100: one event, on its thread's core ---- */
 static void dispatchEvent(const PimidTraceEvent& event) {
     uint32_t tid = event.pe_id % zinfo->numCores;
-    /* 1.11.100 (H38): the event's domain decides the thread's mask. In
+    /* 1.11.100: the event's domain decides the thread's mask. In
      * device scope the ROI is the offload boundary: every in-ROI event is
      * a device event. */
     {
-        /* 1.11.100 (H43): in system scope the ROI opens the device window as
+        /* 1.11.100: in system scope the ROI opens the device window as
          * the execution co-simulation opens it (cosimRoiBeginOffload: the
          * opener's domain flips to DEVICE at roi_begin and threads spawned
          * inside inherit it; PIMID_COSIM_NO_OFFLOAD keeps the host); the
@@ -670,7 +670,7 @@ static void dispatchEvent(const PimidTraceEvent& event) {
         if (zinfo->terminationConditionMet) return;
     }
 
-    /* 1.11.100 (H40): the previous block's terminator resolves against
+    /* 1.11.100: the previous block's terminator resolves against
      * THIS block's start address and is fed to the core BEFORE the
      * block's bbl(), as the execution plugin's tb_exec_cb feeds it. Fed
      * AFTER the join: the driver runs one thread at a time and unbinds
@@ -678,7 +678,7 @@ static void dispatchEvent(const PimidTraceEvent& event) {
      * own mechanism, not a leave of the program (fed before the join,
      * 39% of the ROI's branches never reached the predictor on the
      * probe). The program's own leaves -- the recorded syscalls -- drop
-     * the first block's feed as the execution path drops it (H39). */
+     * the first block's feed as the execution path drops it. */
     const CachedBlock* curBlock = nullptr;
     if (event.event_type == EVT_COMPUTE_INT || event.event_type == EVT_COMPUTE_FP || event.event_type == EVT_COMPUTE_VECTOR) {
         curBlock = &blockFor(event.address, (uint32_t)event.aux_data, event.size);
@@ -707,19 +707,19 @@ static void dispatchEvent(const PimidTraceEvent& event) {
         case EVT_COMPUTE_INT:
         case EVT_COMPUTE_FP:
         case EVT_COMPUTE_VECTOR: {
-            /* 1.11.100 (C6/H37): the executed block, decoded from its bytes */
+            /* 1.11.100: the executed block, decoded from its bytes */
             fPtrs[tid].bblPtr(tid, event.address, curBlock->bbl);
             g_computes++;
             break;
         }
-        case EVT_ROI_BEGIN:   // 1.11.100 (H36)
-            g_roiDeviceWindow = !g_cosimNoOffload;   // H43: the offload window opens here (co-sim)
+        case EVT_ROI_BEGIN:   // 1.11.100
+            g_roiDeviceWindow = !g_cosimNoOffload;   // the offload window opens here (co-sim)
             traceRoiBegin();
             break;
-        case EVT_ROI_END: {   // 1.11.100 (H36): the statistics freeze here, as at the execution path's roi_end
+        case EVT_ROI_END: {   // 1.11.100: the statistics freeze here, as at the execution path's roi_end
             g_roiDeviceWindow = false;
             g_roiEnds++;
-            info("[roi] trace replay: roi_end -- the simulation ends here (device scope) (1.11.100 H36)");
+            info("[roi] trace replay: roi_end -- the simulation ends here (device scope) (1.11.100)");
             zinfo->terminationConditionMet = true;
             break;
         }
@@ -786,7 +786,7 @@ static void dispatchEvent(const PimidTraceEvent& event) {
             break;
 
         case EVT_BARRIER: {
-            /* 1.11.100 (H39, root cause of the in-order/OOO replay crash):
+            /* 1.11.100 (root cause of the in-order/OOO replay crash):
              * in this trace format a BARRIER event is a thread-creating
              * syscall (clone/fork/vfork, qemu_trace_plugin.c syscall_cb).
              * The execution path leaves the core around a syscall and
@@ -800,7 +800,7 @@ static void dispatchEvent(const PimidTraceEvent& event) {
              * thread leaves its core; its next event joins it again
              * (FPTR_JOIN). */
             if (joinedThread(tid)) {
-                leaveThread(tid);   // H40: the first block after the leave is not fed, as in execution
+                leaveThread(tid);   // the first block after the leave is not fed, as in execution
                 g_barriersTaken++;
             } else {
                 g_barriersSkipped++;
@@ -855,7 +855,7 @@ int zsim_trace_run(const char* cfgPath, const char* tracePath, const char* outpu
     fprintf(stdout, "  Events:  %lu\n", header.num_events);
     fprintf(stdout, "  PEs:     %lu\n", header.num_pes);
     fprintf(stdout, "  Cycles:  %lu - %lu\n", header.first_cycle, header.last_cycle);
-    /* 1.11.100 (H40): the generator's own ROI instruction count, from the
+    /* 1.11.100: the generator's own ROI instruction count, from the
      * header's metadata (file order, under its write lock); the replay's count
      * over the same file must equal it -- both are printed at the end. */
     {
@@ -876,11 +876,11 @@ int zsim_trace_run(const char* cfgPath, const char* tracePath, const char* outpu
     }
 
     /* Initialize shared memory */
-    loadTraceBlocks(tracePath);   // 1.11.100 (C6/H37)
+    loadTraceBlocks(tracePath);   // 1.11.100
     if (getenv("PIMID_TRACE_NO_DECODE")) { g_decodeBlocks = false; info("[trace] PIMID_TRACE_NO_DECODE: synthetic blocks"); }
-    g_oooNoBranch = (getenv("PIMID_OOO_NOBRANCH") != nullptr);           // 1.11.100 (H40): the execution plugin's escapes
+    g_oooNoBranch = (getenv("PIMID_OOO_NOBRANCH") != nullptr);           // 1.11.100: the execution plugin's escapes
     g_inorderNoBranch = (getenv("PIMID_INORDER_NOBRANCH") != nullptr);
-    g_cosimNoOffload = (getenv("PIMID_COSIM_NO_OFFLOAD") != nullptr);   // 1.11.100 (H43): the execution co-simulation's baseline knob
+    g_cosimNoOffload = (getenv("PIMID_COSIM_NO_OFFLOAD") != nullptr);   // 1.11.100: the execution co-simulation's baseline knob
     int shmId = gm_init(1 << 28);  /* 256 MB segment, the size the execution plugin uses (1.11.100: the decoded cores need more than the 64 MB that stood here) */
 
     /* Initialize ZSim simulation hierarchy */
@@ -892,7 +892,7 @@ int zsim_trace_run(const char* cfgPath, const char* tracePath, const char* outpu
     perProcessEndFlag = 0;
 
     SimInit(cfgPath, outputDir, shmId);
-    buildDomainMasks();   // 1.11.100 (H38)
+    buildDomainMasks();   // 1.11.100
     for (uint32_t t = 0; t < MAX_THREADS; t++) thread_on_device[t] = false;
 
     lineBits = __builtin_ctz(zinfo->lineSize);
@@ -901,7 +901,7 @@ int zsim_trace_run(const char* cfgPath, const char* tracePath, const char* outpu
     fprintf(stdout, "zsim_trace: ZSim initialized (%u cores, %u MHz, phase=%u)\n",
             zinfo->numCores, zinfo->freqMHz, zinfo->phaseLength);
 
-    /* ---- Event replay loop (1.11.100 H42: the phase barrier in one host thread) ---- */
+    /* ---- Event replay loop (1.11.100: the phase barrier in one host thread) ---- */
 
     PimidTraceEvent event, cut;
     bool haveCut = false;
@@ -954,7 +954,7 @@ int zsim_trace_run(const char* cfgPath, const char* tracePath, const char* outpu
 
     /* ---- Finalize ---- */
 
-    /* Leave every joined thread first (H42) */
+    /* Leave every joined thread first */
     for (uint32_t tid = 0; tid < zinfo->numCores; tid++) if (joinedThread(tid)) leaveThread(tid);
 
     /* Finish all initialized threads */

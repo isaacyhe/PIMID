@@ -1,5 +1,5 @@
 /*
- * Dhrystone 2.1 — Simplified standalone single-threaded benchmark
+ * Dhrystone 2.1 -- Simplified standalone single-threaded benchmark
  * Classic integer benchmark: struct assignments, enum comparisons,
  * string operations, function calls.
  *
@@ -124,7 +124,7 @@ static void Proc_8(int Arr_1_Par[], int Arr_2_Par[][50], int Int_1_Par, int Int_
 int main(int argc, char** argv) {
     int num_iters = parse_int_arg(argc, argv, "--iters", 10000);
 
-    printf("Dhrystone 2.1 (simplified) — iters=%d\n", num_iters);
+    printf("Dhrystone 2.1 (simplified) -- iters=%d\n", num_iters);
 
     /* Initialisation */
     Rec_Glob.Ptr_Comp                = &Next_Rec_Glob;

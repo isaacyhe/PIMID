@@ -165,7 +165,7 @@ void Router::buffer_stats()
   dyn_p.number_way_select_signals_mat = 1;
   dyn_p.number_subbanks_decode = 0;
   dyn_p.num_act_mats_hor_dir = 1;
-  /* PIMID 1.11.87 (audit round 6, R6-10 root cause): TWO DEFECTS IN WHAT THIS
+  /* PIMID 1.11.87 (root cause): TWO DEFECTS IN WHAT THIS
    * FUNCTION HANDS THE MAT, ONE OF THEM AN UNINITIALISED READ.
    *
    * (1) dyn_p is DEFAULT-CONSTRUCTED above, and DynamicParameter's default
@@ -273,7 +273,7 @@ void Router::buffer_stats()
      * the Mat's name is how DDR3 reported 16.73 W of fabric power for eleven
      * releases. With the wire type set and the sense voltage corrected the
      * Mat converged on every node measured (22, 32 and 65 nm, both routers;
-     * the 32 and 65 nm failures WERE the unset wire type, R6-10). If it ever
+     * the 32 and 65 nm failures WERE the unset wire type). If it ever
      * returns non-finite again the run stops here and says so, the way
      * 1.11.79 stops on a negative array energy. The estimate that used to
      * follow this exit was unreachable and is deleted (1.11.88). */
@@ -283,7 +283,7 @@ void Router::buffer_stats()
               << " x " << ((int)flit_size*(int)vc_count) << " buffer ("
               << (int)vc_count << " VCs x " << (int)flit_size << " b). The"
                  " analytical estimate this build used to substitute was"
-                 " measured ~1000x off the Mat (audit round 6, R6-10), so no"
+                 " measured ~1000x off the Mat, so no"
                  " number is emitted for this level. With the wire type set"
                  " (1.11.87) the Mat converges at 22, 32 and 65 nm, so this is"
                  " a new failure worth reporting with the config."

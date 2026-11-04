@@ -22,7 +22,7 @@ public:
     enum CellType { SRAM_HP = 0, SRAM_LSTP = 1, SRAM_LOP = 2, LP_DRAM = 3, COMM_DRAM = 4 };
 
     struct SRAMConfig {
-        /* 1.11.30 (user ruling E5): the interconnect projection, supplied by
+        /* 1.11.30: the interconnect projection, supplied by
          * the caller so CACTI and McPAT model ONE metal stack. Was pinned to 1
          * inside the wrapper while McPAT defaulted to 0. 0 = aggressive,
          * 1 = conservative (default; the aggressive column sets copper barrier
@@ -56,7 +56,7 @@ public:
          * caller who obeyed the declaration and passed 85 would not get a
          * wrong number, it would kill the process mid-run.
          *
-         * 1.11.60 (audit round 4, C012): THE REACHABILITY CLAIM THAT FOLLOWED
+         * 1.11.60: THE REACHABILITY CLAIM THAT FOLLOWED
          * WAS ALREADY FALSE WHEN IT WAS WRITTEN. It read "no caller anywhere
          * sets SRAMConfig::temperature -- every query in the tree takes the
          * 350 K default". Five sites set it, all of them predating 1.11.57:
@@ -120,7 +120,7 @@ public:
         int obj_func_leakage_power;
         int obj_func_cycle_time;
         int obj_func_area;
-        /* 1.11.95 (sweep-94 row 25 (a), review C4): CACTI's design-space
+        /* 1.11.95: CACTI's design-space
          * search is configured the way CACTI ships it (cache.cfg): the
          * objective 0:0:0:100:0, the DEVIATION vector 20:100000:100000:
          * 100000:100000 (a candidate may be at most 20% slower than the
@@ -134,7 +134,7 @@ public:
          * separate) searches the same way. */
         int dev_delay, dev_dynamic_power, dev_leakage_power, dev_cycle_time, dev_area;
         int ed_mode;                 // 0 = weighted/deviate only, 1 = ED, 2 = ED^2 (CACTI io.cc)
-        /* 1.11.95 (row 25 (b)): CACTI's own power-gating model, EXPOSED
+        /* 1.11.95: CACTI's own power-gating model, EXPOSED
          * (cache.cacti.power_gating.*), default off as CACTI ships it. When
          * any of these is on, PIMID's residency-based array gating
          * (memory.array_pg, 1.11.41) must be off for the same array so the
@@ -204,7 +204,7 @@ public:
     double getCycleTime() const;       // Cycle time in seconds
     double getArea() const;            // Area in mm^2 (raw CACTI)
 
-    /* 1.11.14 (#122, borders rule): JEDEC-CALIBRATED die area, computed
+    /* 1.11.14: JEDEC-CALIBRATED die area, computed
      * INSIDE the tool that owns the array model instead of by the caller.
      *
      * HARD SCOPE (the reason this is a method and not a transform applied to

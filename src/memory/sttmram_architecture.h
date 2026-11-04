@@ -109,7 +109,7 @@ struct STTMRAMOrganization {
  * - Write: 13-27ns (MTJ switching + verify)
  */
 struct STTMRAMInnerBankTiming {
-    /* 1.11.107 (gate 1217B, E2): every member is value-initialised. The STT-MRAM
+    /* 1.11.107: every member is value-initialised. The STT-MRAM
      * extractor left four components unassigned and the printed inner-bank read
      * latency summed uninitialised memory (2.5e+180 ns on two corpus cells). */
     // ===== READ PATH =====

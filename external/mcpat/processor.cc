@@ -55,7 +55,7 @@ Processor::Processor(ParseXML *XML_interface)
  pcie(0),
  flashcontroller(0)
 {
-  ClockNetwork::split_enabled = (XML->sys.pimid_clock_split != 0);   /* PIMID 1.12.18 (ruling #4) */
+  ClockNetwork::split_enabled = (XML->sys.pimid_clock_split != 0);   /* PIMID 1.12.18 */
   ClockNetwork::leaf_cluster_sinks = (XML->sys.pimid_clock_leaf_sinks > 0) ? XML->sys.pimid_clock_leaf_sinks : 30;   /* PIMID (1.12.30, F2) */
   /*
    *  placement and routing overhead is 10%, core scales worse than cache 40% is accumulated from 90 to 22nm
@@ -106,7 +106,7 @@ Processor::Processor(ParseXML *XML_interface)
   else
 	  numL2Dir = procdynp.numL2Dir;
 
-  /* PIMID 1.12.18 (user ruling, per-die process): EACH COMPONENT IS PRICED
+  /* PIMID 1.12.18 (per-die process): EACH COMPONENT IS PRICED
    * AT THE DIE IT SITS ON. McPAT built one technology per chip
    * (interface_ip / g_tp); every component already copies its own
    * InputParameter and re-initialises CACTI's tables from it
@@ -385,7 +385,7 @@ Processor::Processor(ParseXML *XML_interface)
 		  }
 		  else
 		  {//Bus based interconnect
-			  /* PIMID 1.11.17 (audit go-through): the bus length spans the
+			  /* PIMID 1.11.17: the bus length spans the
 			   * DIE, and under the DRAM-periphery family the die's
 			   * transistor-dominated components are reported dram_periph_area
 			   * times larger by applyFam AFTER this constructor ran -- so the
@@ -473,12 +473,12 @@ Processor::Processor(ParseXML *XML_interface)
 				          << link_area_um2 * XML->sys.NoC[i].chip_coverage * 1e-6
 				          << " mm^2 (the processor's area before its fabric links)" << std::endl;
 			  if (XML->sys.NoC[i].link_span_processor == 2)
-				  /* PIMID (user ruling 2026-10-25): a RING's stop-to-stop link. The ring is one loop
+				  /* PIMID: a RING's stop-to-stop link. The ring is one loop
 				   * folded up and down the die through two columns of stops, as on Nehalem-EX (Rusu,
 				   * ISSCC 2009 / JSSC 45(1) 2010: cores and LLC slices in two columns of rows, the two
 				   * counter-rotating rings running through the slice columns, one stop per row). The loop
 				   * is ~2 die sides long and carries one link per stop:
-				   *   len = 2 x sqrt(die area) / stops   (DERIVED; square die).
+				   *   len = 2 x sqrt(die area) / stops   (square die).
 				   * The per-stop-tile alternative sqrt(area / stops) assumes square stop tiles, which a
 				   * two-column floorplan does not have (each stop's core + slice spans half the die
 				   * width), so it is not used. McPAT's upstream 2-D mesh derivation (side / ((H+V)/2) / 2)
@@ -489,7 +489,7 @@ Processor::Processor(ParseXML *XML_interface)
 			  {
 				  /* PIMID (1.12.150): a flat 2-D MESH's neighbour link is ONE TILE PITCH: the span is
 				   * divided equally amongst the tiles (DSENT, Sun et al., NOCS 2012, Table III), so
-				   *   len = sqrt(span / tiles)   (DERIVED; square tiles)
+				   *   len = sqrt(span / tiles)   (square tiles)
 				   * The span is the memory array the routers sit over (link_span_area_mm2, the area
 				   * the memory report prints), the same rule as a tree level's links, which span the
 				   * memory die; the processor's own area (x chip_coverage) only when PIMID gives none.
@@ -568,7 +568,7 @@ Processor::Processor(ParseXML *XML_interface)
    * leakage x instances. */
   {
 	  clku_core = clku_l2 = clku_l3 = clku_l1dir = clku_l2dir = clku_mcs = clku_noc = 0;
-	  clkg_core = clkg_l2 = clkg_l3 = clkg_l1dir = clkg_l2dir = clkg_mcs = clkg_noc = 0;   /* PIMID 1.12.18 (ruling #4) */
+	  clkg_core = clkg_l2 = clkg_l3 = clkg_l1dir = clkg_l2dir = clkg_mcs = clkg_noc = 0;   /* PIMID 1.12.18 */
 	  auto clkAgg = [](Component &dst, double &ung, double &glob, const Component &src, double src_ung, double src_glob,
 	                   double tdp_mul, double n, double rt_mul) {
 		  double p[4];
@@ -659,7 +659,7 @@ Processor::Processor(ParseXML *XML_interface)
               if (c->exu->rfu)   lg -= c->exu->rfu->area.get_area();
               if (c->exu->scheu) lg -= c->exu->scheu->area.get_area();
           }
-          /* PIMID 1.11.54 (audit E001): DO NOT ADD THE PIPELINE TWICE.
+          /* PIMID 1.11.54: DO NOT ADD THE PIPELINE TWICE.
            * core.cc does not add corepipe to the core area directly (that
            * line is disabled at core.cc:1881); it DISTRIBUTES it, adding
            * pipeline_area_per_unit = corepipe*num_pipelines/4 into each of
@@ -669,7 +669,7 @@ Processor::Processor(ParseXML *XML_interface)
            * exactly corepipe*num_pipelines. At the emitted num_pipelines=1
            * that is +0.25*corepipe of pure over-count; at N>=2 it flips to an
            * under-count. */
-          /* PIMID 1.11.57 (audit D010): E001 OVER-CORRECTED. Removing the
+          /* PIMID 1.11.57: E001 OVER-CORRECTED. Removing the
            * `+ corepipe` left the numerator carrying ONLY the exu's share of
            * the pipeline, P*N/4, while the denominator t still holds all of
            * it, P*N -- because the other three quarters are sitting inside
@@ -717,7 +717,7 @@ Processor::Processor(ParseXML *XML_interface)
                           ? XML->sys.dram_periph_pitch : 1.0;
       const double fd = XML->sys.dram_periph_dyn;
       const double fl = XML->sys.dram_periph_leak;
-      /* PIMID 1.11.54 (audit E004): gate leakage is oxide tunnelling, not
+      /* PIMID 1.11.54: gate leakage is oxide tunnelling, not
        * subthreshold conduction. It used to be scaled by fl -- a ratio of
        * I_off_n rows -- while CACTI tabulates I_g_on_n separately and McPAT
        * computes it with cmos_Ig_leakage. Defaults to fl when the emitter
@@ -726,7 +726,7 @@ Processor::Processor(ParseXML *XML_interface)
                         ? XML->sys.dram_periph_gate_leak : fl;
       auto applyFam = [&](Component& c, bool scaleArea, const char* who = "?",
                           double areaMul = 1.0) {
-          /* PIMID 1.11.32 (user ruling E9): read each basis from ITSELF.
+          /* PIMID 1.11.32: read each basis from ITSELF.
            * This used to take plainLeak from c.power -- the PEAK component --
            * and write it into the RUNTIME fields too, discarding whatever
            * runtime leakage McPAT had computed. The gated fields below already
@@ -832,7 +832,7 @@ Processor::Processor(ParseXML *XML_interface)
        * SRAM arrays -- caches, TLBs, register files, scheduler CAMs -- are
        * placed as macro blocks that need not follow the array's pitch.
        *
-       * 1.11.54 (audit E002, user-ruled): the earlier wording justified this
+       * 1.11.54: the earlier wording justified this
        * with "CELL area CACTI's tables declare device-independent". That
        * MISREADS the tables. area_cell is the same in EVERY device column of a
        * node (a published 6T cell per node; 292 for the 2-port cell) -- because
@@ -874,7 +874,7 @@ Processor::Processor(ParseXML *XML_interface)
       applyFam(clk_core, false, "core clock");
       applyFam(clk_l2, false, "l2 clock"); applyFam(clk_l3, false, "l3 clock");
       clku_core *= fd; clku_l2 *= fd; clku_l3 *= fd;
-      clkg_core *= fd; clkg_l2 *= fd; clkg_l3 *= fd;   /* PIMID 1.12.18 (ruling #4) */
+      clkg_core *= fd; clkg_l2 *= fd; clkg_l3 *= fd;   /* PIMID 1.12.18 */
       applyFam(l2, true, "l2"); applyFam(l3, true, "l3");
       {
           /* PIMID 1.11.50 (L74 + L103), replacing the blanket transform.
@@ -945,7 +945,7 @@ Processor::Processor(ParseXML *XML_interface)
           for (int ni = 0; ni < numNOC; ni++)
               clku_noc += nocs[ni]->clk_rt_ungated / nocs[ni]->nocdynp.executionTime
                         * (XML->sys.NoC[ni].on_dram_die ? fd : 1.0);   /* rt aggregation: 1/executionTime only */
-          clkg_noc = 0;   /* PIMID 1.12.18 (ruling #4): the same aggregation */
+          clkg_noc = 0;   /* PIMID 1.12.18: the same aggregation */
           for (int ni = 0; ni < numNOC; ni++)
               clkg_noc += nocs[ni]->clk_rt_global / nocs[ni]->nocdynp.executionTime
                         * (XML->sys.NoC[ni].on_dram_die ? fd : 1.0);
@@ -995,7 +995,7 @@ Processor::Processor(ParseXML *XML_interface)
           applyFam(mcs, true, "mcs");
           applyFam(clk_mcs, false, "mc clock");   /* PIMID 1.12.18 */
           clku_mcs *= fd;
-          clkg_mcs *= fd;   /* PIMID 1.12.18 (ruling #4) */
+          clkg_mcs *= fd;   /* PIMID 1.12.18 */
           if (phy_tdp_dyn > 0.0 || phy_area_tot > 0.0) {
               mcs.power.readOp.dynamic    += phy_tdp_dyn * (1.0 - fd);
               mcs.rt_power.readOp.dynamic += phy_rt_dyn  * (1.0 - fd);
@@ -1025,7 +1025,7 @@ Processor::Processor(ParseXML *XML_interface)
       area.set_area(core.area.get_area() + l2.area.get_area()
                   + l3.area.get_area() + noc.area.get_area()
                   + mcs.area.get_area());
-      /* PIMID 1.11.29 (user ruling E8, as refined): include a component ONLY
+      /* PIMID 1.11.29 (as refined): include a component ONLY
        * when the user configured it. The rollup listed core+l2+l3+noc+mcs by
        * hand and silently omitted four classes upstream McPAT does add
        * (l1dir ~208, l2dir ~237, flashcontrollers ~279, nius ~295) -- but the
@@ -1090,11 +1090,11 @@ Processor::Processor(ParseXML *XML_interface)
   /* PIMID 1.12.18: the chip-level tree that would join the components'
    * trees (globalClock above) is NOT priced: its leaves are the component
    * tree roots, and which component it would be charged to is a reporting
-   * choice nobody has ruled on. Each component's tree (logic.h
+   * choice left open. Each component's tree (logic.h
    * ClockNetwork) starts at its own root. The per-aggregate clock share
    * (Wattch clock model, D. Brooks, V. Tiwari, M. Martonosi, ISCA 2000): */
   {
-	  /* PIMID 1.12.18 (ruling 2026-10-23 #4): the charged runtime dynamic is
+	  /* PIMID 1.12.18: the charged runtime dynamic is
 	   * GLOBAL (every powered cycle; for cores with idle halt, every RUNNING
 	   * cycle) + LOCAL (gated by measured activity). The per-die trunk joining
 	   * these roots is built just below (its own line, in no component). */
@@ -1113,8 +1113,8 @@ Processor::Processor(ParseXML *XML_interface)
 	  rep("memory controllers", clk_mcs, mcs, clku_mcs, clkg_mcs); rep("NoC", clk_noc, noc, clku_noc, clkg_noc);
   }
 
-  /* PIMID 1.12.18 (user ruling "each die has its own clock tree ... avoid
-   * double counting"): THE PER-DIE CLOCK TRUNK, at the hook the component
+  /* PIMID 1.12.18 (each die has its own clock tree ... avoid
+   * double counting): THE PER-DIE CLOCK TRUNK, at the hook the component
    * trees left (logic.h ClockNetwork). One die-level H-tree per die and clock
    * domain (a domain is a clock frequency: the controllers and the cores of
    * one die are separate trees), built with the same Wattch/CACTI model as

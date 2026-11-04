@@ -3,35 +3,13 @@
 # 1 host + 1 PIM device over a PCIe Gen5 system network, plus the second
 # device kept below as a COMMENTED reference layout.
 #
-# 1.11.60 (audit round 4, A013): THIS FILE DID NOT LOAD.
-#
-# As shipped it declared two compute devices, each with its own memory: block,
-# and resolveMemoryTopology() refused it before the run began -- so the one
-# example a user would copy to build a multi-device system aborted on every
-# invocation, and the error text named "v2 scope" rather than the file. The
-# guard is correct and deliberate (1.11.45 E27, user ruling): this build
-# prices ONE memory per role, because the measured counters exist as a single
-# host/device pair, and silently dropping a second device's memory from the
-# energy total is not acceptable.
-#
-# The finding recorded the duplicate memory: block as the cause. It is not the
-# whole cause, and removing that block alone does NOT make the file load:
-# SystemNode::memory_tech defaults to "DDR4" and is overwritten only where a
-# memory: block is parsed, so EVERY device node carries a memory technology
-# whether or not it declares one, and the guard refuses a second device node
-# either way. (Proof: with device1's memory: block deleted, the refusal reads
-# "'device0' SRAM and 'device1' DDR4" -- naming a DDR4 this file never
-# mentioned.) Loosening the guard is not a fix: the per-node area loop prices
-# one die per DISTINCT memory_tech string across nodes, so an undeclared
-# second device would contribute a phantom DDR4 die to System Total Area.
-#
-# So the EXAMPLE is what was wrong, and it is corrected the only way that does
-# not change what E27 refuses: the file now describes what this build can
-# actually run. The second device is preserved verbatim below, commented, as
-# the layout to restore when v2's per-node memory counters exist.
+# This build prices one memory per role (1.11.45): the measured counters exist
+# as a single host/device pair, so a second device node is refused at load.
+# The second device is preserved below, commented, as the layout for a
+# multi-device system.
 #
 # Run with:
-#   ./build/pimid --method exec --scope system \
+#   ./build/pimid --method exec \
 #       --config examples/cosim/multi_device.yaml \
 #       --workload benchmarks/pim_kernels/reduction/reduction_omp \
 #       1024 4 0

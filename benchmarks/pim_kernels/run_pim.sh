@@ -60,7 +60,7 @@ for kernel in $KERNELS; do
         # Run through pimid if available
         if command -v "$PIMID_BIN" &>/dev/null; then
             outdir=$(mktemp -d /tmp/pimid_pim_XXXXXX)
-            # 1.11.94 (b03-suites-b-1, ruling H42): pimid has no --output option; it
+            # 1.11.94: pimid has no --output option; it
             # rejected the flag ('Unknown option: --output', rc=1), so every run failed.
             # pimid's own exit status decides PASS; its output goes to $outdir.
             if $PIMID_BIN --method "$METHOD" --config "$cfg" --no-power \

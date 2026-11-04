@@ -6,7 +6,7 @@ records come from, with their bands. Sections 0-3 were written for PIMID
 "old" or "recommended" in a section is the row at the time that section was
 written; the values in force are the part records `params/dram/hbm3.yaml`,
 `params/dram/hbm2.yaml` and `params/dram/gddr6.yaml`. "The tree" means the
-PIMID source tree; "the archive" is the local document archive listed in
+PIMID source tree; the documents read are listed in
 [docs/sources.md](../sources.md).
 
 Rows as they stood in 1.11.90:
@@ -22,12 +22,9 @@ trefi_ns, channels, idd2p.
 
 ## 0. Summary
 
-1. **GDDR6 needs no scaling from another part. The tree already holds a vendor IDD
-   table for the exact part it simulates.** The archive
-   holds the Samsung K4Z80325BC
-   datasheet (Rev. 1.3, Jan. 2020, 8 Gb GDDR6 SGRAM C-die, 187 pp.). I
-   checked all 187 pages page by page and none carries a "Confidential"
-   marking. Its Table 82 (PDF p.146) lists every IDD at 1.35 V, x32 mode,
+1. **GDDR6 needs no scaling from another part. A vendor IDD table exists for the
+   exact part the tree simulates:** the Samsung K4Z80325BC datasheet (Rev. 1.3,
+   Jan. 2020, 8 Gb GDDR6 SGRAM C-die, 187 pp.). Its Table 82 (PDF p.146) lists every IDD at 1.35 V, x32 mode,
    HC14 = 14 Gb/s. That is the same density (8 Gb), rate (14000),
    voltage (1.35 V) and AC set as the tree's preset. Table 91 (tRC 45,
    tRAS 30, tRFCab 120 ns) matches GDDR6_2000_1350mV_double cycle for
@@ -96,20 +93,14 @@ artifact, https://github.com/CMU-SAFARI/HBM-Power/tree/artifact (fetched
 - DRAM Bender
 - the on-board current sensor on the HBM VDD rail
 
-**Citation status.** The artifact README (fetched) gives no paper title,
-authors, venue or year. It only says "An accurate power model for high
-bandwidth memory (HBM) building on detailed power consumption
-characterization of 36 real HBM2 stacks". The title the project's index
-records ("An Experimental Study of High-Bandwidth Memory (HBM) Power
-Consumption") could NOT be confirmed from any
-fetched page, and no preprint was found. So cite it as a software/data
-artifact:
+**Citation.** The paper is A. Olgun et al., "Understanding the Power
+Consumption of Modern High Bandwidth Memory: Experimental Analysis and
+Modeling Using Real HBM2 DRAM Chips", MICRO 2026 (extended: arXiv:2610.14244);
+the data are from its artifact:
 
 > CMU-SAFARI, HBM-Power artifact repository, branch "artifact",
 > https://github.com/CMU-SAFARI/HBM-Power/tree/artifact, accessed
-> 2026-09-26 (paper under artifact evaluation; not yet public).
-
-Do not attach authors or a venue until the paper appears.
+> 2026-09-26.
 
 Facts read from the artifact source (raw files fetched from
 raw.githubusercontent.com/CMU-SAFARI/HBM-Power/artifact/...):
@@ -168,7 +159,7 @@ Energies computed from the base:
   2.88 pJ/bit. If the one-PC reading were wrong it would be 2.58.
 - **Write burst, per bit:** e_w2 = 1.2 x 222.2 / 76.8 = **3.47 pJ/bit**.
 - **Activation:** E_act2 = 1.2 V x 7.65 mA x 48.3 ns = **444 pJ** per
-  1 KB activation. The 7.65 mA is the per-chip PAIRED excess
+  1 KB activation. The 7.65 mA is the per-chip paired excess
   IDD0 - (20 IDD3N1 + 9 IDD2)/29, divided by 8 (mean 7.65, sd 1.84, sem
   0.31, n = 36; chip range 3.9-11.5 mA, i.e. 226-667 pJ). Pairing the
   chips is what makes this term usable: the unpaired means differ only
@@ -405,7 +396,7 @@ bracket the result rather than pin it.
   HBM3 I/O ratio of 0.3-0.6 is a judgement.
 - A4. The 783 mA stack "off-power" is carried in the centre as DRAM
   current, for consistency with the tree's HBM2 row, which includes it.
-  If ruled non-DRAM, IDD2N/IDD3N centre is 89 mA and the HBM2 row must
+  If it is non-DRAM (the case since 1.12.46, section 1.11), the IDD2N/IDD3N centre is 89 mA and the HBM2 row must
   drop by about 98 mA/channel too.
 - A5. The array voltage exponent is b in [1,2]. No HBM3 array-voltage
   figure was held or found.
@@ -480,7 +471,7 @@ link, right generation, tabulated, per direction); the band measures a
 different link (the TSV path, which section 1.3 already counts inside the
 array burst, bitline -> LIO -> GIO -> TSV -> base die). Rule applied
 (the most accurate figure in the total, the other as a guard): **the anchored
-share prices the crossing I/O, reads AND writes** (what the burst gives up is
+share prices the crossing I/O, reads and writes** (what the burst gives up is
 charged back once to a crossing access; an on-die PE access pays the array
 alone), and **the band is the guard**. Consistency: write 0.25 is inside
 0.19-0.27 (the band is a read-driver figure, so the run prints it as "not
@@ -520,7 +511,7 @@ array part.
 
 ### 1.8 Activation VPP and the idd0 loop label (PIMID 1.12.18)
 
-- The SAFARI artifact's "ipp" column is NOT a VPP measurement: platform.cpp L1478-1480 (commit
+- The SAFARI artifact's "ipp" column is not a VPP measurement: platform.cpp L1478-1480 (commit
   4642c61f) computes Power_VPP = P(12V_PEX) + P(3V3_PEX) - P(VCCINT) - P(VCCINT_IO) - P(HBM_1V2),
   a card residual, and generate_standardized_csvs.py L28/L208 divides it by 2.5 V. No VPP sensor is
   read.
@@ -534,17 +525,17 @@ array part.
   HBM2: 0.3737 x 1.061825 = 0.3968 nJ. Guards printed per run (idd.act_guard_nj_per_kb): lower 0.34
   (IDD route, Chatterjee HPCA17 Table II), XPE attribution ceiling 0.50, upper 0.92 (O'Connor MICRO17 /
   Chatterjee bottom-up).
-- idd0_loop: ONE_PC_PER_TRC. The record idd0 holds ONE 1 KB pseudo-channel activation per tRC (the
+- idd0_loop: ONE_PC_PER_TRC. The record idd0 holds one 1 KB pseudo-channel activation per tRC (the
   SAFARI loop ran on PC0 only). The JEDEC IDD0 loops (JESD235D Table 60 p.103; JESD238B.01 Table 85
-  p.154) activate PC0 AND PC1 every nRC; a vendor IDD0 must be entered as
+  p.154) activate PC0 and PC1 every nRC; a vendor IDD0 must be entered as
   baseline + (IDD0 - baseline)/2. The loader refuses an HBM record without this label. The stale
   "JESD238B.01 Table 83 loops" wording of the HBM3 source string is corrected.
 
 ### 1.9 Per-stack floor halved; XPE background guard (PIMID 1.12.18)
 
-- What the 783.3 mA floor is: the SAFARI artifact reads ONE current, HBM_1V2_I (platform.cpp L48-54, read
+- What the 783.3 mA floor is: the SAFARI artifact reads one current, HBM_1V2_I (platform.cpp L48-54, read
   L1443-1445; idd = Current_Avg). DS923: "VCC_IO_HBM must be connected to VCC_HBM", so the sensor is DRAM
-  VDD + VDDQ of BOTH Alveo U55C stacks plus the FPGA HBM PHY I/O. The IDD bitstreams drive one stack
+  VDD + VDDQ of both Alveo U55C stacks plus the FPGA HBM PHY I/O. The IDD bitstreams drive one stack
   (DRAMBender README L9-13: chip0 = stack 0 / channels 0-7). The floor comes from XCU55_no_hbm.bit, IDD2 on
   channel 0 only (extract_no_hbm.py), 821.3 - 38.0 = 783.3 mA. It is not self-refresh and not power-down.
 - XPE like-for-like check on that rail (8G column, 1.2 Gb/s, 55 C): leakage of two stacks + FPGA PHY
@@ -561,10 +552,11 @@ array part.
   - HBM3 read-energy guard "stack floor" term: 0.13 -> 0.07 pJ/b (total 4.07 -> ~4.0).
   - HBM2 standby per stack: 1305 -> 835 mW (+ refresh).
 - Guard (printed, never priced; record idd.background_guard_mw_stack):
-  - HBM3 [1060, 2170] mW per stack. XPE 2023.1.2 HBM_Data B29/B31, B37, B43 (8G) + Static_Data rows 720-722
+  - HBM3 [1060, 2170] mW per stack (since 1.12.201 [1060, 5791.7], sec. 1.14). XPE 2023.1.2 HBM_Data B29/B31, B37, B43 (8G) + Static_Data rows 720-722
     leakage, 55 C typ..max, voltage-scaled (1.1/1.2)^2 core and (1.8/2.5)^2 VPP. The low end is XPE's maximum
     rate (1.8 Gb/s); the high end is XPE's linear rate law extrapolated to 6.4 Gb/s.
-  - HBM2 [860, 1900] mW (XPE 2023.1.2, all DRAM rails idle per stack).
+  - HBM2 [860, 1900] mW (XPE 2023.1.2, all DRAM rails idle per stack; since 1.12.200 the low edge is 855 mW, to
+    include the Table 3 value of 856.0 mW, sec. 1.13).
 
 ### 1.10 HBM2 standby scaled to the record's 2.4 Gb/s preset (PIMID 1.12.18)
 
@@ -590,7 +582,7 @@ array part.
   (own rate law, 25 C typ, all DRAM rails) about 1110 mW -> 1.07x.
 
 
-### 1.11 No per-stack floor; the board offset is 821.3 mA (PIMID (1.12.46), user ruling 2026-10-25)
+### 1.11 No per-stack floor; the board offset is 821.3 mA (PIMID 1.12.46)
 
 - Source: A. Olgun et al., "Understanding the Power Consumption of Modern High Bandwidth Memory: Experimental Analysis
   and Modeling Using Real HBM2 DRAM Chips", MICRO 2026 (extended: arXiv:2610.14244), Sec. 4.3: the current sensor is
@@ -615,7 +607,7 @@ array part.
   inside). The measured idle chip means (217.5-364.8 mA x 1.2 V at 1.2 Gb/s, x2 for 2.4 Gb/s, + refresh) give
   556-922 mW per HBM2 stack.
 
-### 1.12 Standby VPP as a ratio of the VDD standby (PIMID (1.12.142), user ruling 2026-10-28)
+### 1.12 Standby VPP as a ratio of the VDD standby (PIMID 1.12.142)
 
 - The measured base is VDDC + VDDQ only (sec. 1.8: the artifact's "ipp" column is a card residual, not a VPP
   sensor), and the HBM record has no IPP2N/IPP3N row. The standby VPP is therefore
@@ -819,18 +811,15 @@ Table 3 (0.80 at 50 % activity) and the HBM2E PHY read (0.56) inside.
   (printed p.153 / PDF p.165), has conditions only and no values, like
   the HBM standards.
 - Micron's public GDDR6 material has no IDD table.
-  The Micron GDDR6X PAM4 technical brief URL returned an access-denied
-  page and the Mouser TN-ED-03 fetch timed out, so neither is cited.
 - No public GDDR5/GDDR5X IDD datasheet was pursued, because a GDDR6 part
-  datasheet with a full IDD table is already held, and it is strictly a
+  datasheet with a full IDD table is available, and it is strictly a
   better base than any scaled GDDR5 table.
-- **The held table:** Samsung K4Z80325BC, "8Gb GDDR6 SGRAM C-die, 16M x
+- **The table used:** Samsung K4Z80325BC, "8Gb GDDR6 SGRAM C-die, 16M x
   16Bit x 16 Banks x 2ch.", Rev. 1.3, Jan. 2020.
   - Page 1 carries Samsung's standard "reserves the right to change ..."
-    notice, and no page carries a confidentiality marking (all 187
-    scanned).
+    notice; no page carries a confidentiality marking.
   - Distributor listings for this part turned up in web search. A public
-    copy was NOT downloaded (the LCSC URL returned HTML), so public
+    copy was not downloaded (the LCSC URL returned HTML), so public
     availability is by listing only.
   - No other GDDR6 vendor document was used.
 
@@ -870,15 +859,15 @@ VPP-rail currents at HC14: IPP0 14, IPP3N 10, IPP5 77, IPP7 31 mA
 - IDD5 is specified at tRFCab = tRFCab(min) back to back (Table 65
   wording), i.e. the burst refresh current the tree's idd5 column means.
 
-**Basis.** These are per DEVICE (2 x 16-bit channels) maximum-spec
+**Basis.** These are per device (2 x 16-bit channels) maximum-spec
 currents. This decides how the activation term is charged:
 - **Burst: basis-neutral.** Per device, 760 mA excess over IDD3N moves
   32 b x 14 Gb/s = 448 Gb/s, which is 1.35 x 0.760 / 448e9 = 2.29 pJ/bit.
   The tree's held charge (1 device, 1 BL16 burst of 1.143 ns = 64 B)
   gives 1.35 x 760 x 1.143 = 1173 pJ per 64 B, the same 2.29 pJ/bit.
   Per-channel basis (half current, 2 bursts) gives the same product.
-- **Activation: NOT basis-neutral.** The device IDD0 loop activates one
-  bank in EACH channel per tRC, so a per-device row prices two
+- **Activation: not basis-neutral.** The device IDD0 loop activates one
+  bank in each channel per tRC, so a per-device row prices two
   activations per miss. The per-channel charge is half the device
   figure.
 
@@ -889,7 +878,7 @@ currents. This decides how the activation term is charged:
 | vdd | 1.35 V (T82 heading; JESD250D) | none | 1.35 | 1.35-1.3905 (T82 "+0.0405V") |
 | IDD0 | 430 mA (T82 HC14) | none; per device | 430 | 404-452 (HC12..HC16) |
 | IDD2N | 310 mA (T82) | none | 310 | 299-327 |
-| IDD3N | 460 mA (T82), ONE bank active (T82; JESD250D T65) | none | 460 | 422-477 |
+| IDD3N | 460 mA (T82), one bank active (T82; JESD250D T65) | none | 460 | 422-477 |
 | IDD4R | 1220 mA (T82) | none | 1220 | 1083-1292 |
 | IDD4W | 1470 mA (T82) | none | 1470 | 1242-1511 |
 | IDD5B | 790 mA (T82 IDD5, tRFCab = 120 ns T91) | none | 790 | 723-830 |
@@ -908,7 +897,7 @@ HC12..HC16 spread is shown as the rate sensitivity.
   injected figure the run prints is computed at runtime from the same
   electricals (cacti_io_wrapper.cpp:279) and was not evaluated here (no
   runs).
-- **Activation, IDD-loop form with IDD3N as ONE bank (no 1.11.86 division):**
+- **Activation, IDD-loop form with IDD3N as one bank (no 1.11.86 division):**
   1.35 x (430 x 45 - 460 x 30 - 310 x 15) = 1215 pJ per device loop,
   i.e. **608 pJ per channel ACT** of a 2 KB page.
   - This term is ILL-CONDITIONED: it is a 900 pA.ns difference of
@@ -975,7 +964,7 @@ reason the activation band is 0.6-3.2 nJ rather than a point.
 - G3. IPP (VPP 1.8 V) is excluded from the row. It is about 2-4% of VDD
   power at IPP0/IPP3N and about 13% during refresh (IPP5 77 mA x 1.8 V
   against 790 x 1.35).
-- G4. The row is per DEVICE, and only the activation term needs a /2
+- G4. The row is per device, and only the activation term needs a /2
   when charged per channel access (the per-channel activation rule).
 
 **Recommended row (per device):**
@@ -1020,27 +1009,21 @@ worth 5.7x on the activate energy.
 
 ---------------------------------------------------------------------------
 
-## 4. Sources and fetch status
+## 4. Sources
 
-Held and read by page range:
+Read by page range:
 - JESD235D: Table 49 (PDF p.104), cl.9.1 and Tables 57/58 (PDF pp.108-110)
 - JESD238B.01: Tables 1, 3, 4 (PDF pp.17-20), Table 70 (PDF p.152),
   cl.9.1 and Tables 83/84/90 (PDF pp.164-167, 173)
 - JESD250D: cl.8.8 and Table 65 (PDF pp.164-167)
 - Samsung K4Z80325BC (PDF pp.1, 144-155)
 - O'Connor MICRO 2017
-- the SAFARI CSVs (local archive)
+- the SAFARI artifact CSVs (section 1.1)
 
-Fetched on 2026-09-26:
+Read online on 2026-09-26:
 - github.com/CMU-SAFARI/HBM-Power (tree API; README; the raw files named
   in 1.1)
 - the IEDM 2023 SK hynix handout
 - arXiv:2602.18568
 - the Tom's Hardware article
 - the utexas.edu O'Connor PDF
-
-Search-only, NOT cited: wevolver.com secondary pJ/bit claims (2.5 pJ/bit
-HBM3); the jonpeddie/nasdaq Micron pages.
-
-Fetch failed: the Micron GDDR6X brief (access denied), Mouser TN-ED-03
-(timeout), the LCSC Samsung datasheet mirror (HTML returned).

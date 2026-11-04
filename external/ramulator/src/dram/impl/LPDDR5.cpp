@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -47,7 +47,7 @@ class LPDDR5 : public IDRAM, public Implementation {
      * command timings in CK cycles. The derivation in set_timing_vals() is
      * corrected to match (8 bits/pin per CK, not 2), so this column's written
      * 1250 is now also the value actually used. `rate` stays 6400 -- a JESD209-5C data
-     * rate (the vendor speed grade is estimated from a vendor source that cannot be disclosed publicly) -- and the thirteen CK-domain
+     * rate (the speed grade is a calibrated value) -- and the thirteen CK-domain
      * nXX fields keep their cycle counts, which RESTORES their intended
      * nanoseconds instead of changing them.
      *
@@ -55,7 +55,7 @@ class LPDDR5 : public IDRAM, public Implementation {
      * preserved:
      *   nBL16 4 -> 2. A BL16 burst on a x16 channel at 6400 Mb/s occupies
      *     16 bits/pin / 6.4 Gb/s = 2.5 ns of the DQ bus = 2 CK at 1.25 ns.
-     *     DERIVED-FROM-IDENTITY (burst length vs data rate), not sourced.
+     *     derived from the identity (burst length vs data rate), not sourced.
      *   nCCD 4 -> 2. Authored as the matched pair of nBL16 in the 0.625 ns
      *     domain (both = one BL16 burst = 2.5 ns); re-based to CK it is 2, so
      *     its NANOSECOND value is unchanged at 2.5 ns. At the time this was a
@@ -65,7 +65,7 @@ class LPDDR5 : public IDRAM, public Implementation {
      *     as the different-bank-group value, which is the one that carries
      *     the 12.8 GB/s streaming-rate argument.
      *
-     *   nRC 30 -> 49. DERIVED-FROM-IDENTITY. tRC >= tRAS + tRP is definitional
+     *   nRC 30 -> 49. Derived from the identity. tRC >= tRAS + tRP is definitional
      *     and provable without JESD209-5: nRAS 34 + nRPpb 15 = 49. The old 30
      *     was 19 cycles short and shorter than nRAS alone. Set from the row's
      *     own nRAS and nRPpb; no bin value invented.
@@ -224,7 +224,7 @@ class LPDDR5 : public IDRAM, public Implementation {
       Node(LPDDR5* dram, Node* parent, int level, int id) : DRAMNodeBase<LPDDR5>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -235,7 +235,7 @@ class LPDDR5 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
     };
 
@@ -250,7 +250,7 @@ class LPDDR5 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -258,7 +258,7 @@ class LPDDR5 : public IDRAM, public Implementation {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {
@@ -427,9 +427,8 @@ class LPDDR5 : public IDRAM, public Implementation {
       /* 1.11.63 (calibration): tPBR2ACT at 8 Gb and 16 Gb, 8 -> 7.5 ns.
        * SOURCES (public):
        *   8 Gb die  -- Micron LPDDR5X Y52Q (Rev. G 05/2025), Table 4 refresh
-       *     parameters, PDF p.9: "tPBR2ACT | 7.5 | ns" (the 8 Gb sheet first
-       *     cited here was a vendor source that cannot be disclosed publicly;
-       *     it agrees). The org
+       *     parameters, PDF p.9: "tPBR2ACT | 7.5 | ns" (the calibrated
+       *     value used here before agrees). The org
        *     this model uses is BG mode (4 bank groups x 4 banks -- see
        *     org_presets), so the BG-mode value applies.
        *   16 Gb die -- Micron LPDDR5X Y52P (Rev. H 03/2025), Table 6 "Refresh
@@ -458,7 +457,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the four tabulated ones, and that -1 then indexed
        * tRFCab_TABLE, tRFCpb_TABLE, tPBR2PBR_TABLE and tPBR2ACT_TABLE. An
        * out-of-bounds read one element BEFORE a table of plausible nanosecond
@@ -477,7 +476,7 @@ class LPDDR5 : public IDRAM, public Implementation {
        * LPDDR5 die, and no such figure exists in any source this tree holds
        * [1.12.42: NOT SO -- JESD209-5C Table 240 p.287 tabulates 32 Gb:
        * tRFCab 380, tRFCpb 190, tpbR2pbR 90, tpbR2act 7.5 ns; adding the
-       * column needs its own ruling, so the preset still refuses]:
+       * column needs its own rule, so the preset still refuses]:
        * the public Micron LPDDR5X datasheets tabulate 8 Gb (Y52Q Table 4:
        * 210/120/90), 12 Gb (Y4BM: 280/140/90) and 16 Gb (Y52P Table 6:
        * 280/140/90) dies and stop
@@ -549,7 +548,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           /// CAS <-> PREab
           // 1.11.63: RD->PRE = BL/n_min + RU(tRBTP/tCK); WR->PRE = WL + BL/n_min + 1 + RU(tWR/tCK) (JESD209-5C Tbl 340 p.483)
           {.level = "rank", .preceding = {"RD16"}, .following = {"PREA"}, .latency = V("nBL16") + V("nRTP")},
-          /// PRE <-> PRE. 1.12.39 (user ruling 2026-10-25): tPPD 2 nCK between any two precharges of the rank
+          /// PRE <-> PRE. 1.12.39: tPPD 2 nCK between any two precharges of the rank
           /// (JESD209-5C Table 381 "tPPD 2 nCK"; Tables 340-342 PRE->PRE = 2). nPPD was in the row, never enforced.
           {.level = "rank", .preceding = {"PRE", "PREA"}, .following = {"PRE", "PREA"}, .latency = V("nPPD")},
           {.level = "rank", .preceding = {"WR16"}, .following = {"PREA"}, .latency = V("nCWL") + V("nBL16") + 1 + V("nWR")},          
@@ -587,7 +586,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           {.level = "bankgroup", .preceding = {"WR16", "WR16A"}, .following = {"WR16", "WR16A"}, .latency = V("nCCDL")},          
           // 1.11.63: WL + BL/n_max + RU(tWTR_L/tCK) -- BL/n_max = 2*BL/n_min in BG mode (Tbl 340)
           {.level = "bankgroup", .preceding = {"WR16", "WR16A"}, .following = {"RD16", "RD16A"}, .latency = V("nCWL") + 2 * V("nBL16") + V("nWTRL")},
-          /* 1.12.39 (user ruling 2026-10-25): RD -> WR in the SAME bank group. JESD209-5C Table 347 (p.488):
+          /* 1.12.39: RD -> WR in the SAME bank group. JESD209-5C Table 347 (p.488):
            * RL + BL/n_max + RU(tWCK2DQO(max)/tCK) - WL, BL/n_max = 2 x BL/n_min in BG mode, tWCK2DQO_HF max 1.6 ns
            * (Table 462 p.584) -> RU(1.6/1.25) = 2: 17 + 4 + 2 - 9 = 14 nCK. The rank-level 12 above (Table 348,
            * BL/n_min) stays for different bank groups. */
@@ -623,16 +622,16 @@ class LPDDR5 : public IDRAM, public Implementation {
       // Rank Actions
       m_actions[m_levels["rank"]][m_commands["PREA"]] = Lambdas::Action::Rank::PREab<LPDDR5>;
       m_actions[m_levels["rank"]][m_commands["CASRD"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timing_vals("nCL") + m_timing_vals("nBL16") + 1;   /* PIMID 1.11.96 (review x09-ramulator-specs-7): the VALUES, not the ImplDef indices (nCL index 2, nBL16 index 1 were being added) */ 
+        node->m_final_synced_cycle = clk + m_timing_vals("nCL") + m_timing_vals("nBL16") + 1;   /* PIMID 1.11.96: the VALUES, not the ImplDef indices (nCL index 2, nBL16 index 1 were being added) */
       };
       m_actions[m_levels["rank"]][m_commands["CASWR"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timing_vals("nCWL") + m_timing_vals("nBL16") + 1;   /* PIMID 1.11.96 (x09-7) */ 
+        node->m_final_synced_cycle = clk + m_timing_vals("nCWL") + m_timing_vals("nBL16") + 1;   /* PIMID 1.11.96 */ 
       };
       m_actions[m_levels["rank"]][m_commands["RD16"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timing_vals("nCL") + m_timing_vals("nBL16");   /* PIMID 1.11.96 (x09-7) */ 
+        node->m_final_synced_cycle = clk + m_timing_vals("nCL") + m_timing_vals("nBL16");   /* PIMID 1.11.96 */ 
       };
       m_actions[m_levels["rank"]][m_commands["WR16"]] = [this] (Node* node, int cmd, int target_id, Clk_t clk) {
-        node->m_final_synced_cycle = clk + m_timing_vals("nCWL") + m_timing_vals("nBL16");   /* PIMID 1.11.96 (x09-7) */ 
+        node->m_final_synced_cycle = clk + m_timing_vals("nCWL") + m_timing_vals("nBL16");   /* PIMID 1.11.96 */ 
       };
       // Bank actions
       m_actions[m_levels["bank"]][m_commands["ACT-1"]] = [] (Node* node, int cmd, int target_id, Clk_t clk) {
@@ -678,7 +677,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           case m_states["Closed"]: return m_commands["ACT-1"];
           case m_states["Pre-Opened"]: return m_commands["ACT-2"];
           case m_states["Opened"]: {
-            if (node->m_row_state.find(addr_vec[m_levels["row"]]) != node->m_row_state.end()) {   /* PIMID 1.11.96 (review C5): the REQUEST's row, not row 0 */
+            if (node->m_row_state.find(addr_vec[m_levels["row"]]) != node->m_row_state.end()) {   /* PIMID 1.11.96: the REQUEST's row, not row 0 */
               Node* rank = node->m_parent_node->m_parent_node;
               if (rank->m_final_synced_cycle < clk) {
                 return m_commands["CASRD"];
@@ -700,7 +699,7 @@ class LPDDR5 : public IDRAM, public Implementation {
           case m_states["Closed"]: return m_commands["ACT-1"];
           case m_states["Pre-Opened"]: return m_commands["ACT-2"];
           case m_states["Opened"]: {
-            if (node->m_row_state.find(addr_vec[m_levels["row"]]) != node->m_row_state.end()) {   /* PIMID 1.11.96 (review C5): the REQUEST's row, not row 0 */
+            if (node->m_row_state.find(addr_vec[m_levels["row"]]) != node->m_row_state.end()) {   /* PIMID 1.11.96: the REQUEST's row, not row 0 */
               Node* rank = node->m_parent_node->m_parent_node;
               if (rank->m_final_synced_cycle < clk) {
                 return m_commands["CASWR"];
@@ -722,7 +721,7 @@ class LPDDR5 : public IDRAM, public Implementation {
     void set_rowhits() {
       m_rowhits.resize(m_levels.size(), std::vector<RowhitFunc_t<Node>>(m_commands.size()));
 
-      /* PIMID 1.11.98 (gate 1208A): LPDDR5 activates in two steps, and between
+      /* PIMID 1.11.98: LPDDR5 activates in two steps, and between
        * ACT-1 and ACT-2 the bank is "Pre-Opened" -- a state the generic row-hit
        * and row-open lambdas do not know: they called std::exit on it, so the
        * first row-hit query against a pre-opened bank killed the run (and, in

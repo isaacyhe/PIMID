@@ -273,7 +273,7 @@ static bool           g_we_created_shm = false;
 static std::atomic<bool> g_initialized{false};
 static std::atomic<int>  g_next_request{1};
 
-/* ---- 1.12.18 (user ruling 2026-10-23): PIM runtime primitives ----
+/* ---- 1.12.18: PIM runtime primitives ----
  * "The PIM way, not as full SW overhead": the PE is not charged for executing
  * this shim's own code (argument and chunk bookkeeping, mailbox and staging
  * management, algorithm selection, reduction-op decoding, scratch buffers).
@@ -346,7 +346,7 @@ static inline void priced_memcpy(void* d, const void* src, size_t n) { RtPriced 
  * runtime keeps a PE's buffers in its own bank). Growth (a larger message than
  * any before) happens inside the runtime window. Off: a std::vector, as before
  * 1.12.18.
- * 1.12.18 (user ruling 2026-10-24, "PIM-way: no host zeroing"): the scratch is
+ * 1.12.18 (PIM-way: no host zeroing): the scratch is
  * PIM-runtime state and is allocated the way a PIM runtime allocates device
  * buffers. It is no longer allocated and zeroed in MPI_Init: in co-sim MPI_Init
  * runs on the HOST before offload, so the 3 x 64 KB memset per rank was host
@@ -366,7 +366,7 @@ static char* scratch_or_vec(int slot, size_t bytes, std::vector<char>& v) {
         RankScratch& s = g_scr[g_rank];
         if (s.cap[slot] < bytes) {
             size_t c = s.cap[slot] * 2;
-            if (c < kScratchInit) c = kScratchInit;   /* 1.12.18 (ruling 2026-10-24): first allocation, device-side, no zeroing */
+            if (c < kScratchInit) c = kScratchInit;   /* 1.12.18: first allocation, device-side, no zeroing */
             if (c < bytes) c = bytes;
             c = (c + 4095) & ~(size_t)4095;
             free(s.p[slot]);
@@ -416,7 +416,7 @@ static uint64_t contend_reserve(int dst_pe, uint64_t send_time, uint64_t dur) {
 
 /* ---- Helpers ---- */
 
-/* 1.11.94 (H29 s09-mpi-api-1): decode the datatype handles the workloads
+/* 1.11.94: decode the datatype handles the workloads
  * actually pass. The shim is LD_PRELOADed under binaries built with the system
  * MPI (the shipped *_mpi kernels are MPICH builds: reduction_mpi passes
  * 0x4c00080b for MPI_DOUBLE), but this function only knew the private handles
@@ -528,7 +528,7 @@ static void register_mpi_params(void) {
 #endif
 }
 
-/* 1.12.17 (M1, user 2026-10-22): the transport's own memory is registered with
+/* 1.12.17: the transport's own memory is registered with
  * the simulator, and PE accesses inside it are not priced: a message costs one
  * read of the sender's buffer, the injected Garnet transfer and one write of the
  * receiver's buffer. Thread mode only (the exec-method MPI model). */
@@ -1064,7 +1064,7 @@ int MPI_Init(int *argc, char ***argv) {
     if (g_thread_mode) {
         trace_init(g_rank);
         register_mpi_params();
-        /* 1.12.18 (user ruling 2026-10-24): the rank's collective scratch is NOT
+        /* 1.12.18: the rank's collective scratch is NOT
          * allocated or zeroed here (in co-sim this runs on the host before
          * offload); scratch_or_vec allocates it device-side at first use, inside
          * the runtime window. g_scr's entries start empty (calloc). */
@@ -1463,7 +1463,7 @@ int MPI_Barrier(MPI_Comm comm) {
     return MPI_SUCCESS;
 }
 
-/* ---- 1.12.17 (ruling 3a): MPICH's collective algorithms ----
+/* ---- 1.12.17: MPICH's collective algorithms ----
  * The collectives run the algorithms of MPICH, chosen the way MPICH's
  * intra-communicator "auto" selection chooses them with its default
  * thresholds (Thakur, Rabenseifner and Gropp, "Optimization of Collective

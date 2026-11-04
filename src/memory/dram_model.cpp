@@ -82,7 +82,7 @@ DRAMModel::DRAMModel(const std::string& config_path, MemoryTechnology tech)
 
     // Initialize default DRAM configuration
     /* 1.11.52 (D024): the standard is the RUN'S technology.
-     * 1.11.57 (audit C010): the claim that followed -- "the literals below are
+     * 1.11.57: the claim that followed -- "the literals below are
      * overwritten by the architecture extraction in initialize()" -- was not
      * true of THESE fields. The extraction fills dram_arch_; these fields are
      * a separate struct that nothing overwrote, and they were printed. They
@@ -167,7 +167,7 @@ void DRAMModel::initialize() {
                   << dram_arch_->timing.inner_bank.source << std::endl;
     }
 
-    /* 1.11.57 (audit C010): the block below used to print the CONSTRUCTOR'S
+    /* 1.11.57: the block below used to print the CONSTRUCTOR'S
      * DDR4-2400 literals under the run's own technology name.
      *
      * What was wrong: every field here is set once in the constructor and
@@ -200,7 +200,7 @@ void DRAMModel::initialize() {
         // getBandwidth() is MB/s, decimal. Store bytes/s on the same decimal
         // basis so the print below cannot re-introduce the 1024^3 confusion.
         dram_config_.bandwidth         = ramulator_instance_->getBandwidth() * 1000000ULL;
-        /* 1.11.63 (R6-1): NAME THE UNIT chip_size_mb ACTUALLY COUNTS, which is
+        /* 1.11.63: NAME THE UNIT chip_size_mb ACTUALLY COUNTS, which is
          * not the same unit for both families.
          *
          * This line multiplied chip_size_mb by chips_per_rank and called the
@@ -210,7 +210,7 @@ void DRAMModel::initialize() {
          * CHANNEL count (the two fields deliberately count different units;
          * see the note on the struct), so an HBM3 run printed an implied
          * capacity 2x its own capacity line, in both directions across the
-         * R6-1 correction: 2048 x 16 = 32 GiB beside 4 GiB before, 1024 x 16 =
+         * 1.11.63 correction: 2048 x 16 = 32 GiB beside 4 GiB before, 1024 x 16 =
          * 16 GiB beside 8 GiB after. The arithmetic that DOES close for HBM is
          * core dies, which getPresetDiesPerStack() already answers on the
          * preset's own two-channels-per-die relation: 1024 MB x 8 dies = 8 GiB
@@ -274,7 +274,7 @@ void DRAMModel::initialize() {
 }
 
 void DRAMModel::loadConfig(const std::string& config_path) {
-    /* 1.11.63 (gate 1173C): every co-sim run reached this with an EMPTY
+    /* 1.11.63: every co-sim run reached this with an EMPTY
      * path -- no caller passes an override file -- and printed "Loading
      * configuration from: " followed by a YAML parse error and "using
      * defaults". Three alarming lines describing a non-event: this file is
@@ -391,7 +391,7 @@ void DRAMModel::loadConfig(const std::string& config_path) {
     if (config.find("channels.bandwidth_per_channel_gbs") != config.end()) {
         try {
             double bw_per_channel = std::stod(config["channels.bandwidth_per_channel_gbs"]);
-            /* 1.11.57 (audit C010): DECIMAL. A DRAM bandwidth in GB/s is a
+            /* 1.11.57: DECIMAL. A DRAM bandwidth in GB/s is a
              * decimal figure -- it is a transfer rate times a bus width -- and
              * multiplying it by 1024^3 stored 7.4% more bytes per second than
              * the user asked for, which the printed line then divided back out
@@ -457,7 +457,7 @@ Cycle DRAMModel::access(const MemoryRequest& req) {
      * only when ramulator_instance_ is null, and the constructor always makes
      * one). Nothing could observe the difference because access() has no
      * caller in this tree. */
-    /* 1.11.60 (audit round 4, C003): ASSIGNED, not accumulated. read_energy_
+    /* 1.11.60: ASSIGNED, not accumulated. read_energy_
      * and write_energy_ are the MemoryModel interface's PER-ACCESS fields --
      * see the contract paragraph in memory_model.h -- and this was the second
      * of the two places that made them a running total instead. Per-access
@@ -513,7 +513,7 @@ void DRAMModel::tick() {
          * model keeps its own, which at least count something. */
 
         /* Update energy metrics.
-         * 1.11.60 (audit round 4, C003): THE PER-ACCESS FIGURE, not the
+         * 1.11.60: THE PER-ACCESS FIGURE, not the
          * wrapper's running total.
          *
          * RamulatorWrapper::getReadEnergy() is total_reads_ x per-access (see
@@ -616,7 +616,7 @@ double DRAMModel::getTotalEnergy() const {
     const double elapsed_s =
         static_cast<double>(current_cycle_) * clock_period_ns * 1e-9;
     const double leakage_energy_nJ = leakage_power_ * elapsed_s * 1e9;  // J -> nJ
-    /* 1.11.60 (audit round 4, C003): the dynamic terms are now a per-access
+    /* 1.11.60: the dynamic terms are now a per-access
      * energy times an access count. read_energy_/write_energy_ became the
      * intensive per-access figures the MemoryModel contract asks for, so this
      * function -- which is the ACCUMULATED total, the one member of the four
@@ -659,7 +659,7 @@ void DRAMModel::printStats() const {
     }
 
     std::cout << "\nEnergy Consumption:" << std::endl;
-    /* 1.11.60 (audit round 4, C003): these two are per-access now and the
+    /* 1.11.60: these two are per-access now and the
      * labels say so; the running totals they used to hold are printed beside
      * them, derived from the counters. */
     std::cout << "  Read Energy (per access): " << read_energy_ << " nJ" << std::endl;
@@ -681,7 +681,7 @@ void DRAMModel::resetStats() {
     row_hits_ = 0;
     row_misses_ = 0;
     row_conflicts_ = 0;
-    /* 1.11.60 (audit round 4, C003): read_energy_/write_energy_ are NOT
+    /* 1.11.60: read_energy_/write_energy_ are NOT
      * zeroed any more. They are the per-access figures the contract asks for,
      * i.e. a property of the part, not a statistic -- zeroing them was the
      * accumulating-total behaviour the finding named, and it is what the three
@@ -719,7 +719,7 @@ Cycle DRAMModel::calculateLatency(const MemoryRequest& req) {
              * full per-64 B array energy for this request, and that quantity
              * -- whether it comes from the IDD path or from the architecture
              * object's bank energy -- already contains the activate and
-             * precharge share (the vendor method's row energy is exactly
+             * precharge share (the current-difference method's row energy is exactly
              * ACT+PRE plus the burst). Charging 8 nJ more per row miss on top
              * of it roughly quadrupled the energy of a missing access, with
              * numbers that matched no technology in the tree. The row-miss

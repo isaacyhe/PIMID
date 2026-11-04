@@ -44,7 +44,7 @@ static void stream_triad_range(pimid_spm_t* s, float* a, const float* b, const f
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of the prep layout
+/* 1.11.94: per-PE need of the prep layout
  * [a chunk][b chunk][c chunk] for size N on P PEs (chunk = ceil(N/P)). */
 static size_t stream_triad_omp_need(long n, const void* ctx) {
     long P = *(const int*)ctx;
@@ -118,7 +118,7 @@ int main(int argc, char* argv[]) {
          * chunk of b + c into PE pe's own unit slot; a's chunk is written there
          * by the ROI. Slot layout: [a chunk][b chunk][c chunk]. */
         omp_set_num_threads(P);
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): refuse when PE pe's three
+        /* 1.11.94: refuse when PE pe's three
          * chunks do not fit its slot (c overlapped PE pe+1's a before). */
         size_t slot_bytes = pimid_devorg_slot_bytes(&dev);
         size_t need = stream_triad_omp_need(N, &P);

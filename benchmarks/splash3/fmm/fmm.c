@@ -1,6 +1,6 @@
 /* fmm.c -- 2D quadtree tree-walk force kernel (SPLASH-3 "fmm" slot).
  *
- * 1.11.94 (b02-suites-a-2, ruling C2): this is NOT a fast multipole method.
+ * 1.11.94: this is NOT a fast multipole method.
  * There are no multipole or local expansions, no M2M/M2L/L2L translations
  * and no per-particle direct near field. What it does:
  *   - builds a quadtree (leaf capacity MAX_PARTICLES, depth limit MAX_DEPTH;
@@ -92,7 +92,7 @@ static int alloc_node(double cx, double cy, double sz) {
     return idx;
 }
 
-/* 1.11.94 (b02-suites-a-2, ruling C2): growable leaf list. A leaf at the
+/* 1.11.94: growable leaf list. A leaf at the
  * depth limit keeps every particle it is given, so nothing is dropped. */
 static void plist_push(int ni, int pi) {
     QNode* n = &nodes[ni];
@@ -116,7 +116,7 @@ static int child_quadrant(int ni, int pi) {
 
 /* Insert particle into tree (serial, during build phase). The root is depth 0.
  *
- * 1.11.94 (b02-suites-a-2, ruling C2): a full leaf above the depth limit
+ * 1.11.94: a full leaf above the depth limit
  * splits and each of its particles is reinserted into the CHILD that contains
  * it, at the child's depth. Before this, the particles were reinserted into
  * the splitting node itself at depth+1; at the depth limit that reached a

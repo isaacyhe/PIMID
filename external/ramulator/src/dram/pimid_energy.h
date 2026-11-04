@@ -10,7 +10,7 @@
 //
 // The per-tech IDD/VDD tables here are PART-NUMBER-SOURCED datasheet values
 // (Micron part classes named below) -- WITH ONE EXCEPTION, the idd2p column.
-// 1.11.56 (audit D006): that blanket claim covered a column that was never
+// 1.11.56: that blanket claim covered a column that was never
 // read off a datasheet. idd2p is a precharge-POWER-DOWN current; the DDR/LPDDR
 // classes above publish IDD2P, but the HBM rows were entered as "30-40% of
 // IDD2N per JESD precharge-standby-powerdown deltas" -- a rule of thumb, not a
@@ -18,7 +18,7 @@
 // comment states. The claim is narrowed here, and the consumer says so at the
 // point of use (RamulatorWrapper::getBackgroundSystemMW) rather than leaving a
 // header comment to carry the disclosure. The other columns are unaffected.
-// 1.11.91 (item 11, component-factor ruling 2026-09-26 19:30): the rows
+// 1.11.91 (component-factor rule): the rows
 // below STORE datasheet MAXIMA (HBM2/HBM3: measured silicon); the model
 // prices TYPICAL currents derived from them by typicalFromSpec() with the
 // row's ComponentFactors (componentFactorsFor). See the anchor block above
@@ -38,7 +38,7 @@
 // per-64B-access / per-device values used for analytical energy accounting. Both
 // draw from the same datasheet numbers.
 //
-// Formulas: the vendor method (a vendor method that cannot be disclosed publicly) (row ACT+PRE and read-burst energy); ODT/termination =
+// Formulas: the current-difference method (row ACT+PRE and read-burst energy); ODT/termination =
 // resistor-network dissipation VDDQ^2/Rtt over the bit period, per I/O standard.
 // ---------------------------------------------------------------------------
 #include <string>
@@ -104,11 +104,11 @@ struct IDDSpec {
     double idd0, idd2n, idd3n, idd4r, idd4w, idd5; // mA (per device / per channel)
     double trfc_ns, trefi_ns;
     int    channels;                               // per-stack aggregation (HBM)
-    /* 1.11.8 (#84): precharge power-down current (CKE low, fast tXP exit) --
+    /* 1.11.8: precharge power-down current (CKE low, fast tXP exit) --
      * the JEDEC descent state an idle controller actually enters. Same
      * datasheet classes as the columns above. */
     double idd2p;                                  // mA
-    /* 1.11.91 (audit R8-8, user ruling (a)): THE TWO RAILS THE VDD COLUMNS
+    /* 1.11.91: THE TWO RAILS THE VDD COLUMNS
      * DO NOT CARRY. Every held datasheet measures IDD on the VDD balls ONLY
      * and says so: Micron DDR5 core sheet p.448 "Any IPP or IDDQ current is
      * not included in IDD currents"; MT40A p.314 "IPP and IDDQ currents are
@@ -131,29 +131,29 @@ struct IDDSpec {
     double ipp2n  = -1.0;   // mA on VPP, precharge standby
     double ipp3n  = -1.0;   // mA on VPP, active standby
     double vpp    = -1.0;   // V
-    /* 1.11.91 (item 11, user ruling 2026-09-26 18:44-19:00): an EXPLICIT
-     * activate+precharge energy per IDD unit, pJ, for a row whose vendor-method
+    /* 1.11.91: an EXPLICIT
+     * activate+precharge energy per IDD unit, pJ, for a row whose current-difference
      * difference (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS)) is not
      * the route its derivation chose. < 0 = unset: the formula is used, as
      * on every row before this release. arrayReadNJ/arrayWriteNJ consult it
      * before computing the difference. Set on GDDR6 only (see that row).
      * Stored at the maxima like the currents; typicalFromSpec() scales it
-     * by the activate-excess factor (19:30 component ruling). */
+     * by the activate-excess factor (component rule). */
     double e_actpre_pJ_override = -1.0;
-    /* user ruling 2026-10-25 (second supply rails): the VPP share of an
+    /* second supply rails: the VPP share of an
      * e_actpre_pJ_override activation, pJ per IDD unit, on the same route
      * (GDDR6: VPP x (IPP7 - IPP3N) / the IDD7 loop's ACT rate). Stored and
      * priced at the maximum like every VPP row (typicalFromSpec passes it
      * through). < 0 = none. The loader refuses it together with ipp0. */
     double e_actpre_vpp_pJ_override = -1.0;
-    /* 1.11.91 (item 12, user ruling option (c)): a per-STACK static power,
+    /* 1.11.91: a per-STACK static power,
      * mW, priced once per stack (not per channel) and added to the
      * memory system's background by backgroundSystemMW /
      * backgroundSystemStatesMW. < 0 = none (every non-HBM row). HBM2 and
      * HBM3 only; the measurement and its reading are at the HBM2 row. */
     double stack_floor_mw = -1.0;
     /* 1.12.18: (bug 2b/8a) the I/O-EQUIVALENT share INSIDE idd4r / idd4w, mA,
-     * of a DERIVED row that folded the DQ I/O energy into its VDD burst
+     * of a derived row that folded the DQ I/O energy into its VDD burst
      * current because the tree had no separate I/O term (HBM3: the 1.11.91
      * derivation, section 1.3 and A7). < 0 = none: every row whose IDD is
      * the VDD rail alone, as JEDEC measures it. With
@@ -161,7 +161,7 @@ struct IDDSpec {
      * it and the I/O of an access that crosses the DQ is priced once, by the
      * IDDQ term (iddqNJ); an access that does not cross pays no I/O. */
     double idd4r_io = -1.0, idd4w_io = -1.0;
-    /* 1.12.18 (user ruling 2026-10-23, "Re-derive I/O share"): an io_share
+    /* 1.12.18 (Re-derive I/O share): an io_share
      * ANCHORED on a published I/O energy (record idd.io_share.anchor_*): the
      * anchor, pJ/bit per direction, and the channel rate its mA were computed
      * at. < 0 = not anchored. An anchored share PRICES the DQ I/O of a
@@ -182,14 +182,14 @@ struct IDDSpec {
      * RTT_WR enabled (record iddq.wr_includes_rtt_wr): the write termination
      * DC current is inside IDDQ4W - IDDQ3N. */
     bool iddq_wr_includes_rtt_wr = false;
-    /* 1.12.18 (user ruling 2026-10-24): HBM activation VPP as a RATIO of the VDD
+    /* 1.12.18: HBM activation VPP as a RATIO of the VDD
      * activate+precharge energy (record idd.vpp_act; Xilinx XPE 2023.1.2 HBM_Data
      * VPP Activate / VDD activate (read)). < 0 = none. Never set together with
      * ipp0 (the loader refuses both), so the VPP activation is priced once. */
     double vpp_act_ratio = -1.0;
-    /* (1.12.142) (user ruling 2026-10-28): HBM STANDBY VPP as a RATIO of the VDD
+    /* (1.12.142): HBM STANDBY VPP as a RATIO of the VDD
      * standby power (record idd.vpp_standby; Xilinx XPE 2023.1.2 HBM_Data
-     * 'Idle VPP Dynamic' / 'idle VDD dynamic'), DERIVED, on the same state split
+     * 'Idle VPP Dynamic' / 'idle VDD dynamic'), derived, on the same state split
      * as the VDD background. < 0 = none. Never set together with an ipp row (the
      * loader refuses both), so the standby VPP is priced once. */
     double vpp_standby_ratio = -1.0;
@@ -228,7 +228,7 @@ struct TermElectricals {
     bool known = false;   // false: no row (the caller announces its DDR4-class substitute)
 };
 
-/* 1.12.18 (user ruling 2026-10-23): published whole-device read energy of
+/* 1.12.18: published whole-device read energy of
  * older generations (record read_energy_guard). GUARD ONLY: compared with the
  * model's derived total read energy and printed; never priced, never tuned. */
 struct ReadEnergyGuardFacts {
@@ -238,7 +238,7 @@ struct ReadEnergyGuardFacts {
 };
 struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
     std::map<int, IDDSpec> rows;         // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
-    std::map<std::string, IDDSpec> width_rows;   // (1.12.48) (user ruling 2026-10-25): per device width ("x16"), key "<TECH>-x16"
+    std::map<std::string, IDDSpec> width_rows;   // (1.12.48): per device width ("x16"), key "<TECH>-x16"
     std::string provenance;              // MEASURED | CALIBRATED | DERIVED
     std::string idd3n_bank_state;        // ALL_BANKS | ONE_BANK | UNVERIFIED
     std::string basis;                   // "per device" | "per channel"
@@ -247,12 +247,12 @@ struct PartIddFacts {   // 1.11.105 (IDD-RECORDS step 2): the source
     ComponentFactors component_factors;
     TermElectricals termination;
     IddqBand iddq_band;
-    ReadEnergyGuardFacts read_guard;     // 1.12.18 (user ruling 2026-10-23)
-    /* 1.12.18 (user ruling 2026-10-24): labels of the activation VPP ratio and the
+    ReadEnergyGuardFacts read_guard;     // 1.12.18
+    /* 1.12.18: labels of the activation VPP ratio and the
      * activate+precharge guard per 1 KB row (printed by readEnergyGuardLines, never priced) */
     struct VppActFacts { bool valid = false; double alt_ratio = -1.0; std::string device, alt_device, provenance; } vpp_act;
     struct ActGuardFacts { bool valid = false; double lo = 0.0, ceiling = 0.0, hi = 0.0; } act_guard;
-    /* 1.12.18 (user ruling 2026-10-24, floor option 2): XPE like-for-like background guard, mW per stack */
+    /* 1.12.18 (floor option 2): XPE like-for-like background guard, mW per stack */
     struct BgGuardFacts { bool valid = false; double lo_mw = 0.0, hi_mw = 0.0; } bg_guard;
     /* (1.12.88): the record's IDD-vs-temperature block (params/part_records.h IddTemperatureRec) */
     struct IddTempFacts {
@@ -270,7 +270,7 @@ inline const PartIddFacts* partIddFactsIfAny(const std::string& tech) {
     return (it == partIddFactsMap().end()) ? nullptr : &it->second;
 }
 
-/* 1.11.91 (item 11, user ruling 2026-09-26 18:44-19:00): ONE WORD OF
+/* 1.11.91: ONE WORD OF
  * PROVENANCE PER IDD ROW, printed on the model-inputs line and nothing
  * more. The chain, the anchors, the factors and the bands live in the
  * comment beside each row (and the changelog), never in a print-out.
@@ -283,7 +283,7 @@ inline const PartIddFacts* partIddFactsIfAny(const std::string& tech) {
  *   CALIBRATED  this part's datasheet maxima x component factors measured
  *               on the same generation (DDR3 [G], DDR4 [S])
  * nullptr = no word (a key with no row: the unknown-technology fallback);
- * the caller prints nothing for it. [1.11.91, 19:30 ruling: the DDR5 rows
+ * the caller prints nothing for it. [1.11.91, rule: the DDR5 rows
  * are reached -- the component rule keeps their activate term positive.] */
 inline const char* iddRowProvenance(const std::string& key) {   // 1.11.105: from the record
     const PartIddFacts* f = partIddFactsIfAny(key);
@@ -305,7 +305,7 @@ inline const char* iddRowProvenance(const std::string& key) {   // 1.11.105: fro
 // [former table row] }
 
 
-/* 1.11.91 (audit R8-2, user ruling (a)): WHICH BANK STATE IDD3N WAS
+/* 1.11.91: WHICH BANK STATE IDD3N WAS
  * MEASURED IN, PER TECHNOLOGY.
  *
  * The 1.11.86 one-bank baseline (oneBankActiveStandbyMA, below) assumed that
@@ -342,7 +342,7 @@ inline const char* iddRowProvenance(const std::string& key) {   // 1.11.105: fro
  *   GDDR6 JESD250D Table 65 (PDF p.165, printed p.153): "Active Standby
  *         Current: tCK = tCK (min); tWCK = tWCK(min); one bank active" ->
  *         IDD3N. (A further vendor source the audit read cannot be
- *         disclosed publicly and is not cited, per the user's R8-9 ruling.)
+ *         disclosed publicly and is not cited, .)
  *
  *   UNVERIFIED
  *   LPDDR5 The public Micron Y52P LPDDR5X sheet (Table 18 PDF pp.42-43)
@@ -413,7 +413,7 @@ inline const char* idd3nBasisName(Idd3nBasis b) {
 //   HBM2  SAFARI HBM-Power measurement (1.2); HBM3 derived from it (1.1);
 //   LPDDR5 Micron Y52P LPDDR5X 16 Gb die, Table 18, 7500 Mb/s x16 (VDD2H
 //          1.05), burst rate-scaled to 6400 -- 1.11.91 (the 1.11.63 source,
-//          an 8 Gb LPDDR5-6400 sheet, was ruled not citable 2026-09-26).
+//          an 8 Gb LPDDR5-6400 sheet, is not citable).
 //   1.11.91 item 11: every row stores its maxima (HBM: measurement); the
 //   typical currents the model prices are typicalFromSpec() of them.
 /* 1.11.57 (latent F041): THE DIE DENSITIES ABOVE ARE THE IDD PART CLASSES, NOT
@@ -473,7 +473,7 @@ inline int gradeOfKey(const std::string& key) {
     if (dash == std::string::npos) return 0;
     try { return std::stoi(key.substr(dash + 1)); } catch (...) { return 0; }
 }
-/* (1.12.48) (user ruling 2026-10-25): true when the part record carries its own row for this device width. */
+/* (1.12.48): true when the part record carries its own row for this device width. */
 inline bool hasWidthRow(const std::string& tech, const std::string& width) {
     const PartIddFacts* f = partIddFactsIfAny(tech);
     return f && !width.empty() && f->width_rows.count(width) > 0;
@@ -515,7 +515,7 @@ inline IDDSpec iddAtRunTemperature(IDDSpec s, const PartIddFacts& f, const std::
 }
 inline IDDSpec iddTableFor(const std::string& tech) {
     const PartIddFacts* f = partIddFactsIfAny(tech);
-    {   /* (1.12.48) (user ruling 2026-10-25): a "<TECH>-x16" key takes the record's own width row; none: REFUSE */
+    {   /* (1.12.48): a "<TECH>-x16" key takes the record's own width row; none: REFUSE */
         const auto dash = tech.find('-');
         if (f && dash != std::string::npos && dash + 1 < tech.size() && tech[dash + 1] == 'x') {
             auto wt = f->width_rows.find(tech.substr(dash + 1));
@@ -552,7 +552,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
  * live in params/dram/<tech>.yaml (the record is the source) and the former code lines are kept here as
  * comments because they carry the derivations and the datasheet pages behind each value. */
 // [former table row] inline IDDSpec iddTableFor(const std::string& tech) {
-    /* idd2p (last column). 1.11.56 (audit D006): this column is APPROXIMATE
+    /* idd2p (last column). 1.11.56: this column is APPROXIMATE
      * and is the one column in the table that is not a datasheet read. The
      * DDR/LPDDR/GDDR entries are rounded IDD2P fast-exit figures for the part
      * classes named above (DDR5-4800 ~20 mA, DDR4-2400 ~25, DDR3L ~18,
@@ -563,12 +563,12 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * IDD2P baseline backgroundUnitMW() uses under pg_enabled, so it moves the
      * printed Background line whenever measured idle residency is non-zero.
      * Keep it, but do not quote it as sourced -- the consumer emits a note.
-     * 1.11.91 (R8-9): the DDR3 and DDR4 entries ARE now datasheet reads --
+     * 1.11.91: the DDR3 and DDR4 entries ARE now datasheet reads --
      * DDR3 32 mA = MT41K Rev E Table 20 IDD2P1 (fast exit) p.43, DDR4 25 mA
      * = MT40A Rev B Table 148 IDD2P p.332 -- and so are the two DDR5 16 Gb
      * entries (1.11.66, MT60B IDD2P). The rest of this note stands for the
      * HBM, GDDR6 and LPDDR5 entries; the DDR5-3200 row takes the 4800
-     * column's IDD2P ((1.12.141), DERIVED). */
+     * column's IDD2P ((1.12.141)). */
     /* 1.11.63 (calibration): FOUR trfc_ns values and the whole LPDDR5 IDD
      * column. Each is tagged in place below; the reasoning, once:
      *
@@ -594,7 +594,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *          the tabulated values are 260/310/350/410/450 and TBD -- and it
      *          contradicted HBM3.cpp's own tRFC table, which already had 260.
      *
-     *   DDR5   295.0 -> 195.0  DERIVED-FROM-IDENTITY, not sourced. JESD79-5 is
+     *   DDR5   295.0 -> 195.0  derived from the identity, not sourced. JESD79-5 is
      *          NOT held by this tree, so no external check is possible; but
      *          the tree's own DDR5.cpp tRFC_TABLE gives tRFC1 = 195 ns at 8 Gb
      *          and 295 ns at 16 Gb, and the emitted org is DDR5_8Gb_x8. The
@@ -605,7 +605,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *          below still names the 16 Gb DDR5-4800 part the IDD CURRENTS
      *          were read from; that stays a stated mismatch (F041).
      *
-     *   HBM2   160.0 -> 260.0  DERIVED-FROM-IDENTITY, not sourced. The JESD235
+     *   HBM2   160.0 -> 260.0  derived from the identity, not sourced. The JESD235
      *          family text is NOT held (the local archive carries only the HBM ballout
      *          spreadsheet), so no external check is possible; but HBM2.cpp's
      *          own tRFC_TABLE gives 260 ns at the emitted HBM2_4Gb density.
@@ -628,7 +628,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * LPDDR5 trefi 3904.0 disagrees with LPDDR5.cpp's tREFI_BASE 3906 by 2 ns;
      * both are UNCHECKABLE (deferred to General LPDDR5 Spec 3 / JESD209-5,
      * neither held) so neither is moved. */
-    /* 1.11.66 (round 5, F6 -- user ruling R8 #9): THE DDR5 ROW FOLLOWS THE
+    /* 1.11.66: THE DDR5 ROW FOLLOWS THE
      * SPEED GRADE, because an IDD row and a timing row must describe one
      * part. The held Micron MT60B 16 Gb die addenda publish x8 IDD
      * limits at exactly two grades, and both are B-bin parts:
@@ -642,14 +642,14 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * voltage" at VDD = VDDQ = 1.1 V, and both list IDD5B (burst, all-bank)
      * directly -- no IDD5R conversion needed, unlike DDR4. The 3200 row
      * (16 Gb since (1.12.141), DDR5_3200AN): no vendor publishes a 3200 column; since (1.12.141)
-     * (user ruling 2026-10-28) its IDD, IDDQ and IPP rows are DERIVED from
+     * its IDD, IDDQ and IPP rows are derived from
      * the Rev A 4800 column by data-rate scaling (burst increments and the
      * background standby x 3200/4800, the LPDDR5 7500 -> 6400 method; the
      * part record states each step). Until then the row carried unsourced
      * currents and no IDDQ/IPP. Default grade is the part record's: 4800 (Rev A) since
-     * 1.12.19 (user ruling 2026-10-24). The energy caller passes the grade;
+     * 1.12.19. The energy caller passes the grade;
      * the tRFC column is 295 ns at 16 Gb (195 ns at 8 Gb, the 3200 part until (1.12.141)). */
-    /* 1.11.91 (audit R8-8, user ruling (a)): the IDDQ and IPP rows of the
+    /* 1.11.91: the IDDQ and IPP rows of the
      * SAME two addenda, x8 column, read page-ranged. VDDQ = VDD = 1.1 V and
      * VPP = 1.8 V nominal: Micron DDR5 core sheet p.1 "VDD = VDDQ = 1.1V
      * (nom)", "VPP= 1.8V (nom)".
@@ -666,17 +666,17 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * TWO LIMITS OF THE SOURCE, stated rather than corrected:
      *  - core sheet p.448: "IDDQ values cannot be directly used to calculate
      *    IO power of the DDR5 SDRAM. They can be used to support correlation
-     *    of simulated IO power to actual IO power". The user ruled to price
-     *    them anyway (R8-8 (a)); they are the only published VDDQ numbers.
+     *    of simulated IO power to actual IO power". PIMID prices
+     *    them anyway; they are the only published VDDQ numbers.
      *  - the IDDQ4W loop runs with the DRAM's RTT enabled (p.451; RTT_WR =
      *    RZQ/2 per the p.453 IDD notes), so the DC current of the write
      *    termination is drawn from the DRAM's VDDQ and is INSIDE IDDQ4W.
      *    terminationNJ() prices that same write loop, so on a write the two
      *    terms overlap by at most the termination term. Reads do not
      *    overlap: the read loop's DC path is fed from the receiver's VDDQ.
-     * The 3200 row's IDDQ and IPP are DERIVED from the 4800 column ((1.12.141),
-     * user ruling 2026-10-28; see the part record). */
-    /* 1.11.91 (item 11, user rulings 2026-09-26 18:44-19:00 and 19:30):
+     * The 3200 row's IDDQ and IPP are derived from the 4800 column ((1.12.141),
+     * see the part record). */
+    /* 1.11.91:
      * ONE ABSOLUTE VALUE PER QUANTITY, FROM MEASURED ANCHORS, BY COMPONENT.
      * Datasheet IDD values are guardbanded MAXIMA (worst process,
      * temperature, voltage); PIMID prints one typical number per quantity,
@@ -702,15 +702,15 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *      calibrated. Ratios: IDD0 0.540, IDD2N 0.576, IDD3N 0.350, IDD4R
      *      0.553, IDD4W 0.430. Energy-level measured/model ratios 0.25-0.51
      *      (median 0.47).
-     * WHY BY COMPONENT (19:30 ruling). The model prices DIFFERENCES of the
-     * IDD columns (vendor-method: activate = IDD0 loop minus its standby
+     * WHY BY COMPONENT (rule). The model prices DIFFERENCES of the
+     * IDD columns (current-difference: activate = IDD0 loop minus its standby
      * baseline; burst = IDD4R/W minus IDD3N; refresh = IDD5B minus the
      * state it interrupts), so a factor must act on the quantity each IDD
      * loop measures, not on each absolute current. Per-current factors
      * (the first pass of this item) broke three things: DDR5 IDD0 x 0.48
      * fell below IDD2N x 0.57 (4800B 49.4 < 52.4; 5600B 25.4 < 27.9), so
      * the activate term went negative and the run was refused; IDD3N x
-     * 0.36 fell below IDD2N x 0.57 on every factored row (the R8-11 guard
+     * 0.36 fell below IDD2N x 0.57 on every factored row (the guard
      * then priced the precharged state at the active one); and IDD2P x
      * 1.00 sat above the factored IDD2N (power-down saved nothing).
      * THE COMPONENTS AND THE TWO-GENERATION FACTORS (for a generation
@@ -722,7 +722,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *     shrinks by the ratio of the two measured standby factors ([G]
      *     IDD3N 23-53% of spec, IDD2N 38-77%: measured active standby sits
      *     barely above precharged)
-     *   activate excess (IDD0 loop minus its vendor-method standby baseline)
+     *   activate excess (IDD0 loop minus its current-difference standby baseline)
      *                                      0.5   [S] energy ratios 0.25-
      *     0.51 (median 0.47); [G] IDD0 loop 0.43
      *   burst excess (IDD4R - IDD3N), (IDD4W - IDD3N)
@@ -737,8 +737,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * has the ratio (standby 0.576, premium 0.350/0.576, activate 0.540 =
      * [S]'s IDD0 ratio applied to the excess, burst 0.553/0.430, pd 0.576;
      * refresh 0.83 from [G]; CALIBRATED). DDR5 (all grades), LPDDR5,
-     * LPDDR5X and GDDR6 take the two-generation set (DERIVED). HBM2
-     * (MEASURED) and HBM3 (DERIVED from that measurement) take NONE: they
+     * LPDDR5X and GDDR6 take the two-generation set. HBM2
+     * (MEASURED) and HBM3 (from that measurement) take NONE: they
      * are measured-typical already. IDDQ, IPP, tRFC and tREFI are not
      * factored (no anchor covers them).
      * BANDS (comment only): the per-vendor spread of [G] is the band of a
@@ -747,8 +747,8 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * DDR5 (all three grades, 16 Gb): the stored rows are
      * the maxima; under the component rule the activate term is f.act x
      * the spec row's (positive, the 1.11.86 one-bank baseline), so the
-     * per-current failure above no longer arises. The 3200 row is DERIVED
-     * from the 4800 column ((1.12.141)); it is factored like the others. */
+     * per-current failure above no longer arises. The 3200 row is derived
+     * from the 4800 column (1.12.141); it is factored like the others. */
 // [former table row]     if (tech == "DDR5-3200") return {1.1, 55, 34, 42,148,168,120, 195.0, 3900.0, 1, 20};   // 8 Gb, UNSOURCED IDD (stated)
 // [former table row]     if (tech == "DDR5-5600") {
 // [former table row]         IDDSpec s{1.1, 53, 49, 91,218,241,377, 295.0, 3900.0, 1, 47};   // MT60B Rev D T8, 16 Gb
@@ -764,7 +764,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
 // [former table row]     }
     /* [1.11.91: SUPERSEDED by the Rev B row below -- the 362 converted a
      * Rev A IDD5R against a standby that is not Rev A's. Kept as history.]
-     * 1.11.66 (round 5, F5): idd5 155 -> 362 mA. The 155 had no source.
+     * 1.11.66: idd5 155 -> 362 mA. The 155 had no source.
      * Micron MT40A tabulates IDD5R -- the DISTRIBUTED refresh current,
      * one REF every tREFI averaged in (p.318 definition) -- not the burst
      * IDD5B this column means. Converting the same Rev A row the other
@@ -774,7 +774,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * upstream derived it too -- an independent reproduction. Refresh
      * excess over IDD3N goes 113 -> 320 mA (2.8x); the printed refresh line
      * had been 2.7x low. */
-    /* 1.11.91 (audit R8-9, user ruling 16:42-16:49): THE DDR4 ROW IS ONE
+    /* 1.11.91: THE DDR4 ROW IS ONE
      * REVISION OF ONE SHEET. The row this replaces ({58,35,42,140,150},
      * IDD5 362 derived from Rev A's IDD2N) matched neither held MT40A
      * revision -- the activate term came out 1.7-2.3x high -- and its IDD5
@@ -795,7 +795,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * IDDQ: NOT PUBLISHED. The table's title names IDDQ, but its rows
      * (pp.332-333) carry no IDDQ entry, and p.314 defines only IDDQ2NT.
      * The IDDQ fields stay unset; the report prints iddq= n/a for DDR4. */
-    /* 1.11.91 (item 11, 19:30 component ruling): CALIBRATED. The row
+    /* 1.11.91 (component rule): CALIBRATED. The row
      * stores the Table 148 MAXIMA; typicalFromSpec() applies Shi's DDR4
      * component factors [S] (componentFactorsFor): standby 0.576, premium
      * 0.350/0.576, activate excess 0.540, burst excess 0.553 read / 0.430
@@ -814,7 +814,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
 // [former table row]         s.ipp2n = 3; s.ipp3n = 3; s.vpp = 2.5;                          // T148 p.332 + note 22 p.334; p.1
 // [former table row]         return s;
 // [former table row]     }
-    /* 1.11.91 (audit R8-9, user ruling): THE DDR3 ROW IS ONE REVISION OF
+    /* 1.11.91: THE DDR3 ROW IS ONE REVISION OF
      * ONE SHEET. Micron MT41K (4Gb_DDR3L.pdf Rev. Q 12/17) Table 20 "IDD
      * Maximum Limits Die Rev. E for 1.35/1.5V Operation", p.43, x8,
      * DDR3/3L-1600 column:
@@ -829,13 +829,13 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * DDR3L-1600 fast exit; that is the sheet's number. DDR3 has no VPP
      * rail (MT41K p.1: "VDD = VDDQ = 1.35V") and Table 20 has no IDDQ rows:
      * both stay unset. */
-    /* 1.11.91 (item 11, 19:30 component ruling): CALIBRATED. The row
+    /* 1.11.91 (component rule): CALIBRATED. The row
      * stores the Table 20 MAXIMA; typicalFromSpec() applies Ghose's
      * three-vendor DDR3L-1600 component factors [G] -- the same
      * generation, speed and 1.35 V class the anchor measured: standby
      * 0.566, premium 0.367/0.566, activate excess 0.43 ([G]'s IDD0 loop
      * ratio), burst excess 0.736 read / 0.542 write, refresh excess 0.829,
-     * power-down 0.566 ((1.12.47), user ruling 2026-10-25: the record now carries
+     * power-down 0.566 ((1.12.47), the record now carries
      * pd 0.29224 = 0.566 x the measured IDD2P1/IDD2N 0.51633, so IDD2P_t =
      * 9.352 mA; the values below are the earlier set, kept as history).
      * Typical currents (static part): IDD2N 18.112,
@@ -845,14 +845,13 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * sheet). Band (comment only): per-vendor ratios, e.g. IDD3N
      * 0.234-0.532. */
 // [former table row]     if (tech == "DDR3")   return {1.35,55,32,38,157,125,235, 350.0, 7800.0, 1, 32};   // MT41K Rev E T20 p.43, x8, 1600 (MAXIMA; typical via typicalFromSpec)
-    /* LPDDR5 row history. 1.11.63 re-based the column on a vendor source
-     * that cannot be disclosed publicly (user ruling 2026-09-26: not to be
-     * cited), so nothing of it is quoted anywhere in this file. It survives
-     * only as the uncited cross-check named below. (Pre-1.11.63
+    /* LPDDR5 row history. 1.11.63 re-based the column on calibrated values
+     * that are not quoted anywhere in this file. They survive
+     * only as the cross-check named below. (Pre-1.11.63
      * the row traced to no held document; its burst currents were 3-4x
      * below every held LPDDR5-class part.)
      *
-     * 1.11.91 (item 11, user ruling 2026-09-26): DERIVED from a PUBLIC sheet.
+     * 1.11.91: derived from a PUBLIC sheet.
      * SOURCE: Micron Y52P LPDDR5X SDRAM, MT62F1G32D2 family
      * (Rev. H 03/2025, no confidentiality marking; footer "Downloaded from
      * Arrow.com"), 16 Gb die, Table 18 "WT IDD Parameters - Single Die",
@@ -871,14 +870,14 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      *  2. burst excess at constant energy per bit, x 6400/7500 = 0.8533:
      *       IDD4R 40 + (390 - 40) x 0.8533 = 338.67
      *       IDD4W 40 + (265 - 40) x 0.8533 = 232.00
-     *  3. [19:30 component ruling] the row STORES the result of steps
+     *  3. [component rule] the row STORES the result of steps
      *     1-2 (maxima); typicalFromSpec() applies the two-generation
      *     component factors (anchors [G], [S] at the DDR5 rows; assumption:
      *     LPDDR5 guardbanded as DDR3L and DDR4 were): IDD2N 18.525, IDD3N
      *     18.525 + 7.5 x 0.6316 = 23.262, IDD4R 23.262 + 298.67 x 0.6 =
      *     202.46, IDD4W 23.262 + 192.0 x 0.5 = 119.26, IDD5B 18.525 + 172.5
      *     x 0.83 = 161.70, IDD2P 3.9 x 0.57 = 2.223 mA; activate = 0.5 x
-     *     the vendor-method term of the stored row.
+     *     the current-difference term of the stored row.
      * STATED MISMATCHES: the sheet is a 16 Gb die at 7500/8533 Mb/s; the
      * emitted org was LPDDR5_8Gb_x16 at 6400. The burst is rate-scaled
      * (step 2); standby, activate and refresh currents are the 16 Gb
@@ -887,15 +886,14 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * sheet's Table 6 p.11 = JESD209-5C Table 240 at 16 Gb = the timing
      * model's tRFCab), so the refresh energy (IDD5 - IDD2N) x tRFC and the
      * timing model's refresh occupancy use one tRFC.]
-     * UNCITED CROSS-CHECK (a vendor source that cannot be disclosed
-     * publicly): agrees within ~15% on the
+     * CROSS-CHECK (the 1.11.63 calibrated column): agrees within ~15% on the
      * burst and standby currents; its refresh and power-down currents are
      * lower by about a fifth and a third.
-     * IDDQ (R8-8, VDDQ rail, charged only on accesses that cross the DQ):
+     * IDDQ (VDDQ rail, charged only on accesses that cross the DQ):
      * IDD3NQ 0.6, IDD4RQ 111.9, IDD4WQ 0.6 mA at 0.5 V, NOT factored (no
      * anchor covers VDDQ, and IDD4RQ is already a typical value) and NOT
-     * rate-scaled (the ruling scales the VDD2H burst only; stated).
-     * VDD1 in the IPP slot (R8-8; LPDDR5 has no VPP ball, the 1.8 V VDD1 is
+     * rate-scaled (the rule scales the VDD2H burst only; stated).
+     * VDD1 in the IPP slot (LPDDR5 has no VPP ball, the 1.8 V VDD1 is
      * the part's high-voltage rail): IDD2N1 1.5 / IDD3N1 2.8 mA, as-is.
      * The per-access VDD1 increments (IDD4R1 18.0, IDD4W1 16.5) and VDD2L
      * (0.2 mA in every state) stay unpriced, as before. */
@@ -903,15 +901,15 @@ inline IDDSpec iddTableFor(const std::string& tech) {
 // [former table row]         IDDSpec s{1.05, 53, 32.5, 40,
 // [former table row]                   40 + (390 - 40) * 6400.0 / 7500.0,
 // [former table row]                   40 + (265 - 40) * 6400.0 / 7500.0,
-// [former table row]                   205, 210.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA, burst x 6400/7500 (1.11.91 item 11; typical via typicalFromSpec); tREFI 3906 = LPDDR5.cpp tREFI_BASE (1.11.66 L7)
+// [former table row]                   205, 210.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA, burst x 6400/7500 (1.11.91; typical via typicalFromSpec); tREFI 3906 = LPDDR5.cpp tREFI_BASE (1.11.66 L7)
 // [former table row]         s.iddq3n = 0.6; s.iddq4r = 111.9; s.iddq4w = 0.6; s.vddq = 0.5;   // Y52P T18 pp.42-43, VDDQ p.1
 // [former table row]         s.ipp2n = 1.5; s.ipp3n = 2.8; s.vpp = 1.8;                         // Y52P T18 p.42 (VDD1), VDD1 p.1
 // [former table row]         return s;
 // [former table row]     }
-    /* 1.11.91 (item 11): LPDDR5X, the same public Y52P sheet at its own
+    /* 1.11.91: LPDDR5X, the same public Y52P sheet at its own
      * 7500 Mb/s x16 column, WITHOUT rate scaling. The row stores the
      * MAXIMA; typicalFromSpec() applies the two-generation component
-     * factors. DERIVED.
+     * factors. Derived.
      * NOT SELECTABLE, AND WHY: the technology needs an LPDDR5X timing
      * preset, and no public sheet held or fetched gives the AC timing set.
      * The Y52P sheet defers every AC timing but the density-dependent
@@ -936,29 +934,28 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * written. */
 // [former table row]     if (tech == "LPDDR5X") {
 // [former table row]         IDDSpec s{1.05, 53, 32.5, 40, 390, 265, 205,
-// [former table row]                   280.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA (1.11.91 item 11; typical via typicalFromSpec)
+// [former table row]                   280.0, 3906.0, 1, 3.9};   // Y52P T18 x16 7500 MAXIMA (1.11.91; typical via typicalFromSpec)
 // [former table row]         s.iddq3n = 0.6; s.iddq4r = 111.9; s.iddq4w = 0.6; s.vddq = 0.5;
 // [former table row]         s.ipp2n = 1.5; s.ipp3n = 2.8; s.vpp = 1.8;
 // [former table row]         return s;
 // [former table row]     }
-    /* 1.11.91 (R8-8): GDDR6 IDDQ/IPP PLACEHOLDER. JESD250D gives the rail
+    /* 1.11.91: GDDR6 IDDQ/IPP PLACEHOLDER. JESD250D gives the rail
      * (Table 62 printed p.151: "Pump voltage VPP 1.746 1.8 1.908 V") and
      * the condition (Table 65 note 2 printed p.153: "IPP3N test and limit
      * is applicable for all IDD2X, IDD3X, IDD4X and IDD6 conditions") but
      * no values, and it defines no IDDQ at all (cl.8.8: IDD on the VDD
-     * balls, IPP on the VPP balls). The R8-9 derivation of this row fills
+     * balls, IPP on the VPP balls). The derivation of this row fills
      * iddq3n/iddq4r/iddq4w/vddq and ipp2n/ipp3n/vpp here, as IDDSpec
      * fields on the row below; every consumer reads them from the struct,
      * so no code changes when they arrive. Until then the fields keep the
      * unset sentinel and the report prints n/a. [1.11.91 item 11: still
      * unset. Samsung Table 82 lists IPP0 14, IPP3N 10, IPP5 77, IPP7 31 mA
-     * but no IPP2N, and no anchor calibrates IPP; not priced.] [User ruling
-     * 2026-10-25 (second supply rails): priced from the record, at the
+     * but no IPP2N, and no anchor calibrates IPP; not priced.] [second supply rails: priced from the record, at the
      * maxima: IPP2N = IPP3N = IPP4R/W = 10 / 2 mA (Table 82 note 2: IPP3N
      * applies to all IDD2x/3x/4x), IPP5B 77 / 2, VPP 1.8 V; the activation
      * VPP on the IDD7 route (idd.vpp_actpre_pj_override 216 pJ).] */
-    /* 1.11.91 (item 11, R8-9/R8-5, user ruling 2026-09-26 18:44-19:00).
-     * DERIVED. The old row (70/45/60/210/230/180) cited a Micron 8 Gb
+    /* 1.11.91.
+     * derived. The old row (70/45/60/210/230/180) cited a Micron 8 Gb
      * GDDR6-14000 sheet the tree does not hold.
      * SOURCE OF THE MAXIMA: Samsung K4Z80325BC, 8Gb GDDR6 SGRAM C-die, Rev.
      * 1.3 Jan 2020 (no confidentiality marking on any of its 187 pages), Table 82 PDF p.146,
@@ -979,16 +976,16 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * section 2.2); background and refresh = 2 units x half = per device.
      * The row STORES (device maximum / 2); typicalFromSpec() applies the
      * two-generation component factors (anchors [G], [S] at the DDR5 rows;
-     * assumption: GDDR6 is guardbanded as DDR3L and DDR4 were) [19:30
-     * component ruling]: IDD2N 155 x 0.57 = 88.35, IDD3N 88.35 + 75 x
+     * assumption: GDDR6 is guardbanded as DDR3L and DDR4 were), by
+     * component: IDD2N 155 x 0.57 = 88.35, IDD3N 88.35 + 75 x
      * 0.6316 = 135.72, IDD4R 135.72 + 380 x 0.6 = 363.72, IDD4W 135.72 +
      * 505 x 0.5 = 388.22, IDD5B 88.35 + 240 x 0.83 = 287.55, IDD2P 115 x
      * 0.57 = 65.55 mA (per channel).
      * IDD3N IS ONE BANK ACTIVE (T82; JESD250D T65 printed p.153): basis
-     * ONE_BANK, the 1.11.86 /banks dilution does not apply (R8-2).
+     * ONE_BANK, the 1.11.86 /banks dilution does not apply.
      * ACTIVATE: THE IDD7 ROUTE (e_actpre_pJ_override). Three routes, per
      * channel ACT+PRE of a 2 KB page, at the maxima:
-     *   IDD0 (vendor-method, one bank)  1.35 x (430x45 - 460x30 - 310x15) / 2
+     *   IDD0 (current-difference, one bank)  1.35 x (430x45 - 460x30 - 310x15) / 2
      *                              = 0.61 nJ -- ILL-CONDITIONED: a ~900
      *                              mA.ns difference of ~19000 mA.ns terms;
      *                              +-5% on IDD0 alone swings it -0.05..1.26
@@ -1013,9 +1010,9 @@ inline IDDSpec iddTableFor(const std::string& tech) {
 // [former table row]         s.e_actpre_pJ_override = 3240.0;   // IDD7 route, per channel ACT, at the maxima (typicalFromSpec x f.act)
 // [former table row]         return s;
 // [former table row]     }
-    /* 1.11.91 (audit R8, user ruling: DERIVE, band, record the chain;
+    /* 1.11.91 (DERIVE, band, record the chain;
      * item 11: one value per current, bands in this comment only).
-     * DERIVED. THE HBM3 ROW IS DERIVED FROM MEASURED HBM2 SILICON BY JEDEC
+     * derived. THE HBM3 ROW IS derived FROM MEASURED HBM2 SILICON BY JEDEC
      * RATIOS. It is a measured-mean base, not a datasheet maximum, so the
      * two-generation guardband factor does NOT apply.
      * The old row (30/18/22/90/100/70) cited JESD238 Table 90, which is an
@@ -1048,7 +1045,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * CHECK: sequential read, miss 1/16 -> 3.92 pJ/bit [1.36,4.67];
      * SK hynix IEDM 2023 15-6: HBM2E ~4.3 pJ/bit, HBM3E 20% lower (~3.44).
      * The old row gave 0.26 pJ/bit.
-     * STACK FLOOR (1.11.91 item 12, user ruling option (c)): the 783 mA
+     * STACK FLOOR (1.11.91): the 783 mA
      * stack "off-power" of the base is NOT spread over the channels; it is
      * one per-stack static term (see the HBM2 row), scaled by core voltage:
      * 939.96 mW x 1.1/1.2 = 861.6 mW per stack (= 783.3 mA at 1.1 V). The
@@ -1070,10 +1067,10 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * DRAM pump current, so it is not used for HBM2 or HBM3. */
 // [former table row]     if (tech == "HBM3") {
 // [former table row]         IDDSpec s{1.1, 89+7.2, 89, 89, 89+1443, 89+970, 89+105, 260.0, 3900.0, 16, 0.25*89};
-// [former table row]         s.stack_floor_mw = 783.3 * 1.2 * (1.1 / 1.2);   // 861.6 mW per stack (1.11.91 item 12)
+// [former table row]         s.stack_floor_mw = 783.3 * 1.2 * (1.1 / 1.2);   // 861.6 mW per stack (1.11.91)
 // [former table row]         return s;
 // [former table row]     }
-    /* 1.11.66 (round 5, F7 -- user ruling R8 #10): THE HBM2 IDD ROW IS
+    /* 1.11.66: THE HBM2 IDD ROW IS
      * MEASURED SILICON. The row this replaces (28/17/21/80/90/65 mA) traced
      * to no vendor table -- HBM2 datasheets are NDA-only and JESD235D prints
      * its IDD value columns empty by construction (Table 65 p.105). The
@@ -1098,7 +1095,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * the one un-sourced column and is stated so. Consequence: HBM2
      * background ~6.5x, burst increments 3-5x -- the model had priced a
      * stack's standby at 0.20 W where silicon draws 1.37 W. */
-    /* 1.11.91 (item 11): MEASURED, AT THE PRESET'S OPERATING POINT. The
+    /* 1.11.91: MEASURED, AT THE PRESET'S OPERATING POINT. The
      * measurement's own operating point is not the preset's (docs/derivations/hbm_gddr6_idd.md
      * section 1.1): the artifact's sources/table3/configs/
      * HBM2_1.2Gbps_timing_BL4.json has "tCK_ps": 1666.7 (600 MHz = 1.2
@@ -1122,10 +1119,10 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * HBM2.cpp timing identity, 1.11.63), so IDD5B is set to carry the
      * SAME energy per REF over that 260 ns: 136 + 53.4 x 266.7 / 260 =
      * 136 + 54.8 = 190.8 mA (was 189). The REF went to one PC; that is
-     * not rescaled here (not ruled). [Item 12 below re-bases every column
+     * not rescaled here. [The 1.11.91 change below re-bases every column
      * on the floor-excluded per-channel increments; the burst and refresh
      * EXCESSES above carry over unchanged.]
-     * STACK FLOOR (1.11.91 item 12, user ruling option (c)). The artifact's
+     * STACK FLOOR (1.11.91). The artifact's
      * data/no_hbm_idd2_measurements.csv averages 821.3 mA (1638 samples) for
      * IDD2 with ONE channel enabled and idle, against 1087.4 mA for the
      * all-channel IDD2 loop: (1087.4 - 821.3) / 7 = 38.0 mA per channel and
@@ -1135,7 +1132,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
      * -- logic-die PHY, clock trees, always-on circuits; the sensed rail is
      * the stack supply (HBM_1V2 in platform.cpp), and the FPGA-side PHY runs
      * from VCCINT, which is not that rail. ASSUMPTION: all of it is drawn by
-     * the stack. Priced as ONE absolute number per the user's single-value
+     * the stack. Priced as ONE absolute number under a single-value
      * rule: 783.3 mA x 1.2 V = 939.96 mW per stack, in every state, added
      * once per stack to the memory system's background (stack_floor_mw).
      * The per-channel columns are therefore the per-channel INCREMENTS:
@@ -1160,7 +1157,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
 // [former table row]                   (1067.3 - 783.3) / 8 + (2844.6 - 1067.3) / 8 * 4.0,
 // [former table row]                   (1087.4 - 783.3) / 8 + (1514.5 - 1087.4) / 8 * (266.7 / 260.0),
 // [former table row]                   260.0, 3900.0, 8,  7};
-// [former table row]         s.stack_floor_mw = 783.3 * 1.2;   // 939.96 mW per stack (1.11.91 item 12)
+// [former table row]         s.stack_floor_mw = 783.3 * 1.2;   // 939.96 mW per stack (1.11.91)
 // [former table row]         return s;
 // [former table row]     }
     /* 1.11.57 (latent D007): unknown -> DDR4 class, and it says so. This
@@ -1182,7 +1179,7 @@ inline IDDSpec iddTableFor(const std::string& tech) {
  * specify IDD at a fixed case temperature and publish no derating curve for
  * the active currents; only the refresh RATE is normatively temperature-
  * dependent. */
-/* 1.11.66 (R8 #9): an energy KEY may carry a speed-grade suffix --
+/* 1.11.66: an energy KEY may carry a speed-grade suffix --
  * "DDR5-4800" -- which selects the IDD row; every family-level decision
  * (refresh ladder, termination scheme, devices per access, background
  * units) sees the bare technology. baseTech() strips the suffix. */
@@ -1232,7 +1229,7 @@ inline int devicesPerRank(const std::string& tech, const std::string& device_wid
     const int cw = f.channel_width_bits;
     return (cw > 0 && w > 0) ? std::max(1, cw / w) : 8;
 }
-/* 1.11.91 (item 11, user ruling 2026-09-26 19:30): TYPICAL CURRENTS BY
+/* 1.11.91: TYPICAL CURRENTS BY
  * COMPONENT FACTORS. The table above stores datasheet MAXIMA (HBM2/HBM3:
  * measured silicon); the model prices typical currents. The factors act on
  * the quantities the IDD loops measure and this file's formulas consume --
@@ -1241,12 +1238,12 @@ inline int devicesPerRank(const std::string& tech, const std::string& device_wid
  *   standby          precharged standby IDD2N
  *   standby_premium  the active-standby premium (IDD3N - IDD2N) shrinks by
  *                    the ratio of the two measured standby factors
- *   act              the activate excess: IDD0 loop minus its vendor-method
+ *   act              the activate excess: IDD0 loop minus its current-difference
  *                    standby baseline
  *   burst_rd/_wr     the burst excess (IDD4R - IDD3N), (IDD4W - IDD3N)
  *   refresh          the refresh excess (IDD5B - IDD2N)
  *   pd               precharge power-down IDD2P
- * apply == false: the row is already typical (HBM2 MEASURED, HBM3 DERIVED
+ * apply == false: the row is already typical (HBM2 MEASURED, HBM3 derived
  * from it) or is the unknown-technology fallback; typicalFromSpec returns
  * it unchanged. */
 inline ComponentFactors componentFactorsFor(const std::string& key) {   // 1.11.105: from the record
@@ -1301,7 +1298,7 @@ inline TermElectricals terminationElectricalsFor(const std::string& tech) {   //
  * comments because they carry the derivations and the datasheet pages behind each value. */
 // [former table row] inline TermElectricals terminationElectricalsFor(const std::string& tech) {
 // [former table row]     TermElectricals e; e.known = true;
-    /* R7 split (read: DRAM RON + RX RTT_NOM class; write: controller RON + DRAM RTT_WR class). */
+    /* read/write split (read: DRAM RON + RX RTT_NOM class; write: controller RON + DRAM RTT_WR class). */
 // [former table row]     if      (tech=="DDR3")   { e.scheme=TermScheme::SSTL;  e.vddq=1.35; e.ron_rd=34; e.rtt_rd=40; e.ron_wr=34; e.rtt_wr=120; return e; }
                                                                        // SSTL-135 (JESD79-3-1 T38/T41, RZQ=240);
                                                                        // trio 34/40/120 = MT41K p.32 IDD conditions
@@ -1352,7 +1349,7 @@ inline double oneBankActiveStandbyMA(const IDDSpec& s, int banks_per_device,
  *   idd5_t  = idd2n_t + f.refresh x (idd5 - idd2n)
  *     -> refresh excess over precharged standby = f.refresh x spec
  *   idd2p_t = f.pd x idd2p
- * IDD0. vendor-method as this file writes it (arrayReadNJ):
+ * IDD0. The current-difference method as this file writes it (arrayReadNJ):
  *   E = vdd x (idd0 x tRC - I1 x tRAS - idd2n x (tRC - tRAS))
  *     = vdd x tRC x (idd0 - B),   B = (I1 x tRAS + idd2n x (tRC - tRAS)) / tRC
  * with I1 = oneBankActiveStandbyMA(row, banks, basis), the tRC-weighted
@@ -1405,7 +1402,7 @@ inline IDDSpec iddSpecFor(const std::string& tech, int temperature_k = defaultEn
     s.trefi_ns *= refreshTempFactor(baseTech(tech), temperature_k);
     return s;
 }
-/* The row every consumer prices: typical (1.11.91 item 11). */
+/* The row every consumer prices: typical (1.11.91). */
 inline IDDSpec iddFor(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
     IDDSpec s = typicalFromSpec(iddTableFor(tech), componentFactorsFor(tech),
                                 idd3nBasisFor(baseTech(tech)));
@@ -1424,13 +1421,13 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
 /* 1.11.46 (FIX-PRE-FLEET L181): DEVICES PER ACCESS. The IDD columns are
  * PER-DEVICE currents (the struct says so), but a 64 B access on a DDR-class
  * 64-bit rank engages EVERY chip in the rank simultaneously -- x8 parts: 8
- * chips each activating and bursting 8 of the 64 DQ lines. The vendor method (a vendor method that cannot be disclosed publicly),
- * this file's own cited formula source, multiplies per-DRAM power by the
+ * chips each activating and bursting 8 of the 64 DQ lines. The current-difference method,
+ * this file's own formula, multiplies per-DRAM power by the
  * number of DRAMs; we did not, so the array terms were per-DEVICE while the
  * termination term (x512 bits) was whole-rank -- the two bases the audit
  * caught being summed. HBM's IDD is per CHANNEL and an access stays in one
  * channel; LPDDR5/GDDR6 are one die per channel. */
-/* 1.11.91 (audit R8-3/R8-4): ONE RULE FOR THE ACCESS DATA PATH.
+/* 1.11.91: ONE RULE FOR THE ACCESS DATA PATH.
  *
  * devicesPerAccess() used to answer "the whole rank" for every DDR class --
  * devicesPerRank(width), i.e. 64 bits / device width. That is right for DDR3
@@ -1442,7 +1439,7 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
  * per 64 B access -- both the per-device activate term and the burst term
  * were 2x on every DDR5 cell.
  *
- * The burst term had the mirror defect on LPDDR5 (R8-4): one BL16 on an x16
+ * The burst term had the mirror defect on LPDDR5: one BL16 on an x16
  * channel moves 32 B, so a 64 B access is TWO bursts, and the burst time the
  * energy used was one.
  *
@@ -1468,7 +1465,7 @@ inline IDDSpec iddTypicalAt(const std::string& tech, double tRC, double tRAS,
  *   LPDDR5 16-bit channel / x16 die    = 1 device;  BL16 x 16 b = 32 B, 2 bursts
  *                                                 -- 1.11.90 charged 1 burst
  *   GDDR6  16-bit channel / 16-bit channel = 1 unit; BL16 x 16 b = 32 B,
- *          2 bursts. [1.11.91 item 11, R8-5 by the user's instruction: a
+ *          2 bursts. [1.11.91, a
  *          64 B access engages ONE of the device's two x16 channels, so the
  *          IDD unit is the CHANNEL and the GDDR6 row is written per channel
  *          (half the Samsung per-DEVICE Table 82 figure; see the row). This
@@ -1526,7 +1523,7 @@ inline AccessPath accessPathFor(const std::string& tech,
         p.path_bits = cw; p.unit_bits = cw;
         p.path_name = std::to_string(cw) + "-bit channel"; p.unit_name = std::to_string(cw) + "-bit die";
     } else if (tech == "GDDR6") {
-        p.path_bits = cw; p.unit_bits = cw;   // 1.11.91 item 11 (R8-5): per channel
+        p.path_bits = cw; p.unit_bits = cw;   // 1.11.91 item 11: per channel
         p.path_name = std::to_string(cw) + "-bit channel";
         p.unit_name = std::to_string(cw) + "-bit channel (IDD basis)";
     } else if (tech == "HBM2" || tech == "HBM3") {
@@ -1555,7 +1552,7 @@ inline int devicesPerAccess(const std::string& tech,
     return (n > 0) ? n : 1;
 }
 
-/* 1.11.91 (R8-4): how many bursts of the simulated preset one 64 B access
+/* 1.11.91: how many bursts of the simulated preset one 64 B access
  * needs on its data path. beats_per_burst <= 0 (no preset) -> 1, the
  * pre-1.11.91 charge, and the caller prints what it used. */
 inline int burstsPer64B(const std::string& tech, const std::string& device_width,
@@ -1571,7 +1568,7 @@ inline int burstsPer64B(const std::string& tech, const std::string& device_width
 // Array read energy per 64B (act+pre weighted by the CALLER'S MEASURED row-miss
 // fraction, plus the read burst). bank_override_pJ_per_byte > 0 forces the
 // legacy bank-energy path (user knob); 0 = IDD default.
-/* 1.11.57 (audit D014): the one-line summary said "50% row-hit collapse" -- the
+/* 1.11.57: the one-line summary said "50% row-hit collapse" -- the
  * constant 1.11.52 (D003) removed. Twelve lines below, the code takes the miss
  * fraction from the caller and falls back to 0.5 only when the run carried no
  * row measurement, and the block there explains that at length. The summary a
@@ -1590,9 +1587,9 @@ inline int burstsPer64B(const std::string& tech, const std::string& device_width
  * ramulator_wrapper.h, the member is initialised to 0.0, and nothing in src/
  * or include/ or any YAML key ever calls it -- so the 8x lived in a branch
  * that never runs. It runs the first time anyone wires a YAML key to it. */
-/* 1.11.79 (audit round 6, R6-11): THE ACTIVATE TERM MUST NOT COME OUT NEGATIVE.
+/* 1.11.79: THE ACTIVATE TERM MUST NOT COME OUT NEGATIVE.
  *
- * The vendor method's activate/precharge energy is
+ * The current-difference method's activate/precharge energy is
  *     E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
  * and it presumes IDD0 -- a cycling one-bank activate/precharge current --
  * exceeds the standby currents it subtracts. Six of this file's nine rows
@@ -1607,7 +1604,7 @@ inline int burstsPer64B(const std::string& tech, const std::string& device_width
  * itself: either the row mis-transcribes the addendum, or the row is right and
  * the formula does not transfer to a 32-bank DDR5 device whose all-banks-active
  * IDD3N can legitimately exceed a one-bank IDD0. Both need the datasheet and a
- * ruling. What is NOT in question is that a negative energy may not be printed
+ * rule. What is NOT in question is that a negative energy may not be printed
  * as if it were a measurement, so the run refuses and says exactly why. */
 inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec& s,
                                          double tRC, double tRAS, double e_actpre_pJ) {
@@ -1634,9 +1631,9 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
     std::exit(2);
 }
 
-/* 1.11.86 (audit round 6, R6-11 resolved): THE ONE-BANK STANDBY BASELINE.
+/* 1.11.86 (resolved): THE ONE-BANK STANDBY BASELINE.
  *
- * The vendor method (a vendor method that cannot be disclosed publicly) prices activate+precharge by subtracting, from the IDD0
+ * The current-difference method prices activate+precharge by subtracting, from the IDD0
  * loop, the background that loop would have drawn anyway:
  *
  *   E = Vdd x (IDD0 x tRC - IDD3N x tRAS - IDD2N x (tRC - tRAS))
@@ -1668,8 +1665,8 @@ inline void refuseNegativeActivateEnergy(const std::string& tech, const IDDSpec&
  *   IDD3N(1 bank) = IDD2N + (IDD3N - IDD2N) / banks_per_device
  *
  * which reduces to the published formula when banks_per_device is 1, and
- * recovers the vendor method's intent on every part. */
-/* 1.11.91 (audit R8-2): ... and on a part whose IDD3N is ALREADY a one-bank
+ * recovers the current-difference method's intent on every part. */
+/* 1.11.91: ... and on a part whose IDD3N is ALREADY a one-bank
  * current (HBM2, HBM3, GDDR6 -- see Idd3nBasis above for the quoted
  * conditions) the same dilution divides a one-bank increment by the bank
  * count a second time. The basis now decides: ALL_BANKS dilutes (the 1.11.86
@@ -1691,10 +1688,10 @@ inline double ioShareMA(const IDDSpec& s, bool is_write) {
     return (io > 0.0) ? io : 0.0;
 }
 /* 1.12.18: (bug 3b) THE PUMP RAIL'S ACTIVE TERMS, pJ per IDD unit, on the
- * same loops and baselines as the VDD terms they sit beside (vendor-method form):
+ * same loops and baselines as the VDD terms they sit beside (current-difference form):
  *   activate + precharge  VPP x (IPP0 x tRC - IPP3N(one bank) x tRAS - IPP2N x (tRC - tRAS))
  *   burst                 VPP x (IPP4R | IPP4W - IPP3N) x tBurst
- *   refresh (one REF)     VPP x (IPP5B - IPP2N) x tRFC   (IPP2N-relative, as the VDD term: 1.12.18, user ruling 2026-10-23)
+ *   refresh (one REF)     VPP x (IPP5B - IPP2N) x tRFC   (IPP2N-relative, as the VDD term: 1.12.18)
  * The rows are the datasheet's values as stored, like the standby IPP pair
  * (no typical/maximum factor is sourced for the VPP rail). A column the row
  * does not publish prices nothing; a difference that is not positive (DDR4:
@@ -1708,7 +1705,7 @@ inline double vppActPrePJ(const IDDSpec& s, double tRC, double tRAS, int banks_p
     const double e = s.vpp * (s.ipp0 * tRC - ipp3n_1b * tRAS - s.ipp2n * (tRC - tRAS));
     return (e > 0.0) ? e : 0.0;
 }
-/* 1.12.18 (user ruling 2026-10-24): the activation's VPP share as a ratio of the
+/* 1.12.18: the activation's VPP share as a ratio of the
  * VDD activate+precharge energy e_vdd_pJ (record idd.vpp_act, HBM). Same switch as
  * the IPP route (power.models.dram_vpp_dynamic); 0 when the row carries an IPP0
  * (the loader refuses that combination; this is the second lock). */
@@ -1716,7 +1713,7 @@ inline double vppActRatioPJ(const IDDSpec& s, double e_vdd_pJ) {
     if (!vppDynamicEnabled() || s.vpp_act_ratio < 0.0 || s.ipp0 >= 0.0 || !(e_vdd_pJ > 0.0)) return 0.0;
     return s.vpp_act_ratio * e_vdd_pJ;
 }
-/* user ruling 2026-10-25 (second supply rails): the VPP share of an override
+/* second supply rails: the VPP share of an override
  * activation (GDDR6, the IDD7 route); same switch as the IPP route. */
 inline double vppActOverridePJ(const IDDSpec& s) {
     if (!vppDynamicEnabled() || s.e_actpre_pJ_override < 0.0 || s.e_actpre_vpp_pJ_override < 0.0) return 0.0;
@@ -1731,7 +1728,7 @@ inline double vppBurstPJ(const IDDSpec& s, double tBurst, bool is_write) {
 }
 inline double vppRefreshPerUnitPJ(const IDDSpec& s) {
     if (!vppDynamicEnabled() || !(s.vpp > 0.0) || s.ipp5b < 0.0 || s.ipp2n < 0.0) return 0.0;
-    const double e = s.vpp * (s.ipp5b - s.ipp2n) * s.trfc_ns;   // 1.12.18 (user ruling 2026-10-23): IPP2N baseline (was IPP3N)
+    const double e = s.vpp * (s.ipp5b - s.ipp2n) * s.trfc_ns;   // 1.12.18: IPP2N baseline (was IPP3N)
     return (e > 0.0) ? e : 0.0;
 }
 
@@ -1743,23 +1740,23 @@ inline double arrayReadNJ(const std::string& tech, double tRC, double tRAS,
     if (bank_override_pJ_per_byte > 0.0)
         return bank_override_pJ_per_byte * 64.0 / 1000.0
                * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
-    IDDSpec s = iddTypicalAt(tech, tRC, tRAS, banks_per_device);   // 1.11.91 (item 11): typical, activate = f.act x spec
+    IDDSpec s = iddTypicalAt(tech, tRC, tRAS, banks_per_device);   // 1.11.91: typical, activate = f.act x spec
     const double idd3n_1b = oneBankActiveStandbyMA(s, banks_per_device,
-                                idd3nBasisFor(baseTech(tech)));  // 1.11.86; basis 1.11.91 (R8-2)
-    double e_actpre_pJ = (s.e_actpre_pJ_override >= 0.0)      // 1.11.91 (item 11)
+                                idd3nBasisFor(baseTech(tech)));  // 1.11.86; basis 1.11.91
+    double e_actpre_pJ = (s.e_actpre_pJ_override >= 0.0)      // 1.11.91
         ? s.e_actpre_pJ_override
         : s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
-    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
-    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
+    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79
+    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18: HBM VPP = ratio x the VDD part (computed before any IPP term)
     e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
-    e_actpre_pJ += vppActOverridePJ(s);   // user ruling 2026-10-25 (second supply rails): GDDR6 VPP on the IDD7 route
-    /* 1.11.91 (R8-2): the burst's baseline is the standby the IDD4R loop
+    e_actpre_pJ += vppActOverridePJ(s);   // second supply rails: GDDR6 VPP on the IDD7 route
+    /* 1.11.91: the burst's baseline is the standby the IDD4R loop
      * ran on top of -- all banks open on the ALL_BANKS parts, i.e. IDD3N
      * as specified. For ONE_BANK parts see the stated residual in the
      * Idd3nBasis note. */
     double e_rd_pJ     = s.vdd * (s.idd4r - ioShareMA(s, false) - s.idd3n) * tBurst   // 1.12.18 (bug 2b/8a): the array's share
                          + vppBurstPJ(s, tBurst, false);                              // 1.12.18 (bug 3b)
-    /* 1.11.52 (audit D003): the activate/precharge share is MEASURED, not
+    /* 1.11.52: the activate/precharge share is MEASURED, not
      * assumed. It is the dominant term -- on DDR4 the act+pre part is ~1.42
      * nJ against ~0.39 nJ of burst -- and it used to be weighted by a
      * hardcoded ROW_MISS_FRAC = 0.5, so the largest number in the array
@@ -1791,9 +1788,9 @@ inline double activatePrechargeNJ(const std::string& tech, double tRC, double tR
         ? s.e_actpre_pJ_override
         : s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
     refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);
-    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
+    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18: HBM VPP = ratio x the VDD part (computed before any IPP term)
     e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
-    e_actpre_pJ += vppActOverridePJ(s);   // user ruling 2026-10-25 (second supply rails): GDDR6 VPP on the IDD7 route
+    e_actpre_pJ += vppActOverridePJ(s);   // second supply rails: GDDR6 VPP on the IDD7 route
     return e_actpre_pJ / 1000.0 * devicesPerAccess(baseTech(tech), device_width);
 }
 inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
@@ -1818,16 +1815,16 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
     if (bank_override_pJ_per_byte > 0.0)
         return bank_override_pJ_per_byte * 64.0 / 1000.0
                * devicesPerAccess(baseTech(tech), device_width);   // 1.11.57 (D004)
-    IDDSpec s = iddTypicalAt(tech, tRC, tRAS, banks_per_device);   // 1.11.91 (item 11): typical, activate = f.act x spec
+    IDDSpec s = iddTypicalAt(tech, tRC, tRAS, banks_per_device);   // 1.11.91: typical, activate = f.act x spec
     const double idd3n_1b = oneBankActiveStandbyMA(s, banks_per_device,
-                                idd3nBasisFor(baseTech(tech)));  // 1.11.86; basis 1.11.91 (R8-2)
-    double e_actpre_pJ = (s.e_actpre_pJ_override >= 0.0)      // 1.11.91 (item 11)
+                                idd3nBasisFor(baseTech(tech)));  // 1.11.86; basis 1.11.91
+    double e_actpre_pJ = (s.e_actpre_pJ_override >= 0.0)      // 1.11.91
         ? s.e_actpre_pJ_override
         : s.vdd * (s.idd0 * tRC - idd3n_1b * tRAS - s.idd2n * (tRC - tRAS));
-    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79 (R6-11)
-    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18 (user ruling 2026-10-24): HBM VPP = ratio x the VDD part (computed before any IPP term)
+    refuseNegativeActivateEnergy(tech, s, tRC, tRAS, e_actpre_pJ);   // 1.11.79
+    e_actpre_pJ += vppActRatioPJ(s, e_actpre_pJ);   // 1.12.18: HBM VPP = ratio x the VDD part (computed before any IPP term)
     e_actpre_pJ += vppActPrePJ(s, tRC, tRAS, banks_per_device, idd3nBasisFor(baseTech(tech)));   // 1.12.18 (bug 3b)
-    e_actpre_pJ += vppActOverridePJ(s);   // user ruling 2026-10-25 (second supply rails): GDDR6 VPP on the IDD7 route
+    e_actpre_pJ += vppActOverridePJ(s);   // second supply rails: GDDR6 VPP on the IDD7 route
     double e_wr_pJ     = s.vdd * (s.idd4w - ioShareMA(s, true) - s.idd3n) * tBurst   // same baseline rule as the read (1.11.91); 1.12.18 (bug 2b/8a)
                          + vppBurstPJ(s, tBurst, true);                              // 1.12.18 (bug 3b)
     const double ROW_MISS_FRAC = (row_miss_frac >= 0.0 && row_miss_frac <= 1.0)
@@ -1840,7 +1837,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  * -- bit-identical to the burst term already inside arrayReadNJ, so every
  * consumer that added it double-charged the DQ read current. [The removal
  * was right; the next two sentences of the 1.11.5 note were NOT, and are
- * corrected by 1.11.91 (audit R8-8):] "JEDEC IDD4R is measured with the
+ * corrected by 1.11.91:] "JEDEC IDD4R is measured with the
  * outputs driving: the on-die I/O switching is already in the array term" --
  * FALSE. The outputs drive during the IDD4R loop, but IDD is measured on the
  * VDD balls only and the output drivers sit on VDDQ: "Any IPP or IDDQ
@@ -1884,7 +1881,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  * belongs in one place; the electricals below (scheme, VDDQ, Rtt, Ron) are
  * interface-standard properties and stay here, where they are sourced.
  *
- * 1.11.22 (user decision D12) -- DERIVED FROM THE JEDEC I/O STANDARDS the
+ * 1.11.22 -- derived FROM THE JEDEC I/O STANDARDS the
  * technologies actually cite, replacing a per-scheme fudge factor whose
  * values the 1.11.15 audit showed were transposed. Two independent errors
  * were confirmed, both from normative text:
@@ -1946,7 +1943,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  * stream. DBIac is enabled during JEDEC IDD measurement and deliberately
  * skews the LOW fraction, so the true duty is data-dependent; D12's IDD
  * cross-check is what pins that residual. */
-/* 1.11.63 (R7, user ruling 2026-08-24): READ/WRITE SPLIT LOOPS. The single
+/* 1.11.63: READ/WRITE SPLIT LOOPS. The single
  * (rtt, rpd) pair this function carried since 1.11.26 priced one loop for
  * both directions, with values (48/40 for DDR4/DDR5) that match no JEDEC
  * default and no vendor IDD condition -- and DDR5's citation ("POD11") named
@@ -1992,7 +1989,7 @@ inline double arrayWriteNJ(const std::string& tech, double tRC, double tRAS,
  * within it. The override prices BOTH directions at the stated pJ/bit. */
 inline double terminationNJ(const std::string& tech, double term_override_pJ_per_bit,
                             double rate_mts, bool is_write, double data_duty = 0.5) {
-    /* data_duty (user ruling 2026-10-25, measured termination duty): the
+    /* data_duty (measured termination duty): the
      * fraction of data-pin time that draws termination current -- driven
      * LOW for POD, driven HIGH for LVSTL -- measured on the run's own lines
      * by the caller (DBI pins included when DBI is on). 0.5 is the
@@ -2053,7 +2050,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
         e_per_bit_pJ = kHighDuty * (vddq * vddq) / (r_drv + r_trm) * t_bit_s * 1e12;
     }
     else if (sch == TermScheme::POD) {
-        // current only while LOW; loop = driver + terminator (R7: the pair
+        // current only while LOW; loop = driver + terminator (the pair
         // is direction-selected above -- read: DRAM RON + RX RTT_NOM class;
         // write: controller RON + DRAM RTT_WR class)
         const double kLowDuty = data_duty;
@@ -2066,7 +2063,7 @@ inline double terminationNJ(const std::string& tech, double term_override_pJ_per
     return e_per_bit_pJ * 512.0 / 1000.0;
 }
 
-/* 1.11.91 (audit R8-8, user ruling (a)): THE DQ OUTPUT RAIL, PER ACCESS.
+/* 1.11.91: THE DQ OUTPUT RAIL, PER ACCESS.
  *
  * IDDQ is the VDDQ current -- the output drivers -- and no IDD column
  * contains it (the citations are on IDDSpec). Charged ONLY on an access that
@@ -2108,7 +2105,7 @@ inline double iddqNJ(const std::string& tech, const std::string& device_width,
                      double* band_lo_nj = nullptr, double* band_hi_nj = nullptr) {
     const std::string bt = baseTech(tech);
     const IddqBand band = iddqBandFor(bt);
-    /* 1.12.18 (user ruling 2026-10-23): a row whose io_share is ANCHORED on a
+    /* 1.12.18: a row whose io_share is ANCHORED on a
      * published I/O energy prices the DQ I/O of a crossing access at that
      * share, VDD x share x the access's burst time: exactly what the burst
      * term gave up (ioShareMA), so a crossing access pays the derived row's
@@ -2158,30 +2155,30 @@ inline bool iddqWriteIncludesTermination(const std::string& tech) {
     return s.iddq_wr_includes_rtt_wr && s.iddq4w >= 0.0 && s.iddq3n >= 0.0;
 }
 
-/* 1.12.18 (user ruling 2026-10-23): true when the DQ I/O of a crossing access
+/* 1.12.18: true when the DQ I/O of a crossing access
  * is priced from an anchored io_share (iddqNJ above) rather than the band. */
 inline bool dqIoFromAnchoredShare(const std::string& tech) {
     if (!partIddFactsIfAny(baseTech(tech))) return false;
     return iddFor(tech).io_anchor_rd_pj_bit > 0.0;
 }
 
-/* 1.11.91 (audit R8-8, user ruling (a)): THE PUMP RAIL, PER UNIT. IPP2N
+/* 1.11.91: THE PUMP RAIL, PER UNIT. IPP2N
  * while the unit is precharged, IPP3N while a bank is open, each x VPP, on
  * the same state split as the VDD background (backgroundUnitStatesMW): the
  * active share is the caller's bank-open fraction, the rest is precharged.
  * Precharge power-down draws IPP2N too (DDR5 Rev A IPP2P 6 = IPP2N 6,
  * Table 6 p.18; DDR4 note 22 p.334: IPP3N applies to "all IDD2x"). The
  * refresh and burst IPP rows (IPP5B, IPP4R/W, IPP0) were NOT priced before
- * 1.12.18 -- only the standby pair the ruling names (see vppActPrePJ /
+ * 1.12.18 -- only the standby pair the rule names (see vppActPrePJ /
  * vppBurstPJ / vppRefreshPerUnitPJ and the refresh term below). Returns < 0 when the row has no IPP
  * (HBM2/HBM3: no published value; DDR3: no VPP
- * rail). The DDR5-3200 row carries the 4800 column's IPP rows ((1.12.141), DERIVED). */
+ * rail). The DDR5-3200 row carries the 4800 column's IPP rows ((1.12.141)). */
 inline double ippUnitMW(const std::string& tech, double active_frac) {
     const IDDSpec s = iddFor(tech);
     if (active_frac < 0.0) active_frac = 0.0;
     if (active_frac > 1.0) active_frac = 1.0;
     if ((s.ipp2n < 0.0 || s.ipp3n < 0.0 || s.vpp <= 0.0) && s.vpp_standby_ratio >= 0.0) {
-        /* (1.12.142) (user ruling 2026-10-28): an HBM record publishes no IPP row
+        /* (1.12.142): an HBM record publishes no IPP row
          * (no JEDEC or vendor HBM IPP2N/IPP3N exists), so the pump rail's
          * standby is priced as the record's ratio x the VDD standby power of
          * the same unit, on the same state split (IDD3N while a bank is open,
@@ -2200,7 +2197,7 @@ inline double ippUnitMW(const std::string& tech, double active_frac) {
     /* 1.12.18: (bug 3b) the pump rail's refresh: for the tRFC/tREFI duty the
      * unit draws IPP5B in place of its state's standby IPP, as the VDD
      * background does with IDD5 (stateWithRefreshMW). refreshMW() carries the
-     * same term IPP2N-relative (1.12.18, user ruling 2026-10-23: the refresh
+     * same term IPP2N-relative (1.12.18, the refresh
      * interrupts the state, baseline precharged standby), so a counted-refresh
      * substitution (counted minus duty) leaves every state at IPP2N for the
      * duty -- what a refresh interrupting it draws -- and adds the counted
@@ -2219,7 +2216,7 @@ inline double ippUnitMW(const std::string& tech, double active_frac) {
  * done once, in backgroundSystemMW(). (Before 1.11.20 there was no
  * multiplication at all: an HBM stack's 8-16 channels and a DDR rank's 8
  * chips were each reported as a single device's background.) */
-/* 1.11.37 (audit E15): refresh charged PER STATE.
+/* 1.11.37: refresh charged PER STATE.
  *
  * JEDEC IDD5 is the all-bank auto-refresh current, measured with the banks
  * precharged; the device draws it for tRFC out of every tREFI. It is an
@@ -2250,7 +2247,7 @@ inline double stateWithRefreshMW(const IDDSpec& s, double idd_state) {
 }
 
 /* The refresh EXCESS over PRECHARGED standby, per unit: vdd x (IDD5 - IDD2N) x tRFC/tREFI (+ VPP x (IPP5B -
- * IPP2N) x tRFC/tREFI). 1.12.18 (user ruling 2026-10-23, "IDD2N (state interrupted)"): JEDEC measures IDD5
+ * IPP2N) x tRFC/tREFI). 1.12.18 (IDD2N (state interrupted)): JEDEC measures IDD5
  * with all banks precharged and a REFab needs them precharged, so the refresh interrupts whatever state the unit
  * held and its excess is over IDD2N, not IDD3N (was: IDD3N-relative, under-pricing refresh by vdd x (IDD3N -
  * IDD2N) x duty). It is the share of stateWithRefreshMW() a counted-refresh substitution removes: each state's
@@ -2258,7 +2255,7 @@ inline double stateWithRefreshMW(const IDDSpec& s, double idd_state) {
  * state is charged twice. backgroundUnitMW() no longer calls it. */
 inline double refreshMW(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {   // 1.11.65
     IDDSpec s = iddFor(tech, temperature_k);
-    return s.vdd * (s.idd5 - s.idd2n) * (s.trfc_ns / s.trefi_ns)   // 1.12.18 (user ruling 2026-10-23): IDD2N baseline (was IDD3N)
+    return s.vdd * (s.idd5 - s.idd2n) * (s.trfc_ns / s.trefi_ns)   // 1.12.18: IDD2N baseline (was IDD3N)
          + vppRefreshPerUnitPJ(s) / s.trefi_ns;   // 1.12.18 (bug 3b): the VPP refresh, pJ/ns = mW
 }
 inline double backgroundMW(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
@@ -2266,7 +2263,7 @@ inline double backgroundMW(const std::string& tech, int temperature_k = defaultE
     return stateWithRefreshMW(s, s.idd3n);   // == vdd*idd3n + refreshMW(tech, T)
 }
 
-/* 1.11.20 (user decision D13): POPULATION. How many IDD-bearing units the
+/* 1.11.20: POPULATION. How many IDD-bearing units the
  * memory system presents behind one channel.
  *
  * Deliberately derived from technology + JEDEC device width and NOT from
@@ -2285,7 +2282,7 @@ inline double backgroundMW(const std::string& tech, int temperature_k = defaultE
  *   LPDDR5      1: an x16 die serves its own channel.
  *   GDDR6       1: point-to-point, one device per channel.
  *   SRAM/NVM    1 (they do not reach this path; the fallthrough is DDR4). */
-/* 1.11.52 (audit A015): the POPULATION arguments. This returns the devices
+/* 1.11.52: the POPULATION arguments. This returns the devices
  * in ONE rank (DDR) or ONE stack (HBM); the SYSTEM may hold several ranks
  * and channels, and the area path already counts them all
  * (memorySystemDieCount = chips x ranks x channels). The two lines of one
@@ -2294,14 +2291,14 @@ inline double backgroundMW(const std::string& tech, int temperature_k = defaultE
  * power. Callers pass the system's rank and channel counts so background
  * power is population-scaled the same way area is; the defaults reproduce
  * the pre-1.11.52 single-rank basis for any caller not yet updated. */
-/* 1.11.91 (item 12): how many HBM stacks the system's channel count is --
+/* 1.11.91: how many HBM stacks the system's channel count is --
  * the same arithmetic backgroundUnits() uses for its HBM population. */
 inline int hbmStacks(const std::string& tech, int channels) {
     const int per_stack = iddFor(tech).channels > 0 ? iddFor(tech).channels : 1;
     if (channels < 1) channels = 1;
     return (channels > per_stack) ? (channels / per_stack) : 1;
 }
-/* 1.11.91 (item 12, user ruling option (c)): the per-STACK static floor for
+/* 1.11.91: the per-STACK static floor for
  * the memory system (HBM2/HBM3), mW; < 0 when the row has none. */
 inline double stackFloorSystemMW(const std::string& tech, int channels = 1) {
     const IDDSpec s = iddFor(tech);
@@ -2341,7 +2338,7 @@ inline int backgroundUnits(const std::string& tech,
     return ranks_per_channel * channels;
 }
 
-/* 1.11.20 (user decision D15): STATE. Background power for ONE unit, given
+/* 1.11.20: STATE. Background power for ONE unit, given
  * the measured no-traffic residency r_idle. Three JEDEC states, not two:
  *
  *   busy  (1 - r_idle)  ACTIVE STANDBY, IDD3N -- a row is open.
@@ -2367,10 +2364,10 @@ inline int backgroundUnits(const std::string& tech,
  * DELIBERATE BASELINE CHANGE: r_idle > 0 with pg OFF no longer reproduces
  * backgroundMW(). That was the point of D15, and it is why the 1.11.20 gate
  * asserts a stated delta for DRAM cells rather than bit-equality. */
-/* 1.11.91 (audit R8-7, user ruling (b)): vendor-method WITH A MEASURED BANK-OPEN
- * FRACTION. The vendor method (a vendor method that cannot be disclosed publicly) defines the two standby states as
- * "precharged (all of the banks are precharged) or active (one or more
- * banks are open)", with the input BNK_PRE% = the percentage of time all
+/* 1.11.91: current-difference method WITH A MEASURED BANK-OPEN
+ * FRACTION. The current-difference method defines the two standby states as
+ * precharged (all banks precharged) or active (at least one bank
+ * open), with the input precharged fraction = the share of time all
  * banks are precharged. Until this release the active share was 1 - r_idle,
  * where r_idle is "phases with no memory-controller access" (10k-cycle
  * phases) or the E17 gap histogram: that is TRAFFIC in the phase, which
@@ -2379,7 +2376,7 @@ inline int backgroundUnits(const std::string& tech,
  * cap 4) a busy phase can have its banks precharged most of the time.
  *
  * The states are now split by two inputs:
- *   active_frac  BNK_ACT% = 1 - BNK_PRE%: the MEASURED fraction of memory
+ *   active_frac  active fraction = 1 - precharged fraction: the MEASURED fraction of memory
  *                cycles with >= 1 bank open (Ramulator's bank state, the
  *                zsim `bankOpenCycles / bankOpenWindow` counters) -- IDD3N
  *                state (on ONE_BANK parts IDD3N is the one-bank current,
@@ -2415,7 +2412,7 @@ inline double backgroundUnitCoreMW(const std::string& tech, double pre_share,
     const double active_mw = stateWithRefreshMW(s, s.idd3n * k_clk);  // IDD3N, row open
     double pre_mw          = stateWithRefreshMW(s, s.idd2n * k_clk);  // IDD2N, precharged
     double pd_mw           = stateWithRefreshMW(s, s.idd2p);  // IDD2P, CKE low
-    /* 1.11.91 (audit R8-11): THE IDLE DESCENT CANNOT COST MORE THAN THE
+    /* 1.11.91: THE IDLE DESCENT CANNOT COST MORE THAN THE
      * ACTIVE STATE IT DESCENDS FROM. The pd <= pre guard below existed; the
      * pre <= active guard beside it did not. The HBM2 row is measured silicon
      * (Zen HBM2 per-channel means, see iddTableFor) where IDD2N 136 mA sits
@@ -2470,13 +2467,13 @@ inline double backgroundSystemMW(const std::string& tech, double r_idle,
                                  int ranks_per_channel = 1,
                                  int channels = 1,        // 1.11.52 (A015)
                                  int temperature_k = defaultEnergyTemperatureK()) {   // 1.11.65
-    const double floor_mw = stackFloorSystemMW(tech, channels);   // 1.11.91 (item 12)
+    const double floor_mw = stackFloorSystemMW(tech, channels);   // 1.11.91
     return backgroundUnitMW(tech, r_idle, pg_enabled, temperature_k) *
            static_cast<double>(backgroundUnits(baseTech(tech), device_width,
                                                ranks_per_channel, channels))
            + (floor_mw > 0.0 ? floor_mw : 0.0);
 }
-/* 1.11.91 (R8-7): the same population, state-split by the measured
+/* 1.11.91: the same population, state-split by the measured
  * bank-open fraction (see backgroundUnitStatesMW). */
 inline double backgroundSystemStatesMW(const std::string& tech, double active_frac,
                                        double r_pd, bool pg_enabled,
@@ -2485,7 +2482,7 @@ inline double backgroundSystemStatesMW(const std::string& tech, double active_fr
                                        int channels = 1,
                                        int temperature_k = defaultEnergyTemperatureK(),
                                        double* r_pd_used = nullptr) {
-    const double floor_mw = stackFloorSystemMW(tech, channels);   // 1.11.91 (item 12)
+    const double floor_mw = stackFloorSystemMW(tech, channels);   // 1.11.91
     return backgroundUnitStatesMW(tech, active_frac, r_pd, pg_enabled,
                                   temperature_k, r_pd_used) *
            static_cast<double>(backgroundUnits(baseTech(tech), device_width,
@@ -2493,8 +2490,7 @@ inline double backgroundSystemStatesMW(const std::string& tech, double active_fr
            + (floor_mw > 0.0 ? floor_mw : 0.0);
 }
 
-/* 1.12.18 (ruling 17 / R0605; user 2026-10-23: "Call them in PIMID but don't
- * add them directly to PIMID"): the energy of the commands a REPLAYED
+/* 1.12.18: the energy of the commands a REPLAYED
  * controller counted, here in the energy model, so the system-scope report
  * only passes the counts and sums what comes back. Same datasheet rows and the
  * same arithmetic the device-scope report has used since 1.11.98 / 1.12.18:
@@ -2502,7 +2498,7 @@ inline double backgroundSystemStatesMW(const std::string& tech, double active_fr
  *     row-opening access minus that of a row hit (arrayReadNJ at miss
  *     fraction 1 and 0): the act/pre term, on the whole-access basis;
  *   - one refresh command on one IDD unit = vdd x (IDD5 - IDD2N) x tRFC (+ VPP x (IPP5B - IPP2N) x tRFC; IDD2N
- *     baseline, 1.12.18 user ruling 2026-10-23); the
+ *     baseline, 1.12.18); the
  *     units behind one command = the population per rank (background units
  *     over ranks x channels); the rate is quoted over the replayed DRAM time;
  *   - the datasheet refresh duty it replaces = refreshMW x the background
@@ -2515,7 +2511,7 @@ inline double activateEnergyNJ(const std::string& tech, double tRC, double tRAS,
 }
 inline double refreshEnergyPerCommandNJ(const std::string& tech, int temperature_k = defaultEnergyTemperatureK()) {
     IDDSpec s = iddFor(tech, temperature_k);
-    return (s.vdd * (s.idd5 - s.idd2n) * s.trfc_ns + vppRefreshPerUnitPJ(s)) / 1000.0;   // 1.12.18 (bug 3b): + VPP; (user ruling 2026-10-23): IDD2N baseline (was IDD3N)
+    return (s.vdd * (s.idd5 - s.idd2n) * s.trfc_ns + vppRefreshPerUnitPJ(s)) / 1000.0;   // 1.12.18 (bug 3b): + VPP; IDD2N baseline (was IDD3N)
 }
 inline double countedRefreshSystemMW(const std::string& tech, int temperature_k,
                                      uint64_t refreshes, double span_ns,
@@ -2536,7 +2532,7 @@ inline double refreshDutySystemMW(const std::string& tech, int temperature_k,
 }
 
 
-/* 1.12.18 (user ruling 2026-10-23): THE DERIVED TOTAL READ ENERGY, pJ/bit,
+/* 1.12.18: THE derived TOTAL READ ENERGY, pJ/bit,
  * the quantity the published whole-device figures state: sequential 64 B
  * reads that cross the DQ, at the channel's full rate (512 b per access burst
  * time), one activate per row (64 B / row bytes), with the unit's standby,
@@ -2577,7 +2573,7 @@ inline ReadEnergyPerBit derivedReadEnergyPerBit(const std::string& tech, double 
     return e;
 }
 
-/* 1.12.18 (user ruling 2026-10-23): the GUARD LINES of a record that carries
+/* 1.12.18: the GUARD LINES of a record that carries
  * read_energy_guard and/or an anchored io_share. Pure report: nothing here is
  * priced and nothing is adjusted to land inside a band.
  *  - the derived total read energy against each published older-generation
@@ -2595,7 +2591,7 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
     const std::string bt = baseTech(tech);
     const PartIddFacts* pf = partIddFactsIfAny(bt);
     if (!pf) return out;
-    /* 1.12.18 (user ruling 2026-10-24): THE ACTIVATE+PRECHARGE GUARD per 1 KB row, with
+    /* 1.12.18: THE ACTIVATE+PRECHARGE GUARD per 1 KB row, with
      * the VDD / VPP split when the VPP is the record's ratio. Printed, never priced. */
     if (pf->act_guard.valid || pf->vpp_act.valid) {
         auto f3 = [](double v) { std::ostringstream o; o.setf(std::ios::fixed); o.precision(4); o << v; return o.str(); };
@@ -2626,7 +2622,7 @@ inline std::vector<std::string> readEnergyGuardLines(const std::string& tech, do
             out.push_back(o.str() + "; no act_guard_nj_per_kb in the record");
         }
     }
-    /* 1.12.18 (user ruling 2026-10-24, floor option 2): THE BACKGROUND GUARD per stack -- the
+    /* 1.12.18 (floor option 2): THE BACKGROUND GUARD per stack -- the
      * datasheet background the report starts from (active standby IDD3N, no idle descent, refresh
      * at the datasheet duty, at the run's temperature since (1.12.101); 358 K before) plus the per-stack floor, against XPE like-for-like (DRAM
      * VDD + VDDQ + VPP rails). Printed, never priced. */

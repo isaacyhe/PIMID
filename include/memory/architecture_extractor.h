@@ -40,7 +40,7 @@
 namespace pimid {
 namespace memory {
 
-/* 1.11.94 (sweep-94 row 3, user ruling 2026-10-01): the geometry of an array
+/* 1.11.94: the geometry of an array
  * is what the tool BUILT. When CACTI or NVSim reports zero for a field, it did
  * not build that level, and there is nothing to compute from: the run refuses,
  * naming the tool, the field and the geometry asked for. The nineteen literal
@@ -343,7 +343,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->timing.clock_freq_ghz = clock_freq_ghz;
 
     // Total access latencies
-    /* 1.11.23 (user ruling): the tier ladder, corrected. NVSimWrapper::
+    /* 1.11.23: the tier ladder, corrected. NVSimWrapper::
      * getReadLatency() returns nvsim_result_->bank->readLatency -- it is the
      * BANK figure. Assigning it to subarray and then inflating by 1.2 for
      * bank charged every sub-bank placement the bank latency, and made
@@ -371,7 +371,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
      * like NVSim reads and, at the time, were not -- getDecoderDelay() and
      * friends returned INVENTED percentages of mat.readLatency (10/20/45/15/5,
      * summing to 0.95). Summing them replaced one invented multiplier with
-     * another. (1.11.56, audit D031: those five now read NVSim's own component
+     * another. (1.11.56, those five now read NVSim's own component
      * latencies, so the objection no longer applies to them -- but the direct
      * subarray read below is still the right thing to use for a TIER, because
      * it is the figure NVSim composed rather than a sum we compose.)
@@ -412,7 +412,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     /* 1.11.23: NVSim reports the cell's own write latency; the 0.6 fraction
      * of a composed number was an assertion about where the time goes. */
     arch->timing.inner_bank.mtj_switching_ns = nvsim_wrapper.getCellWriteLatency() * 1e9;
-    /* 1.11.107 (gate 1217B, E2): these four were never assigned, so the inner-bank
+    /* 1.11.107: these four were never assigned, so the inner-bank
      * totals summed whatever the heap held (1.11.106 printed 2.5172e+180 ns on the
      * STT-MRAM gemv cells). NVSim's breakdown has no subarray output driver, no
      * in-bank H-tree legs and no write-verify for STT-MRAM: they are 0 here, and the
@@ -441,12 +441,12 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
                            : VerificationStatus::UNKNOWN;
     arch->timing.inner_bank.source = stt_has_components
         ? ("NVSim: decoder/wordline/bitline/sense-amp/column-mux/cell-write; "
-           "ASSERTED" + std::string(pimid::provLabel(" (unsourced)")) + ": local_io, global_io, bank_output_drv -- "
+           + std::string(pimid::provLabel("ASSERTED (unsourced): ")) + "local_io, global_io, bank_output_drv -- "
            + arch->process_node)
-        : ("NOT SOURCED: this characterization came from the NVSim result "
+        : ("this characterization came from the NVSim result "
            "CACHE, which carries only the top-level figures, so the "
            "per-component delays are ZERO and the inner-bank total is the "
-           "ASSERTED local_io/global_io/bank_output_drv terms alone. "
+           "stated local_io/global_io/bank_output_drv terms alone. "
            "Re-characterize (empty the nvsim cache) to obtain them -- "
            + arch->process_node);
 
@@ -482,7 +482,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
      * subarray.senseAmp.leakage, which already IS per subarray -- dividing
      * again would report a sense amplifier as a fraction of itself. */
     arch->energy.mat_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
-    /* 1.11.56 (audit D058): ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
+    /* 1.11.56: ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
      *
      * This block used to read NVSim's figure as a WHOLE-CHIP number: chip =
      * getLeakagePower(), bank = getLeakagePower() / banks_per_chip. main.cpp's
@@ -533,7 +533,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->datapath.verification_status = VerificationStatus::ESTIMATED;
     arch->datapath.source =
         "mat_io_bits = NVSim mat.numDataBit (0 = unknown from an older cache); "
-        "chip_io_bits = 4 x bank ASSERTED; bank_io_bits is the CONFIGURED word "
+        "chip_io_bits = 4 x bank (stated); bank_io_bits is the CONFIGURED word "
         "width, not a tool output.";
 
     // ===== ENDURANCE =====
@@ -547,7 +547,7 @@ inline std::unique_ptr<STTMRAMArchitecture> extractSTTMRAMArchitecture(
     arch->endurance.retention_years = 10.0;
     arch->endurance.ecc_required = true;
     arch->endurance.endurance_source =
-        std::string("ASSERTED") + pimid::provLabel(" (unsourced literals)") + ": NVSim does not model endurance or "
+        std::string(pimid::provLabel("ASSERTED (unsourced literals): ")) + "NVSim does not model endurance or "
         "retention. No citation is attached to 1e15 cycles / 10 years.";
 
     return arch;
@@ -708,7 +708,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
      * like NVSim reads and, at the time, were not -- getDecoderDelay() and
      * friends returned INVENTED percentages of mat.readLatency (10/20/45/15/5,
      * summing to 0.95). Summing them replaced one invented multiplier with
-     * another. (1.11.56, audit D031: those five now read NVSim's own component
+     * another. (1.11.56, those five now read NVSim's own component
      * latencies, so the objection no longer applies to them -- but the direct
      * subarray read below is still the right thing to use for a TIER, because
      * it is the figure NVSim composed rather than a sum we compose.)
@@ -737,7 +737,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     // SET is slowest (crystallization), RESET is faster (amorphization)
     /* 1.11.23: SET is a path NVSim resolves (FunctionUnit::setLatency); it was
      * taken as the generic write latency and then inflated. */
-    /* 1.11.56 (audit D062): RECORD THE SUBSTITUTION. getSetLatency() has no
+    /* 1.11.56: RECORD THE SUBSTITUTION. getSetLatency() has no
      * cached_ branch, so it returns -1 on every cache hit -- and a cache hit is
      * the normal path, since the pregenerated NVSim entries carry only the
      * top-level figures. That meant the SET tier was almost always the generic
@@ -808,8 +808,8 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
                            : VerificationStatus::UNKNOWN;
     arch->timing.inner_bank.source = pcm_has_components
         ? ("NVSim extraction, " + arch->process_node + " PCM")
-        : ("NOT SOURCED: cached characterization -- the per-component delays "
-           "are ZERO and the inner-bank total is the ASSERTED bus/IO terms "
+        : ("cached characterization: the per-component delays "
+           "are ZERO and the inner-bank total is the stated bus/IO terms "
            "alone. Re-characterize to obtain them. " + arch->process_node
            + " PCM");
 
@@ -843,7 +843,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     /* Average of SET and RESET for write energy -- an EQUAL-WEIGHT mean over a
      * mix nothing in this tree measures, and it inherits the asserted 0.55
      * RESET/SET ratio set fourteen lines above.
-     * 1.11.60 (audit round 4, C015): PCMModel no longer reads this field. It
+     * 1.11.60: PCMModel no longer reads this field. It
      * was multiplying this mean by a SET counter, under a comment claiming the
      * SET basis, while its latency side charged the SET path -- so the one
      * number that dissented from "every write is a SET" was this one, and it
@@ -851,7 +851,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
      * directly now. The field stays because it is part of the PCMArchitecture
      * description; anyone who picks it up should know it is a mean over an
      * unmeasured mix, not a characterization. */
-    /* 1.11.94 (sweep-94 row 24 / R1967): the 50/50 SET/RESET mean is gone --
+    /* 1.11.94: the 50/50 SET/RESET mean is gone --
      * nothing read it (PCMModel charges the SET energy directly since 1.11.60)
      * and it was a mean over an unmeasured mix. The field stays unset (0). */
     arch->energy.write_energy_per_byte = 0.0;
@@ -860,7 +860,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     /* 1.11.57 (latent D059): no second division -- getSenseAmpLeakage() is
      * NVSim's own per-subarray sense-amp leakage now, not 30% of the mat. */
     arch->energy.mat_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
-    /* 1.11.56 (audit D058): ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
+    /* 1.11.56: ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
      *
      * This block used to read NVSim's figure as a WHOLE-CHIP number: chip =
      * getLeakagePower(), bank = getLeakagePower() / banks_per_chip. main.cpp's
@@ -899,7 +899,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->endurance.retention_years = 10.0;
     arch->endurance.mlc_support = true;  // PCM can support MLC
     arch->endurance.endurance_source =
-        std::string("ASSERTED") + pimid::provLabel(" (unsourced literals)") + ": NVSim does not model endurance or "
+        std::string(pimid::provLabel("ASSERTED (unsourced literals): ")) + "NVSim does not model endurance or "
         "retention. No citation is attached to 1e8 cycles / 10 years.";
 
     // ===== DATAPATH =====
@@ -915,7 +915,7 @@ inline std::unique_ptr<PCMArchitecture> extractPCMArchitecture(
     arch->datapath.verification_status = VerificationStatus::ESTIMATED;
     arch->datapath.source =
         "mat_io_bits = NVSim mat.numDataBit (0 = unknown from an older cache); "
-        "chip_io_bits = bank_io_bits ASSERTED; bank_io_bits is the CONFIGURED "
+        "chip_io_bits = bank_io_bits (stated); bank_io_bits is the CONFIGURED "
         "word width, not a tool output.";
 
     return arch;
@@ -1011,7 +1011,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
      * like NVSim reads and, at the time, were not -- getDecoderDelay() and
      * friends returned INVENTED percentages of mat.readLatency (10/20/45/15/5,
      * summing to 0.95). Summing them replaced one invented multiplier with
-     * another. (1.11.56, audit D031: those five now read NVSim's own component
+     * another. (1.11.56, those five now read NVSim's own component
      * latencies, so the objection no longer applies to them -- but the direct
      * subarray read below is still the right thing to use for a TIER, because
      * it is the figure NVSim composed rather than a sum we compose.)
@@ -1086,8 +1086,8 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
                            : VerificationStatus::UNKNOWN;
     arch->timing.inner_bank.source = rer_has_components
         ? ("NVSim extraction, " + arch->process_node + " ReRAM")
-        : ("NOT SOURCED: cached characterization -- the per-component delays "
-           "are ZERO and the inner-bank total is the ASSERTED H-tree/IO terms "
+        : ("cached characterization: the per-component delays "
+           "are ZERO and the inner-bank total is the stated H-tree/IO terms "
            "alone. Re-characterize to obtain them. " + arch->process_node
            + " ReRAM");
 
@@ -1126,7 +1126,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     /* 1.11.57 (latent D059): no second division -- getSenseAmpLeakage() is
      * NVSim's own per-subarray sense-amp leakage now, not 30% of the mat. */
     arch->energy.mat_leakage_mw = nvsim_wrapper.getSenseAmpLeakage();
-    /* 1.11.56 (audit D058): ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
+    /* 1.11.56: ONE BASIS FOR NVSIM'S LEAKAGE, AND IT IS PER-BANK.
      *
      * This block used to read NVSim's figure as a WHOLE-CHIP number: chip =
      * getLeakagePower(), bank = getLeakagePower() / banks_per_chip. main.cpp's
@@ -1165,7 +1165,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->endurance.mlc_support = analog_capable;
     arch->endurance.analog_capable = analog_capable;
     arch->endurance.endurance_source =
-        std::string("ASSERTED") + pimid::provLabel(" (unsourced literals)") + ": NVSim does not model endurance or "
+        std::string(pimid::provLabel("ASSERTED (unsourced literals): ")) + "NVSim does not model endurance or "
         "retention. No citation is attached to 1e11 cycles / 10 years.";
 
     // ===== DATAPATH =====
@@ -1182,7 +1182,7 @@ inline std::unique_ptr<ReRAMArchitecture> extractReRAMArchitecture(
     arch->datapath.verification_status = VerificationStatus::ESTIMATED;
     arch->datapath.source =
         "mat_io_bits = NVSim mat.numDataBit (0 = unknown from an older cache); "
-        "chip_io_bits = 2 x bank and crossbar_analog_bits = 8 ASSERTED; "
+        "chip_io_bits = 2 x bank and crossbar_analog_bits = 8 (stated); "
         "bank_io_bits is the CONFIGURED word width, not a tool output.";
 
     return arch;
@@ -1237,7 +1237,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
     arch->datapath.row_buffer_bits = {
         8192,  // Typical row buffer width
         VerificationStatus::INFERRED,
-        "Estimated from Ramulator configuration",
+        "from the Ramulator configuration",
         "Row buffer in bitline sense amplifiers"
     };
 
@@ -1245,7 +1245,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
     arch->datapath.gsa_datapath_bits = {
         256,  // Typical GSA width
         VerificationStatus::INFERRED,
-        "Estimated from DRAM architecture papers",
+        "from DRAM architecture papers",
         "Column I/O width"
     };
 
@@ -1280,7 +1280,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
         "Bank-to-peripheral serialization - CRITICAL for PIM bandwidth!"
     };
 
-    /* 1.11.59 (audit C018): SAY WHERE THESE TWO ACTUALLY COME FROM.
+    /* 1.11.59: SAY WHERE THESE TWO ACTUALLY COME FROM.
      *
      * Both are read off the wrapper's DRAM architecture object. Neither is
      * "extracted from Ramulator": no Ramulator device object is consulted
@@ -1315,7 +1315,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
     arch->datapath.rank_databus_bits = {
         rank_bits,
         VerificationStatus::VERIFIED,
-        /* 1.11.60 (audit round 4, C011): "one 128-bit channel for HBM" was
+        /* 1.11.60: "one 128-bit channel for HBM" was
          * right for HBM2 and wrong for HBM3, whose rank_databus_bits is 64 --
          * one 64-bit pseudo-channel, per JESD238 and per the object at
          * dram_architecture_v2.h. The 1.11.59 note directly above corrected
@@ -1381,7 +1381,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
         arch->timing.inner_bank.global_io_ns = 1.50;
         arch->timing.inner_bank.bank_io_driver_ns = 0.60;
         arch->timing.inner_bank.verification_status = VerificationStatus::ESTIMATED;
-        arch->timing.inner_bank.source = "Estimated from CACTI and Ramulator timing";
+        arch->timing.inner_bank.source = "from CACTI and Ramulator timing";
     }
 
     // Hierarchical access latencies
@@ -1391,7 +1391,7 @@ inline std::unique_ptr<DRAMArchitectureV2> extractDRAMArchitecture(
     arch->timing.rank_access_ns = ramulator_wrapper.getRankAccessLatency();
 
     /* ===== BANDWIDTH LIMITS =====
-     * 1.11.57 (audit C003): nothing to copy. The bank and bank-group figures
+     * 1.11.57: nothing to copy. The bank and bank-group figures
      * are no longer stored fields to be filled in from somewhere else; they
      * are derived on read from the datapath width and the core clock this
      * function has just written above, which is the only way the width and
@@ -1429,7 +1429,7 @@ inline void updateDRAMArchitectureFromRamulator(
     arch.timing.subarray_access_ns = ramulator_wrapper.getSubarrayAccessLatency();
     arch.timing.bank_access_ns = ramulator_wrapper.getBankAccessLatency();
 
-    /* 1.11.57 (audit C003): the bank and bank-group bandwidths are derived on
+    /* 1.11.57: the bank and bank-group bandwidths are derived on
      * read from this object's own width and clock, so there is nothing here to
      * update -- and no way for an update to leave them describing a different
      * part from the datapath beside them. */

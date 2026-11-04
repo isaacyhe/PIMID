@@ -33,7 +33,7 @@
 #include "memory_hierarchy.h"
 #include "pad.h"
 #include "stats.h"
-#include "dq_data_stats.h"   // measured DQ data statistics (user ruling 2026-10-25: measured termination duty)
+#include "dq_data_stats.h"   // measured DQ data statistics (measured termination duty)
 
 // System-level Garnet network for detailed model
 #include "garnet_network.h"
@@ -42,7 +42,7 @@
  * This is the standard simple memory model -- M/D/1 is always active.
  * (The old fixed-latency SimpleMemory has been removed.)
  */
-class DramEpochReplay;   // 1.12.18 (ruling 17 / R0605)
+class DramEpochReplay;   // 1.12.18
 
 class SimpleMemory : public MemObject {
     private:
@@ -67,7 +67,7 @@ class SimpleMemory : public MemObject {
 
         g_string name; //barely used
         lock_t updateLock;
-        /* 1.12.18 (ruling 17 / R0605): the host memory replayed through
+        /* 1.12.18: the host memory replayed through
          * Ramulator2 (dram_epoch_replay.h). When set, every access is recorded
          * on interface hostReplayMi and priced at the replay's measured
          * service latency (host cycles) plus the calibrated host-path adder
@@ -77,15 +77,15 @@ class SimpleMemory : public MemObject {
         DramEpochReplay* hostReplay = nullptr;
         uint32_t hostReplayMi = 0;
         uint32_t hostPathCycles = 0;
-        /* (1.12.147, user ruling 2026-10-28): this controller's place in an
+        /* (1.12.147): this controller's place in an
          * address split (SplitAddrMemory: line % n, the address handed on
          * compacted to line / n). The replayed controller and the measured
          * data statistics take the line's own address, splitIdx + line x
-         * splitN; 1 / 0 = no split (every controller before the ruling: the
+         * splitN; 1 / 0 = no split (every controller before the rule: the
          * host memory block emits one controller). */
         uint32_t splitN = 1, splitIdx = 0;
         Address globalLine(Address lineAddr) const { return lineAddr * splitN + splitIdx; }
-        DqDataStats dqStats;   // the data of every line this controller reads or writes back (user ruling 2026-10-25: measured termination duty)
+        DqDataStats dqStats;   // the data of every line this controller reads or writes back (measured termination duty)
         PAD();
 
     protected:
@@ -94,8 +94,8 @@ class SimpleMemory : public MemObject {
     public:
         SimpleMemory(uint32_t lineSize, uint32_t megacyclesPerSecond, uint32_t megabytesPerSecond, uint32_t _zeroLoadLatency, g_string& _name);
         void setHostReplay(DramEpochReplay* r, uint32_t mi, uint32_t pathCycles) { hostReplay = r; hostReplayMi = mi; hostPathCycles = pathCycles; }
-        void setAddrSplit(uint32_t idx, uint32_t n) { splitN = (n < 1) ? 1 : n; splitIdx = idx; }   // (1.12.147, user ruling 2026-10-28)
-        Counter* rdCounter() { return &profReads; }    // 1.12.18 (R1): bound to the replay
+        void setAddrSplit(uint32_t idx, uint32_t n) { splitN = (n < 1) ? 1 : n; splitIdx = idx; }   // (1.12.147)
+        Counter* rdCounter() { return &profReads; }    // 1.12.18: bound to the replay
         Counter* wrCounter() { return &profWrites; }
         DqDataStats& dqData() { return dqStats; }
         /* 1.12.18: access(), telling the caller whether the replay priced it */

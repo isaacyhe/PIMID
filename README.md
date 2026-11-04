@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-GPL--2.0-blue.svg)](LICENSE)
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Version](https://img.shields.io/badge/version-1.12.266-green.svg)]()
+[![Version](https://img.shields.io/badge/version-1.12.267-green.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-2607.24196-b31b1b.svg)](https://arxiv.org/abs/2607.24196)
 
 PIMID is a cycle-accurate simulator for Processing-in-Memory (PIM)
@@ -24,7 +24,7 @@ McPAT, and Garnet for timing, power, and area.
   single-issue PE: `issue_width: 1`, `branch_predictor: none`), `ooo_core`,
   `null_core` -> [docs/cores.md](docs/cores.md)
 - **2 network models** -- `detailed` (cycle-accurate Garnet over sparse
-  placement-driven DRAM trees; ONE logical network across OpenMP threads AND
+  placement-driven DRAM trees; one logical network across OpenMP threads and
   MPI ranks; the default) and `analytical` (closed-form hop + M/D/1 + MLP)
   over 8 topologies -> [docs/network.md](docs/network.md)
 - **Per-technology PE placement** -- subarray -> bank -> bank-group ->
@@ -34,8 +34,8 @@ McPAT, and Garnet for timing, power, and area.
   NVLink-class links -> [docs/cosim.md](docs/cosim.md)
 - **4 simulation methods** -- `exec`, `trace-gen`, `trace`, `synthetic`
   -> [docs/architecture.md](docs/architecture.md)
-- **49 benchmarks** across 7 suites; any of them runs in co-sim (no
-  co-sim-specific workloads) -> [docs/benchmarks.md](docs/benchmarks.md)
+- **49 benchmarks** across 7 suites; any of them runs in a co-simulation
+  (there are no co-simulation-specific workloads) -> [docs/benchmarks.md](docs/benchmarks.md)
 - **Power/area** via McPAT -> [docs/power.md](docs/power.md)
 
 ## What 1.12 simulates
@@ -67,9 +67,12 @@ pimid/
 |-- src/  include/        simulator core (ZSim integration, models, config)
 |-- external/             bundled backends: zsim, qemu, ramulator, cacti,
 |                         nvsim, mcpat, garnet
+|-- params/               part records: DRAM, core and cache defaults with their sources
 |-- benchmarks/           49-benchmark suite + host/ and hostphase/ kernels
 |-- examples/             runnable example configs (techs, cores, topologies,
 |                         placements, cosim) + integration/ extension demo
+|-- scripts/  tools/      pimid-cache, pimid-migrate-config, the guest-library fetch, nvsim_warm
+|-- cache/                characterization cache warehouse (docs/cache_warehouse.md)
 |-- docs/                 full documentation (see below)
 `-- CMakeLists.txt  LICENSE  README.md
 ```
@@ -99,10 +102,12 @@ docker pull ghcr.io/isaacyhe/pimid:latest
 # synthetic NoC traffic, no workload needed
 ./build/pimid --method synthetic --config examples/topo_MESH_2D.yaml
 
-# timing does not depend on ASLR (1.12.62); for bit-stable logs (one McPAT
-# report line can move with it, docs/build.md) disable it
+# timing does not depend on ASLR (since 1.12.62); for bit-identical logs
+# disable it (one McPAT report line can still vary, see docs/build.md)
 setarch -R ./build/pimid --method exec --config examples/tech_DDR4.yaml
 ```
+
+`./build/pimid --help` lists every command-line option.
 
 A minimal config:
 
@@ -128,6 +133,7 @@ system:
 | [docs/network.md](docs/network.md) | the two NoC models, topologies, DRAM trees, synthetic traffic |
 | [docs/cores.md](docs/cores.md) | PE core models, ALU scaling, MLP |
 | [docs/cosim.md](docs/cosim.md) | host-device offload, link types, MPI semantics |
+| [docs/cosim_calibration.md](docs/cosim_calibration.md) | co-simulation calibration: measured anchors and their sources |
 | [docs/benchmarks.md](docs/benchmarks.md) | suites, data-model variants, building, running |
 | [docs/examples.md](docs/examples.md) | the example config set |
 | [docs/power.md](docs/power.md) | McPAT power/area |
@@ -140,6 +146,7 @@ system:
 | [docs/sources.md](docs/sources.md) | every external number's source (papers, JEDEC standards, datasheets) |
 | [docs/derivations/hbm_gddr6_idd.md](docs/derivations/hbm_gddr6_idd.md) | how the HBM3, HBM2 and GDDR6 IDD rows are computed, with bands |
 | [docs/external_models.md](docs/external_models.md) | plugging in your own models |
+| [docs/changelog.md](docs/changelog.md) | every release: the defect fixed, its cause and its data impact |
 
 ## Citation
 
@@ -197,7 +204,7 @@ match a stock build of the same tool. See
 This work was supported in part by the Japan Science and Technology Agency
 (JST) under the Research and Development Program for Next-Generation Edge AI
 Semiconductors, Grant Number JPMJES2512; by UT-Battelle, LLC, under Contract
-No. DE-AC05-00OR22725 with the U.S. Department of Energy (DOE); and by the
+No. DE-AC05-00or22725 with the U.S. Department of Energy (DOE); and by the
 DOE National Nuclear Security Administration through Los Alamos National
 Laboratory under Contract No. 89233218CNA000001. This software is based upon
 work supported by the U.S. Department of Energy, Office of Science, Office of

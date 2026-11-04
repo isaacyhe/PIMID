@@ -1,4 +1,4 @@
-# The scalar single-issue in-order PE (1.12.1, ticket #114): in_order_core
+# The scalar single-issue in-order PE (1.12.1): in_order_core
 # with issue width 1 and no branch predictor (static not-taken). It replaces
 # the retired simple_core.
 workload:

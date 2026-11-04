@@ -1,6 +1,6 @@
 #ifndef RAMULATOR_PIMID_ORG_PROBE_H
 #define RAMULATOR_PIMID_ORG_PROBE_H
-/* 1.11.66 (PIMID, round 5 A6): a C++17-safe window onto the organization of
+/* 1.11.66 (PIMID): a C++17-safe window onto the organization of
  * the device Ramulator actually instantiated. dram/dram.h is C++20 (concepts,
  * consteval) and cannot be included from PIMID's C++17 translation units, so
  * the shape cross-check in RamulatorWrapper::createRamulatorInstance() reads
@@ -15,7 +15,7 @@ struct LiveOrganization {
     long long banks          = -1;  // banks per (bankgroup or pseudochannel or device)
     long long rows           = -1;
     long long columns        = -1;
-    /* 1.11.91 (audit R8-3): the instantiated channel's width and DQ, so the
+    /* 1.11.91: the instantiated channel's width and DQ, so the
      * wrapper can bind pimid_energy::accessPathFor() to the device Ramulator
      * actually simulates (DDR3/4/5). -1 where unreadable. */
     long long channel_width  = -1;

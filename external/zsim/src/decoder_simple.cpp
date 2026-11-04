@@ -26,7 +26,7 @@
  * a host mapping no longer moves a guest mapping either.) */
 const char* const kFpCensusNames[FP_CENSUS_CATS] = {
     "AddS", "MulS", "AddD", "MulD", "FmaS", "FmaD", "DivS", "DivD", "X87"};
-/* PIMID 1.12.18: (ruling 2026-10-23 #3) integer categories (decoder_simple.h). */
+/* PIMID 1.12.18: integer categories (decoder_simple.h). */
 const char* const kIntCensusNames[INT_CENSUS_CATS] = {
     "Alu8", "Alu16", "Alu32", "Alu64", "Mul8", "Mul16", "Mul32", "Mul64", "Div"};
 namespace {

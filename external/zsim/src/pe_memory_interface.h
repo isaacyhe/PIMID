@@ -27,17 +27,17 @@
 #include "g_std/g_string.h"
 #include "garnet_network.h"
 #include "common/debug_checks.h"   // (1.12.264): the shared bank wait's counters
-#include "noc_wire_data.h"   // (user ruling 2026-10-25: measured wire activity)
+#include "noc_wire_data.h"   // (measured wire activity)
 #include "memory_hierarchy.h"
 #include "hierarchy_util.h"
 #include "sparse_htree.h"
-#include "dram_epoch_replay.h"   // 1.11.98 (ruling 4 (c))
+#include "dram_epoch_replay.h"   // 1.11.98
 #include "pimid_noc_shm.h"
 #include <cstdlib>
 #include "pad.h"
 #include "stats.h"
 #include "zsim.h"
-#include "dq_data_stats.h"   // (user ruling 2026-10-25: measured termination duty)
+#include "dq_data_stats.h"   // (measured termination duty)
 
 /**
  * PE Memory Interface: coverage routing + hierarchy traversal + M/D/1 queuing.
@@ -305,9 +305,9 @@ protected:
     Counter profLocalLatency_;
     Counter profRemoteLatency_;
     Counter profReplayPriced_, profReplayLat_;   // (1.12.148): accesses priced by the DRAM epoch replay and the replayed service latency they were charged (charged vs measured check)
-    NocWireData::Stream wireStream_;   // this source port's last flit per width (user ruling 2026-10-25: measured wire activity)
+    NocWireData::Stream wireStream_;   // this source port's last flit per width (measured wire activity)
     /* The access's line, read ONCE per access and shared by the measured DQ statistics and the
-     * measured wire activity (user ruling 2026-10-25: measured wire activity): the DQ count reads it (localAccessLatency, which every
+     * measured wire activity: the DQ count reads it (localAccessLatency, which every
      * access calls first); the fabric packet of the same access reuses it. Per thread: PEs that
      * share this interface run on their own threads. */
     struct AccessLine { uint64_t lineAddr = ~0ull; bool ok = false; uint32_t n = 0; uint8_t b[256]; };
@@ -320,8 +320,8 @@ protected:
     }
     Counter profReads_;
     Counter profWrites_;
-    DqDataStats dqStats_;   // the data of every line this interface reads or writes (user ruling 2026-10-25: measured termination duty)
-    /* 1.11.52 (audit D003): MEASURED row-buffer behaviour. The array energy
+    DqDataStats dqStats_;   // the data of every line this interface reads or writes (measured termination duty)
+    /* 1.11.52: MEASURED row-buffer behaviour. The array energy
      * model weighted its activate/precharge term by a hardcoded
      * ROW_MISS_FRAC = 0.5 -- the dominant term in DRAM access energy set by
      * a coin flip. The interface already sees every access address and the
@@ -331,11 +331,11 @@ protected:
      * uses the measured fraction (and refuses to invent one when this was
      * never armed, i.e. dramRowBytes == 0). */
     Counter profRowHits_;
-    Counter profPairSampled_, profPairFallback_;   // 1.11.97 (H09)
+    Counter profPairSampled_, profPairFallback_;   // 1.11.97
     mutable Counter profFtPages_;                  // 1.12.18: pages placed here by first touch
     mutable std::atomic<uint64_t> ftSeq_{0};       // 1.12.18: this PE's first-touched pages, in order
     Counter profRowMisses_;
-    /* 1.11.57 (audit D006, D007, D008): one open-row register per BANK, sized
+    /* 1.11.57: one open-row register per BANK, sized
      * ONCE at construction, indexed by a row number computed on the RANK's
      * address stripe rather than on one device's page. See noteRowAccess()
      * for what each of those three corrections was fixing. ~0ull = no open
@@ -343,7 +343,7 @@ protected:
     std::vector<uint64_t> lastRow_;
     uint64_t rowStrideBytes_ = 0;     // system bytes one ACT makes resident
     uint32_t rowSlotsPerUnit_ = 1;    // independent open rows inside one unit
-    bool getxIsStore_ = false;        // 1.11.97 (H07): the cacheless ALU element issues GETX for stores
+    bool getxIsStore_ = false;        // 1.11.97: the cacheless ALU element issues GETX for stores
   public:
     void setGetxIsStore(bool v) { getxIsStore_ = v; }
   private:
@@ -472,7 +472,7 @@ public:
             const uint32_t div = std::max(1u, zinfo->hierarchy.treeUnitDiv);   // (1.12.247): an SRAM/NVM group
             if (div > 1) for (auto& h : peHomes) h /= div;
             const int W[4] = {1, 1, 1, 1}, Lt[4] = {1, 1, 1, 1};  // structure only
-            pimid_htree::InDieFabric fab;   // 1.11.103 (ruling 9): the grid the simulator's census built
+            pimid_htree::InDieFabric fab;   // 1.11.103: the grid the simulator's census built
             fab.kind = (int)zinfo->hierarchy.indieFabric;
             fab.gridW = (int)zinfo->hierarchy.indieGridW;
             fab.gridH = (int)zinfo->hierarchy.indieGridH;
@@ -502,7 +502,7 @@ public:
     // sides agree.
     static int unitToEndpoint(uint32_t unit) { return tree().endpointForUnit(unit); }
 
-    /* 1.11.97 (ruling 7 (c); gate 1206B P2): the per-access walk over the BUILT
+    /* 1.11.97: the per-access walk over the BUILT
      * tree -- see pimid_htree::TreeWalker. The walker is built once from the
      * shared tree (same call_once discipline as tree()). Returns false when the
      * tree cannot place the pair (no PEs, HOST_MC placement, unknown endpoint):
@@ -566,7 +566,7 @@ public:
         return v == 1;
     }
 
-    /* 1.12.18 (user ruling 2026-10-24, "OMP: the full thread-MPI mechanism"):
+    /* 1.12.18 (OMP: the full thread-MPI mechanism):
      * a single-process exec run (shared memory: OpenMP, serial, co-sim OMP; the
      * QEMU plugin sets PIMID_EXEC_CUT before SimInit, the trace driver does not)
      * prices like thread-MPI: NoC records and DRAM replay keys on the core's
@@ -626,7 +626,7 @@ public:
         const uint64_t off = (r > a) ? r - a : 0;
         return (raw > off) ? raw - off : 0;
     }
-    /* 1.12.21 (user ruling 2026-10-24): an in-order / OOO core synced to a
+    /* 1.12.21: an in-order / OOO core synced to a
      * waker or a lock releaser takes that core's origin: the origin that puts
      * it at the releaser's ROI-relative clock at the sync (its wall-free clock
      * then, minus the releaser's ROI-relative clock at the release). Cleared
@@ -691,7 +691,7 @@ public:
     }
 
     /* (1.12.181): a co-sim message-passing rank past its window-close marker runs its post-ROI tail on its PE
-     * (g_peTailRun, core.h). The tail is outside the priced window (ruling 1 (a)); its requests are still
+     * (g_peTailRun, core.h). The tail is outside the priced window; its requests are still
      * timed and replayed, and the DRAM replay classes them outside the ROI (it nets rd/wr and replayPriced/
      * replayLat itself, applyOutside), but they are in none of the interface's other ROI counters, the DQ
      * data statistics, the residency markers and gap histograms, or the measured wire activity. The flag is
@@ -930,7 +930,7 @@ public:
     };
 
     uint64_t access(MemReq& req) override {
-        /* 1.11.97 (review H07): a CLEAN eviction (PUTS) moves no data to the
+        /* 1.11.97: a CLEAN eviction (PUTS) moves no data to the
          * array and is not an access: it returns at once, uncounted. For a
          * cache-based element a GETX is a read (the line is fetched for
          * ownership; the write to the array is the later PUTX); the cacheless
@@ -939,7 +939,7 @@ public:
          * PUTS was an access and every GETX a write, so a cached element's
          * read stream was priced with the row-miss and energy of writes. */
         if (req.type == PUTS) { *req.state = I; return req.cycle; }
-        /* 1.12.17 (M1, user 2026-10-22): a message-passing message costs one
+        /* 1.12.17: a message-passing message costs one
          * read of the sender's buffer, the injected Garnet transfer and one
          * write of the receiver's buffer. The emulation transport's own work --
          * any access made while the core is parked in an MPI comm window (its
@@ -966,7 +966,7 @@ public:
          * (per-channel split is a refinement once channel ids are surfaced
          * here -- stated, not hidden).
          *
-         * 1.11.38 (audit E16): the NoC marker used to sit HERE too, on the
+         * 1.11.38: the NoC marker used to sit HERE too, on the
          * claim that every access "injects into the tree fabric". That is
          * true under detailed Garnet, which forces wantLocal false below and
          * routes everything -- but NOT under the analytical NoC, where a
@@ -1129,7 +1129,7 @@ public:
                 const bool flatNodes = gn->isFlatTopology() && zinfo->hierarchy.connectionMode == 0;
                 uint32_t srcNode = (flatNodes ? representativeUnit() : (uint32_t)mcId_) % gn->getNumNodes();
                 uint32_t dstNode = (flatNodes ? targetUnit : (uint32_t)dstEp) % gn->getNumNodes();
-                /* (user ruling 2026-10-26: control messages): the access is two messages on Garnet's
+                /* (control messages): the access is two messages on Garnet's
                  * own classes -- a read: a CONTROL request (the 64-bit header word,
                  * src -> dst) + a DATA response (header + line, dst -> src); a write: a
                  * DATA request + a CONTROL ack. Both are replayed (contention, flits) and
@@ -1144,8 +1144,8 @@ public:
                 const bool reqCtrl = ctrlMsgs && !isWr;
                 uint64_t respStamp = 0; bool respRec = false;
                 uint32_t legReq = 0, legResp = 0;
-                /* (user ruling 2026-10-25: measured wire activity) the data message this access
-                 * puts on the tree -- PIMID's own header with its real field values (user ruling 2026-10-26: PIMID's own packet header)
+                /* (measured wire activity) the data message this access
+                 * puts on the tree -- PIMID's own header with its real field values (PIMID's own packet header)
                  * (destination, source, type, tag; the line address on a write request) + the line
                  * this access already read (localAccessLatency above; no second read) -- counted on
                  * this source port's stream. Only a traversing packet (src != dst), only before the
@@ -1154,7 +1154,7 @@ public:
                 if (zinfo->nocWire && srcNode != dstNode && !zinfo->terminationConditionMet && !inTail()) {   // (1.12.181): not the tail
                     const AccessLine& al = accessLine();
                     const bool wr = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
-                    /* the line's offset in its window (user ruling 2026-10-26: PIMID's own packet header): a declared device window
+                    /* the line's offset in its window (PIMID's own packet header): a declared device window
                      * holding the address (system scope), else the device's own address map,
                      * whose contiguous unit blocks repeat every units x pagesPerUnit pages */
                     uint64_t off = req.lineAddr % ((uint64_t)std::max(1u, totalUnits_)
@@ -1169,7 +1169,7 @@ public:
                     const uint32_t slot = req.srcId % std::max(1u, zinfo->hierarchy.pesPerMC);   // the PE's slot at this port
                     zinfo->nocWire->countAccess(wireStream_, dstNode, srcNode, wr, off, slot,
                                                 (al.ok && al.lineAddr == req.lineAddr) ? al.b : nullptr, al.n,
-                                                ctrlMsgs);   // + its control message (user ruling 2026-10-26: control messages)
+                                                ctrlMsgs);   // + its control message (control messages)
                 }
                 };
                 if (!deferBank) countWire();
@@ -1231,11 +1231,11 @@ public:
                     }
                 } else {
                     // OMP / non-MPI: record on the global phase clock. 1.12.18
-                    // (ruling 2026-10-24, epoch-frozen): no inline drain by the
+                    // (epoch-frozen): no inline drain by the
                     // first access thread of a phase; the records are folded at
                     // the phase barrier (EndOfPhaseActions) and the pair table
                     // read below changes only there (GarnetNetwork::frozenPublish_).
-                    // 1.12.18 (ruling 2026-10-24, full mechanism): after the ROI
+                    // 1.12.18 (full mechanism): after the ROI
                     // baseline on the core's ROI-relative clock, folded at the
                     // consistent cut (as thread-MPI); before it on the phase grid.
                     respStamp = (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
@@ -1276,7 +1276,7 @@ public:
                             legReq = legResp = garnetLat;   /* the shared multi-process NoC keeps the epoch mean */
                         } else {
                             /* (1.12.237): THIS pair's epoch-frozen measured latency, each leg at its own class
-                             * (the H09 rule of the shared-memory path). The epoch-wide mean priced a near
+                             * (as the shared-memory path prices a pair since 1.11.97). The epoch-wide mean priced a near
                              * and a far pair alike and gave every rank the same cost per access, so ranks
                              * running the same code could lock into step and inject in bursts, and the
                              * lagged mean fed that back: the same cell landed in a fast or a slow state
@@ -1311,14 +1311,14 @@ public:
                             garnetLat = legReq;
                         }
                     } else {
-                        /* 1.11.97 (review H09 / x02-7): THIS PAIR's measured latency,
+                        /* 1.11.97: THIS PAIR's measured latency,
                          * not the batch-wide mean -- a near unit and a far one used
                          * to cost the same. A pair with no sample yet takes the
                          * ladder cost of its tree distance (the analytical tier
                          * walk), never the global average. */
                         int64_t fe = -2;   // -2: the live table
                         if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined) {
-                            /* 1.12.18 (ruling 2026-10-24): the frozen per-pair table
+                            /* 1.12.18: the frozen per-pair table
                              * of epoch k - lag, k the epoch of this access on its
                              * core's ROI-relative clock (lag as thread-MPI's). */
                             const uint32_t E = gn->detEpochPhases();
@@ -1326,7 +1326,7 @@ public:
                             const uint64_t k = cutRoiRel(req.srcId, req.cycle) / eL;
                             fe = (k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1;
                         }
-                        /* (user ruling 2026-10-26: control messages): each leg at its own class's pair latency
+                        /* (control messages): each leg at its own class's pair latency
                          * (the request src -> dst, the response dst -> src) */
                         auto pairOf = [&](uint32_t s, uint32_t d, bool c) -> uint32_t {
                             return (fe != -2) ? gn->frozenPairLatency(fe, s, d, c) : gn->getPairLatency(s, d, c);
@@ -1335,7 +1335,7 @@ public:
                         legResp = ctrlMsgs ? pairOf(dstNode, srcNode, ctrlMsgs && isWr) : legReq;
                         garnetLat = (legReq && legResp) ? legReq : 0;
                         if (garnetLat == 0) {
-                            /* 1.11.97 (H09 + ruling 7 (c)): the unsampled pair's ladder
+                            /* 1.11.97 (+): the unsampled pair's ladder
                              * cost is its distance on the BUILT tree. */
                             {
                                 uint32_t pl[8]; uint64_t wc = 0;
@@ -1348,7 +1348,7 @@ public:
                                     zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
                             }
                             roiInc(profPairFallback_);   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-                            /* a leg with no sample yet takes the ladder cost (user ruling 2026-10-26: control messages) */
+                            /* a leg with no sample yet takes the ladder cost (control messages) */
                             if (!legReq) legReq = garnetLat;
                             if (!legResp) legResp = garnetLat;
                         } else {
@@ -1357,13 +1357,13 @@ public:
                     }
                     if (!legReq) legReq = zinfo->hierarchy.nocAvgOneWayLatency;
                     if (!legResp) legResp = zinfo->hierarchy.nocAvgOneWayLatency;
-                    networkLat = legReq + legResp;   // request leg + response leg (user ruling 2026-10-26: control messages)
+                    networkLat = legReq + legResp;   // request leg + response leg (control messages)
                 }
                 if (deferBank) {   // (1.12.258): the bank at the request's arrival
                     remoteLat = localAccessLatency(req, &byReplay, req.cycle + legReq);
                     countWire();
                 }
-                /* the response message (user ruling 2026-10-26: control messages): from the target back to the
+                /* the response message (control messages): from the target back to the
                  * requester, injected when the request has arrived (its leg) and the
                  * target's access is done (remoteLat), on the request's clock axis */
                 if (respRec && !postRoi && srcNode != dstNode)
@@ -1411,7 +1411,7 @@ public:
              * accesses. The same walk, counted per tier, into the same
              * network statistics the detailed path fills. Post-ROI accesses
              * are not counted, as on the detailed path. */
-            /* 1.11.97 (ruling 7 (c); gate 1206B P2): the walk is over the BUILT
+            /* 1.11.97: the walk is over the BUILT
              * tree -- source = this element's endpoint (mcId_, as on the
              * detailed path), destination = the endpoint the target unit routes
              * to (endpointForUnit, the same map Garnet's packets follow). The
@@ -1422,7 +1422,7 @@ public:
              * access through a chip-level LCA and none through the rank router
              * Garnet measured one crossing per packet on. It stays only as the
              * fallback for a run with no tree (HOST_MC placement, no PEs). */
-            uint32_t perLevel[8];   // 1.11.94 (H17): one more rung (HOST_MC)
+            uint32_t perLevel[8];   // 1.11.94: one more rung (HOST_MC)
             uint32_t links = 0; uint64_t walkCost = 0;
             uint32_t tsvDies = 0;   // 1.12.18
             uint32_t gridEdges = 0;   // (1.12.143): in-die node links this walk crossed
@@ -1441,7 +1441,7 @@ public:
                         gridEdges, (int)zinfo->hierarchy.placementLevel,   // (1.12.143)
                         perLevelLink);   // (1.12.234)
                     /* the access's control message (a read's request, a write's ack) over
-                     * the same tiers (user ruling 2026-10-26: control messages); the analytical ladder
+                     * the same tiers (control messages); the analytical ladder
                      * charges the round trip as before */
                     zinfo->garnetNetwork->recordTierWalk(perLevel, links, true, tsvDies,
                         fromTree && zinfo->hierarchy.stackChannelsPerDie > 0,
@@ -1457,7 +1457,7 @@ public:
                 zinfo->hierarchy.banksPerBG, zinfo->hierarchy.bgPerChip,
                 zinfo->hierarchy.chipsPerRank, zinfo->hierarchy.ranksPerChannel);
 
-            /* 1.11.57 (audit D013): THE 64 B LINE IS SERIALISED ONCE, BY THE
+            /* 1.11.57: THE 64 B LINE IS SERIALISED ONCE, BY THE
              * LADDER. This site used to add a wormhole term on top --
              * (nocFlitsPerPacket - 1) cycles each way, with flits_per_packet =
              * ceil(576/128) = 5 from a hardcoded 128-bit link width in
@@ -1510,7 +1510,7 @@ public:
                 double overlapped = (double)(L + nocContentionLat) / (double)M;
                 double bwFloor = 0.0;
                 if (zinfo->hierarchy.nocAggBandwidthMBs > 0) {
-                    /* 1.11.97 (ruling 26): the floor is the physical rate the P
+                    /* 1.11.97: the floor is the physical rate the P
                      * elements can draw: the channel aggregate, capped by P x the
                      * placement tier's rung bandwidth (width x clock) -- no
                      * placement gradient literal. */
@@ -1653,7 +1653,7 @@ public:
 
     const char* getName() override { return name_.c_str(); }
 
-    Counter* rdCounter() { return &profReads_; }    // 1.12.18 (R1): bound to the replay
+    Counter* rdCounter() { return &profReads_; }    // 1.12.18: bound to the replay
     Counter* wrCounter() { return &profWrites_; }
     Counter* replayPricedCounter() { return &profReplayPriced_; }   // (1.12.153): bound to the replay (outside-ROI requests leave them)
     Counter* replayLatCounter() { return &profReplayLat_; }
@@ -1663,11 +1663,11 @@ public:
     void initStats(AggregateStat* parentStat) override {
         AggregateStat* s = new AggregateStat();
         s->init(name_.c_str(), "PE memory interface stats");
-        /* 1.11.57 (audit D008): "the unit's open row" was the claim a single
+        /* 1.11.57: "the unit's open row" was the claim a single
          * register per placement unit could support; the model now holds one
          * per BANK inside the unit, which is what the part does. */
         profRowHits_.init("rowHits", "Accesses hitting the bank's open row (measured)");
-        profPairSampled_.init("pairSampled", "Detailed-fabric accesses priced at their own source-destination pair's measured latency (1.11.97 H09)");
+        profPairSampled_.init("pairSampled", "Detailed-fabric accesses priced at their own source-destination pair's measured latency (1.11.97)");
         profPairFallback_.init("pairFallback", "Detailed-fabric accesses priced at the ladder cost of their tree distance (no pair sample yet)");
         s->append(&profPairSampled_); s->append(&profPairFallback_);   /* same aggregate as the row counters: the mem group must stay regular for the HDF5 backend */
         s->append(&profRowHits_);
@@ -1950,14 +1950,14 @@ protected:
     // epoch-frozen (thread-MPI) path use one identical formula.
     static uint32_t channelWaitFromRate(double aggArrivalRate) {
         uint64_t aggMBs = zinfo->hierarchy.nocAggBandwidthMBs;
-        /* 1.11.97 (ruling 26, gate 1207B): the service rate the shared-channel
+        /* 1.11.97: the service rate the shared-channel
          * queue sees is the physical rate the P elements can draw -- the channel
          * aggregate, capped by P x the placement tier's rung bandwidth (width x
          * clock from the ladder), the same rule as the bandwidth floor. This
          * site still multiplied the aggregate by a placement gradient (x4 at
-         * subarray, x2 at bank / bank-group, x1 above), the literal ruling 26
+         * subarray, x2 at bank / bank-group, x1 above), the literal
          * retired from init.cpp and the floor; it survived here because the
-         * formula was extracted verbatim before the ruling. */
+         * formula was extracted verbatim before the rule. */
         if (zinfo->hierarchy.tierBandwidthMBs > 0) {
             uint64_t P = (zinfo->numCores > 0) ? zinfo->numCores : 1;
             uint64_t tierAgg = (uint64_t)zinfo->hierarchy.tierBandwidthMBs * P;
@@ -2020,7 +2020,7 @@ protected:
         return (uint32_t)(wait + 0.5);
     }
 
-    /* 1.11.98 (ruling 4 (c)): the device time of an access. With the epoch
+    /* 1.11.98: the device time of an access. With the epoch
      * replay armed every access is recorded for the controller and priced at
      * the previous epoch's replayed service latency of THIS interface (device
      * time including the controller's queueing, row behaviour, refresh and
@@ -2032,11 +2032,11 @@ protected:
     uint32_t localAccessLatency(MemReq& req, bool* byReplay = nullptr, uint64_t arriveAt = ~0ull) {
         uint32_t result;
         if (byReplay) *byReplay = false;
-        /* 1.11.97 (review H07): the rd/wr stats follow the same rule as the
+        /* 1.11.97: the rd/wr stats follow the same rule as the
          * access classification -- a cached element's GETX is a read
          * (ownership fetch; the array write is its later PUTX), the cacheless
          * element's GETX is its store (getxIsStore_). PUTS never reaches this
-         * point. 1.11.100 (gate 1210A): counted HERE, before the epoch replay
+         * point. 1.11.100: counted HERE, before the epoch replay
          * hook below returns -- 1.11.98/1.11.99 counted at the end of this
          * function, which a replay-priced access never reached, so every
          * device cell priced by the replay under-reported its DRAM reads and
@@ -2044,15 +2044,14 @@ protected:
          * 8,297 L2 misses on the gemv probe). */
         if ((req.type == PUTX) || (req.type == GETX && getxIsStore_)) {
             profWrites_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (user ruling 2026-10-25: measured wire activity)
-              if (!inTail()) { if (al.ok) dqStats_.countBytes(al.b, al.n, true); else dqStats_.unread[1].atomicInc(); } }   // the line's data on the DQ pins (user ruling 2026-10-25: measured termination duty); (1.12.181): not the tail
+            { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (measured wire activity)
+              if (!inTail()) { if (al.ok) dqStats_.countBytes(al.b, al.n, true); else dqStats_.unread[1].atomicInc(); } }   // the line's data on the DQ pins (measured termination duty); (1.12.181): not the tail
         } else {
             profReads_.atomicInc();   // 1.12.18: atomic: PEs sharing one PE-MI (8:1 at RANK/CHANNEL) race in parallel bound phases; inc() lost updates
-            { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (user ruling 2026-10-25: measured wire activity)
+            { const AccessLine& al = readAccessLine(req.lineAddr);   // the one read of this access (measured wire activity)
               if (!inTail()) { if (al.ok) dqStats_.countBytes(al.b, al.n, false); else dqStats_.unread[0].atomicInc(); } }   // (1.12.181): not the tail
         }
-        /* 1.12.17 (user 2026-10-22: "we need message passing side measured as
-         * well"): under exec-method message passing (thread-MPI) the replay runs
+        /* 1.12.17: under exec-method message passing (thread-MPI) the replay runs
          * in cut mode -- stamped on this core's ROI-relative cycle (the axis the
          * thread-MPI NoC pricing uses), keyed by that stamp's epoch, replayed
          * only at the phase barrier once the consistent cut has passed the
@@ -2066,7 +2065,7 @@ protected:
                   (int)replayCut, (int)cutPricing());
         if (zinfo->dramReplay && zinfo->hierarchy.dramEpochReplay &&
             (!replayCut || zinfo->hierarchy.mpiNocBaselined)) {
-            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145, ruling 2026-10-28): the replay's own epoch
+            const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145): the replay's own epoch
             uint64_t curEpoch, stamp;
             if (replayCut) {
                 const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
@@ -2081,7 +2080,7 @@ protected:
                 stamp = phaseStamp(req.cycle);
             }
             const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
-            /* 1.11.98 (gate 1208A): the TARGET bank -- the unit the address
+            /* 1.11.98: the TARGET bank -- the unit the address
              * belongs to, and the bank slot and row the interface's own row
              * model gives it (the same stripe arithmetic as noteRowAccess). */
             const uint32_t unit = addrToUnit(req.lineAddr);
@@ -2266,14 +2265,14 @@ protected:
             // MC node for memory org `targetUnit` is modeled as node `targetUnit`.
             uint32_t mcNode = targetUnit % gn->getNumNodes();
             // Post-ROI: charge, but never record (POST-ROI GUARD in access()).
-            /* (user ruling 2026-10-26: control messages): the hop is the access's two messages, a
+            /* (control messages): the hop is the access's two messages, a
              * read's control request + data response, a write's data request + control
              * ack; the response is stamped one mean one-way latency after the request. */
             uint64_t hopStamp = 0;
             if (!zinfo->terminationConditionMet) {
                 // Global-phase-clock stamp; thread-MPI folds at the barrier, OMP
                 // drains inline (single process).
-                // 1.12.18 (ruling 2026-10-24): folded at the phase barrier, no inline drain;
+                // 1.12.18: folded at the phase barrier, no inline drain;
                 // single-process runs after the ROI baseline on the ROI-relative clock.
                 hopStamp = (singleProcCut() && zinfo->hierarchy.mpiNocBaselined)
                          ? cutRoiRel(srcId, cycle) : phaseStamp(cycle);
@@ -2310,7 +2309,7 @@ protected:
      * (zinfo->hierarchy.dramRowBytes > 0), so nothing is claimed for a
      * configuration where the row geometry was never established.
      *
-     * 1.11.57 (audit D006): THE ROW NUMBER IS COMPUTED ON THE RANK'S ADDRESS
+     * 1.11.57: THE ROW NUMBER IS COMPUTED ON THE RANK'S ADDRESS
      * SPACE, NOT ON ONE DEVICE'S PAGE. `lineAddr << 6` is a SYSTEM byte
      * address, but dramRowBytes is the PER-DEVICE page (1 KB for DDR3/4/5),
      * and on a DDR-class 64-bit rank a single 64 B access engages every chip
@@ -2327,7 +2326,7 @@ protected:
      * 0.0078 -- 8x -- and on DDR4 (e_actpre ~1.42 nJ against e_rd ~0.39 nJ)
      * that is roughly +19% on per-access read energy.
      *
-     * 1.11.57 (audit D008): ONE OPEN ROW PER BANK, NOT PER PLACEMENT UNIT.
+     * 1.11.57: ONE OPEN ROW PER BANK, NOT PER PLACEMENT UNIT.
      * `unit` is addrToUnit()'s index at the CONFIGURED PLACEMENT LEVEL. At
      * BANK placement a unit is a bank and a single register is right; at CHIP,
      * RANK or CHANNEL placement a unit contains 4-16 banks, each holding its
@@ -2338,7 +2337,7 @@ protected:
      * next, row high), i.e. bank = stripe_index % banks_in_unit and
      * row = stripe_index / banks_in_unit.
      *
-     * 1.11.57 (audit D007): NO RESIZE ON THE ACCESS PATH. lastRow_ was grown
+     * 1.11.57: NO RESIZE ON THE ACCESS PATH. lastRow_ was grown
      * with resize() from access(), which several PE threads enter concurrently
      * whenever pesPerMC > 1 (init.cpp maps miIdx = aluCoreIdx / pesPerMC), and
      * `unit` ranges over ALL units because remote call sites pass their target
@@ -2366,12 +2365,12 @@ protected:
         }
     }
 
-    /* 1.11.57 (audit D006/D007/D008): the row model's geometry, resolved once
+    /* 1.11.57: the row model's geometry, resolved once
      * at construction so nothing on the access path has to allocate.
      *
      * rowStrideBytes_ -- system bytes made resident by one ACT: the
      * per-device page times the number of devices one access engages.
-     * 1.11.91 (audit R8-1): SENT BY THE EMITTER as
+     * 1.11.91: SENT BY THE EMITTER as
      * sys.hierarchy.dramRowStrideBytes (src/main.cpp, from
      * RamulatorWrapper::getDevicesPerAccess() -- the rule the array energy
      * uses), which is the "durable form" the 1.11.57 note here called for.
@@ -2389,7 +2388,7 @@ protected:
      * the chips of a rank operate in lock step and their same-numbered banks
      * are one logical bank as far as the address stream is concerned.
      *
-     * 1.11.60 (audit round 4, D005): THE ENUMERATION ABOVE USED TO STOP AT 5,
+     * 1.11.60: THE ENUMERATION ABOVE USED TO STOP AT 5,
      * and so did the switch. The emitter has SEVEN levels -- src/main.cpp maps
      * "LOGIC_DIE" to pe_hierarchy_level = 6 -- so LOGIC_DIE fell into the
      * `default` arm and was handed the CHANNEL tier's register count, i.e. the
@@ -2413,7 +2412,7 @@ protected:
     void initRowModel_() {
         const uint32_t rowBytes = zinfo ? zinfo->hierarchy.dramRowBytes : 0;
         if (rowBytes == 0) { rowStrideBytes_ = 0; return; }
-        /* 1.11.91 (audit R8-1): the stride is the EMITTER'S, explicitly. The
+        /* 1.11.91: the stride is the EMITTER'S, explicitly. The
          * `(rowBytes == 1024) ? chipsPerRank : 1` reconstruction that stood
          * here keyed on a page size that stopped identifying the DDR classes
          * when 1.11.66 made the page preset-derived (HBM2/HBM3 = 1 KB per
@@ -2439,7 +2438,7 @@ protected:
                              ? zinfo->hierarchy.bgPerChip : 1u;
         const uint32_t rpc = (zinfo->hierarchy.ranksPerChannel > 0)
                              ? zinfo->hierarchy.ranksPerChannel : 1u;
-        /* 1.11.60 (audit round 4, D005): the channel count, for level 6. */
+        /* 1.11.60: the channel count, for level 6. */
         const uint32_t chn = (zinfo->hierarchy.dramChannels > 0)
                              ? zinfo->hierarchy.dramChannels : 1u;
         uint32_t slots = 1;
@@ -2449,7 +2448,7 @@ protected:
             case 3: slots = bpg * bgc; break;              // chip
             case 4: slots = bpg * bgc; break;              // rank (chips lock-step)
             case 5: slots = bpg * bgc * rpc; break;        // channel
-            /* 1.11.97 (review x04-zsim-memory-if-6): at LOGIC_DIE a unit is one
+            /* 1.11.97: at LOGIC_DIE a unit is one
              * channel-sized region when the tree carries one unit per channel
              * (totalUnits_ == channels): its open-row registers are one
              * channel's banks, not every channel's. A single all-channel unit
@@ -2477,7 +2476,7 @@ protected:
     }
 
   public:
-    /* 1.12.18 (ruling 17 / R0605): the bank a HOST access to the shared array
+    /* 1.12.18: the bank a HOST access to the shared array
      * lands on, for the DRAM epoch replay -- the device's own placement of the
      * line, read WITHOUT claiming anything: a stack placed by its owner maps
      * into the owner's coverage, a page a PE has first-touched lives in that
@@ -2534,7 +2533,7 @@ protected:
                 break;
             }
         }
-        /* (1.12.146, user ruling 2026-10-28: the multi-core host latency gap) a page no PE has placed is
+        /* (1.12.146, the multi-core host latency gap) a page no PE has placed is
          * the host's own: it is spread over all units page by page, as a host memory controller interleaves
          * its pages over channels and banks. It used to take the PIM block map (pages_per_unit contiguous
          * pages per unit), which put a host baseline's whole working set on one channel and a few banks
@@ -2604,7 +2603,7 @@ protected:
                 break;
             }
         }
-        /* 1.12.18 (user rulings 2026-10-23, c-1 and A): first-touch placement,
+        /* 1.12.18 (c-1 and A): first-touch placement,
          * in every mode. A data page lives in the memory of the first PE that
          * accesses it, as Linux places a page on the node of the thread that
          * first touches it, and as real PIM keeps a PE's data in its own bank

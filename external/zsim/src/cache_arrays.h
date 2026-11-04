@@ -48,7 +48,7 @@ class CacheArray : public GlobAlloc {
          */
         virtual void postinsert(const Address lineAddr, const MemReq* req, uint32_t lineId) = 0;
 
-        /* 1.11.57 (audit D002): the address currently tagged at `lineId`.
+        /* 1.11.57: the address currently tagged at `lineId`.
          * The coherence flush has to count DISTINCT dirty lines, and the same
          * dirty line is resident at every level of an inclusive hierarchy --
          * so the only way to de-duplicate it is by address. Counting by level

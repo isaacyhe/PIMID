@@ -203,9 +203,9 @@ void init_tech_params(double tech, bool is_tag);   /* PIMID (1.12.150): cacti/te
  * Low radix (<= 8 ports), buffered, router area (clock f, f x L in GHz nm):
  *   [C] Celerity, 16 nm, 1.4 GHz, 5 p, 80 b, one 2-entry FIFO: 1881 um^2
  *       (Rovinski et al., VLSI 2019); no 16 nm CACTI solution at 2 entries:
- *       the model at 22 nm x (16/22)^2 (DERIVED);
+ *       the model at 22 nm x (16/22)^2;
  *   [O] Piton, 32 nm, 500 MHz, 5 p, 64 b, 4-entry FIFO: 0.98% of a
- *       1.17459 mm^2 tile = 0.0115 mm^2 (DERIVED; McKeown et al., HPCA 2018;
+ *       1.17459 mm^2 tile = 0.0115 mm^2 (McKeown et al., HPCA 2018;
  *       OpenPiton microarchitecture specification);
  *   [S] MIT SWIFT, 90 nm, 400 MHz, 5 p, 64 b, 2 VCs, 8 buffers per port:
  *       0.150 mm^2 (Krishna et al., ICCD 2010; Krishna, PhD thesis, 2014);
@@ -222,7 +222,7 @@ void init_tech_params(double tech, bool is_tag);   /* PIMID (1.12.150): cacti/te
  * ([C][O][S][F][D], f x L 16..45) against the 3.6..4 GHz ones ([K][P],
  * 234..260). k(fL) = the geometric mean of the first group's ratios at
  * f x L <= its geometric-mean f x L, the second group's at >= theirs,
- * log-log interpolated between (DERIVED), at this instance's clock and node.
+ * log-log interpolated between, at this instance's clock and node.
  * High radix (>= 16 ports): the crossbar scaled by kW, the geometric mean of
  * four published crossbars' published / model ratios, plus the input buffers
  * scaled by k(fL); the model's bounding box (ports x buffer height x
@@ -233,10 +233,10 @@ void init_tech_params(double tech, bool is_tag);   /* PIMID (1.12.150): cacti/te
  *        32 nm layout: 1.1 mm^2 (K. Sewell, PhD thesis, U. Michigan 2012);
  *        [W4] mux crossbar 16x16 x 72 b, 40 nm, 2.5 GHz post-layout:
  *        0.32 mm^2 (C. Cakir, PhD thesis, CMU 2016), the model at 45 nm x
- *        (40/45)^2 (DERIVED).
+ *        (40/45)^2.
  * 9..15 ports and 2-port datapaths wider than 128 b have no published point:
- * priced by the low-radix rule; the run says NO PUBLISHED SOURCE FOUND.
- * Leakage is taken proportional to area, per part (DERIVED). Cross-check:
+ * priced by the low-radix rule; the run says no published value found.
+ * Leakage is taken proportional to area, per part. Cross-check:
  * [P]'s estimated router leakage, 82 mW at 1.2 V and 110 C (Hot Chips 19).
  * Dynamic energy per flit is not scaled (judged per bit-hop by the power
  * checker against [P] and the Intel SCC router). */
@@ -358,7 +358,7 @@ void NoC::init_router()
 			nocdynp.input_ports,nocdynp.output_ports, M_traffic_pattern);
 	//router->print_router();
 
-	/* PIMID 1.11.81 (audit round 6, R6-10): CROSS-CHECK THE BUFFER AGAINST
+	/* PIMID 1.11.81: CROSS-CHECK THE BUFFER AGAINST
 	 * ITS OWN CROSSBAR, AND SAY SO WHEN IT IS ABSURD.
 	 *
 	 * History. Round 6 measured the router input buffer at 10.4x its own
@@ -369,7 +369,7 @@ void NoC::init_router()
 	 * cause: Router::buffer_stats() handed the Mat an UNINITIALISED wire type
 	 * (and the full rail as the bitline sense voltage). With both corrected
 	 * the buffer Mat converges at every node measured (22, 32 and 65 nm,
-	 * both routers), this check clears on DDR3 (gate 1196A), and a
+	 * both routers), this check clears on DDR3, and a
 	 * non-finite Mat result now refuses the run (cacti/router.cc).
 	 *
 	 * What this block is now. A CROSS-CHECK, not a known-defect report: it
@@ -399,7 +399,7 @@ void NoC::init_router()
 			     " Since 1.11.87 (router wire type set, sense voltage"
 			     " corrected) the buffer converges at 22, 32 and 65 nm and"
 			     " this check clears on DDR3, so this is a NEW imbalance in"
-			     " the buffer solve, not the R6-10 defect; please report"
+			     " the buffer solve, not the one fixed before; please report"
 			     " it with the config."
 			  << std::endl;
 		}
@@ -535,7 +535,7 @@ void NoC ::init_link_bus(double link_len_)
 	}
 	if (XML->sys.NoC[ithNoC].link_kind == 2)
 	{
-		/* PIMID (user ruling 2026-10-25): an OFF-PACKAGE device-tree link (a DRAM chip's up-link to
+		/* PIMID: an OFF-PACKAGE device-tree link (a DRAM chip's up-link to
 		 * the rank, and the rank / channel / system levels of a non-stacked part) rides the DRAM channel
 		 * on the DIMM or board, not on-die wire. It is priced per bit crossed at the energy PIMID passes
 		 * (the part's own DQ crossing per bit: termination + IDDQ of a read crossing, the memory model's
@@ -582,13 +582,13 @@ void NoC ::init_link_bus(double link_len_)
 		interface_ip.tsv_os_bank_type = Coarse;
 		interface_ip.num_die_3d = 1;
 		init_interface(&interface_ip);
-		/* PIMID (user ruling 2026-10-25): the TSV RE-SOURCED from published HBM silicon.
+		/* PIMID: the TSV RE-SOURCED from published HBM silicon.
 		 *  pitch   30 um: "two-dimensional TSV arrays of signal, power, and ground whose pitch is 30 um"
 		 *          (Samsung HBM2E, JSSC 56(1), Jan. 2021, Sec. III) -> area per TSV = pitch^2;
 		 *  length  ~30 um: "The thickness of the core dies ... is approximately about 30 um" (SK hynix
 		 *          192-Gb 12-high HBM3, JSSC 58(1), 2023, Sec. VIII) -- printed; the load below is the
 		 *          measured one, so the length enters no number;
-		 *  load    C per die-crossing 118.5 fF DERIVED from Cho et al. (SK hynix), ISSCC 2018 12.3,
+		 *  load    C per die-crossing 118.5 fF derived from Cho et al. (SK hynix), ISSCC 2018 12.3,
 		 *          Fig. 12.3.1: IDD per TSV 880 uA at 1.0 V, 3.3 Gb/s PRBS, conventional multi-drop TSV of
 		 *          an 8-high stack (9 TX/RX loads: 8 core dies + base). Energy per bit 880 uA x 1.0 V /
 		 *          3.3 Gb/s = 0.267 pJ; a PRBS bit charges the line (0 -> 1) with probability 1/4, so
@@ -600,7 +600,7 @@ void NoC ::init_link_bus(double link_len_)
 		 *  supply  the stacked part's core VDD (tsv_vdd, HBM3 1.1 V, part record), else the run's Vdd.
 		 * Dynamic per bit per die crossing = C x V^2: the fork's every-bit-charges convention, the
 		 * basis of the CACTI TSV and wires it replaces (a PRBS bit costs 1/4 of it). */
-		const double pimid_tsv_c_load = 4.0 * 880e-6 * 1.0 / 3.3e9 / (1.0 * 1.0) / 9.0;   // F, DERIVED
+		const double pimid_tsv_c_load = 4.0 * 880e-6 * 1.0 / 3.3e9 / (1.0 * 1.0) / 9.0;   // F, derived
 		const double pimid_tsv_c_spiral = 4.0 * 610e-6 * 1.0 / 3.3e9 / (1.0 * 1.0) / 9.0;  // F, reference
 		const double pimid_tsv_pitch_um = 30.0, pimid_tsv_len_um = 30.0;
 		const double cacti_c_table = g_tp.tsv_parasitic_capacitance_coarse;
@@ -657,7 +657,7 @@ void NoC ::init_link_bus(double link_len_)
 	}
 	else
 	{
-		/* PIMID (user ruling 2026-10-25): NoC links and buses on ENERGY-EFFICIENT repeaters, CACTI
+		/* PIMID: NoC links and buses on ENERGY-EFFICIENT repeaters, CACTI
 		 * wire type Global_ho: 0.8x the delay-optimal repeater size at 1.4x its spacing, the published
 		 * design point of R. Ho (PhD thesis, Stanford, 2003, Sec. 4.2: a 4% delay penalty for ~20% less
 		 * energy). The delay-optimal Global wire put 1.44x the wire's own capacitance in repeaters (22 nm),
@@ -671,8 +671,7 @@ void NoC ::init_link_bus(double link_len_)
 		link_bus = link_wire;
 		/* PIMID 1.12.18: the per-link price, printed for the hand check
 		 * (energy per bit-mm = flit energy / bits / length). A bus level keeps
-		 * its upstream behaviour; its line is printed below (user ruling
-		 * 2026-10-25, print only). */
+		 * its upstream behaviour; its line is printed below (print only). */
 		if (nocdynp.type)
 		{
 			const double bits = nocdynp.flit_size;
@@ -681,7 +680,7 @@ void NoC ::init_link_bus(double link_len_)
 			          << g_ip->ic_proj_type << ", " << g_ip->F_sz_nm << " nm table): "
 			          << "length " << link_len << " um ("
 			          << ((XML->sys.NoC[ithNoC].link_span_processor == 2)
-			                  ? "2 x sqrt(die area) / stops, ring loop"   /* PIMID (user ruling 2026-10-25) */
+			                  ? "2 x sqrt(die area) / stops, ring loop"   /* PIMID */
 			                  : (XML->sys.NoC[ithNoC].link_span_processor == 3)
 			                  ? "sqrt(die area / tiles), mesh tile pitch"   /* PIMID (1.12.150) */
 			                  : explicit_len ? "0.5 x sqrt(span / parent regions), H-tree"
@@ -698,7 +697,7 @@ void NoC ::init_link_bus(double link_len_)
 		}
 		else
 		{
-			/* PIMID (user ruling 2026-10-25): a BUS level's wire, printed for the hand check like the
+			/* PIMID: a BUS level's wire, printed for the hand check like the
 			 * links above (print only; nothing priced changes). Its length is McPAT's upstream bus
 			 * derivation: sqrt(processor area x chip_coverage) (x sqrt(dram_periph_area) on the DRAM
 			 * die), / ((H+V)/2), / 2 when the bus has more than one node; McPAT charges it per access. */
@@ -863,7 +862,7 @@ void NoC::computeEnergy(bool is_tdp)
         		    ? std::max(0.0, XML->sys.NoC[ithNoC].tsv_die_crossings)
         		    : ((XML->sys.NoC[ithNoC].link_traversals >= 0)
         		           ? XML->sys.NoC[ithNoC].link_traversals : rtp_stats.readAc.access);
-        		/* PIMID (user ruling 2026-10-25, "Measured"): a wire's dynamic energy is C V^2 per
+        		/* PIMID (Measured): a wire's dynamic energy is C V^2 per
         		 * 0->1 transition (DSENT / ORION 2.0 physical convention); McPAT's per-bit C V^2 is
         		 * scaled by the MEASURED 0->1 transitions per wire-bit per traversal (link_activity;
         		 * random data 0.25). Not for a channel-I/O instance (link_kind 2: the DQ crossing's
@@ -894,8 +893,7 @@ void NoC::computeEnergy(bool is_tdp)
 		const double er = clk_router.e_tree_cycle + clk_router.n_sinks*clk_router.e_pin_reg;
 		const double el = clk_link.e_tree_cycle + clk_link.n_sinks*clk_link.e_pin_reg;
 		const double cycles = nocdynp.executionTime * nocdynp.clockRate;
-		/* Gated by the fabric's measured utilisation (user ruling
-		 * 2026-10-23; Wattch cc2): the duty_cycle stat PIMID emits for this
+		/* Gated by the fabric's measured utilisation (Wattch cc2): the duty_cycle stat PIMID emits for this
 		 * NoC (measured flit traversals / its peak: cycles x nodes, x ports
 		 * for a device router since (1.12.150)). */
 		double a = 1.0;
@@ -903,11 +901,11 @@ void NoC::computeEnergy(bool is_tdp)
 		{
 			a = clk_router.gate(nocdynp.duty_cycle, "duty_cycle = measured traversals / the instance peak PIMID passes");
 			clk_link.gate(nocdynp.duty_cycle, "duty_cycle = measured traversals / the instance peak PIMID passes");
-			/* PIMID 1.12.18 (ruling 2026-10-23 #4): global part every powered cycle. */
+			/* PIMID 1.12.18: global part every powered cycle. */
 			clk_router.set_powered(XML->sys.pimid_clock_pg_noc, "1 - measured NoC power-gated residency (pimid_clock_pg_noc)");
 			clk_link.set_powered(XML->sys.pimid_clock_pg_noc, "1 - measured NoC power-gated residency (pimid_clock_pg_noc)");
 		}
-		const double gr = is_tdp ? er : clk_router.gated_cycle(a, clk_router.n_sinks*clk_router.e_pin_reg);   /* PIMID 1.12.18 (ruling #4) */
+		const double gr = is_tdp ? er : clk_router.gated_cycle(a, clk_router.n_sinks*clk_router.e_pin_reg);   /* PIMID 1.12.18 */
 		const double gl = is_tdp ? el : clk_link.gated_cycle(a, clk_link.n_sinks*clk_link.e_pin_reg);
 		clk_router.set_power(er*nodes, gr*nodes*cycles*sets, er*nodes*cycles*sets, nodes);
 		clk_link.set_power(el*links, gl*links*cycles*sets, el*links*cycles*sets, links);

@@ -83,9 +83,9 @@ class InstFetchU :public Component {
 	inst_decoder * ID_operand;
 	inst_decoder * ID_misc;
 	double id_operand_e_access;   /* PIMID (1.12.28): the removed operand decoder's per-access energy (evidence print) */
-	double decode_fanout;         /* PIMID (1.12.28): DERIVED decoder output load, in minimum-size gates */
+	double decode_fanout;         /* PIMID (1.12.28): derived decoder output load, in minimum-size gates */
 	bool exist;
-	/* PIMID (F1-2, user ruling 2026-10-25): an in-order device PE's prefetch buffer, fetch address register,
+	/* PIMID: an in-order device PE's prefetch buffer, fetch address register,
 	 * aligner and controller FSM (core.cc pimid_front_energy): per fetch / per busy cycle, J; their flip-flops */
 	bool   pimid_front;
 	double pimid_front_fetch, pimid_front_cycle, pimid_front_regs;
@@ -177,7 +177,7 @@ class LoadStoreU :public Component {
 	LoadStoreU(ParseXML *XML_interface, int ithCore_, InputParameter* interface_ip_,const CoreDynParam & dyn_p_, bool exist_=true);
     void computeEnergy(bool is_tdp=true);
     void computeEnergyPimid(bool is_tdp);
-  bool pimid_store_buffer() const;   /* PIMID (1.12.32, ruling #3) */
+  bool pimid_store_buffer() const;   /* PIMID (1.12.32) */
   void pimid_store_buffer_stats();
     void displayEnergy(uint32_t indent = 0,int plevel = 100, bool is_tdp=true);
 	~LoadStoreU();
@@ -217,7 +217,7 @@ class RegFU :public Component {
 	ArrayST * FRF;
 	ArrayST * RFWIN;
 	bool exist;
-	/* PIMID (F1-1, user ruling 2026-10-25): an in-order device PE's register files are LATCH-BASED standard-cell
+	/* PIMID: an in-order device PE's register files are LATCH-BASED standard-cell
 	 * memories (RI5CY / CV32E40P), priced from published cells (core.cc pimid_scm_rf_energy). */
 	bool   pimid_scm;
 	double pimid_irf_rd, pimid_irf_wr, pimid_irf_cyc, pimid_frf_rd, pimid_frf_wr, pimid_frf_cyc;
@@ -252,7 +252,7 @@ class EXECU :public Component {
 
 	Component  bypass;
 	bool exist;
-	/* PIMID (F1-3, user ruling 2026-10-25): an in-order device PE forwards through operand multiplexers, not a
+	/* PIMID: an in-order device PE forwards through operand multiplexers, not a
 	 * broadcast bus (core.cc pimid_fwd_energy); per result, J */
 	bool   pimid_fwd;
 	double pimid_fwd_int, pimid_fwd_mul, pimid_fwd_fp;

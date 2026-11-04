@@ -1,4 +1,4 @@
-# cache/ — generated tool characterizations
+# cache/ -- generated tool characterizations
 
 This directory ships EMPTY and fills at runtime. It is the simulator's own
 store for external-tool results that are expensive to produce and identical

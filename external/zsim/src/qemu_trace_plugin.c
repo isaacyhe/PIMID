@@ -113,7 +113,7 @@ static _Atomic bool guest_ran;                /* (1.12.115): the guest executed 
 /* Co-simulation event types (must match trace_format.h) */
 #define EVT_OFFLOAD_START   0x0070
 #define EVT_OFFLOAD_END     0x0071
-/* PIMID 1.11.100 (review H36): the ROI markers, written so the replay can
+/* PIMID 1.11.100: the ROI markers, written so the replay can
  * rebase its counters at roi_begin and freeze them at roi_end as the
  * execution path does. */
 #define EVT_ROI_BEGIN       0x0080
@@ -127,7 +127,7 @@ enum { DOMAIN_HOST = 0, DOMAIN_DEVICE = 1 };
 static _Atomic int thread_domain[MAX_VCPUS];   /* default HOST */
 static _Atomic uint64_t offload_count;
 
-/* PIMID 1.11.100 (review C6 / H37): one COMPUTE event per EXECUTED basic
+/* PIMID 1.11.100: one COMPUTE event per EXECUTED basic
  * block, carrying the block's address, instruction count and byte size, and
  * a side file "<output>.blocks" with each translated block's instruction
  * bytes so the replay can decode them with the same decoder the execution
@@ -146,7 +146,7 @@ static uint64_t blocks_written;
 static pthread_mutex_t blocks_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t compute_events;
 
-/* PIMID 1.11.100 (review H36): the ROI marker goes into the trace, inside
+/* PIMID 1.11.100: the ROI marker goes into the trace, inside
  * the recorded window on both sides (begin after opening, end before
  * closing), from both magic-op entry points. */
 static void emit_roi_event(unsigned int vcpu_index, uint64_t op) {
@@ -216,7 +216,7 @@ static void flush_buffer(void) {
     }
 }
 
-/* PIMID 1.11.100 (H40): the instructions between the ROI markers, counted in
+/* PIMID 1.11.100: the instructions between the ROI markers, counted in
  * FILE ORDER under the write lock (a COMPUTE event's aux_data is its block's
  * instruction count), so the replay's own count over the same file matches
  * it exactly; printed at exit. */
@@ -328,7 +328,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t idx = vcpu_index < MAX_VCPUS ? vcpu_index : 0;
 
     if (op == ZSIM_MAGIC_OP_ROI_BEGIN || op == ZSIM_MAGIC_OP_ROI_END) {
-        emit_roi_event(vcpu_index, op);   /* PIMID 1.11.100 (H36) */
+        emit_roi_event(vcpu_index, op);   /* PIMID 1.11.100 */
     } else if (op == ZSIM_MAGIC_OP_WORK_BEGIN) {
         atomic_store(&thread_domain[idx], DOMAIN_DEVICE);
         uint64_t cnt = atomic_fetch_add(&offload_count, 1) + 1;
@@ -391,7 +391,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
     if (vcpu_index >= MAX_VCPUS) return;
     uint64_t op = atomic_exchange(&pending_magic_op[vcpu_index], 0);
     if (op == ZSIM_MAGIC_OP_ROI_BEGIN || op == ZSIM_MAGIC_OP_ROI_END) {
-        emit_roi_event(vcpu_index, op);   /* PIMID 1.11.100 (H36) */
+        emit_roi_event(vcpu_index, op);   /* PIMID 1.11.100 */
     } else if (op == ZSIM_MAGIC_OP_WORK_BEGIN) {
         atomic_store(&thread_domain[vcpu_index], DOMAIN_DEVICE);
         uint64_t cnt = atomic_fetch_add(&offload_count, 1) + 1;
@@ -440,7 +440,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
 static void tb_trans_cb(struct qemu_plugin_tb *tb, void *userdata) {
     size_t n_insns = qemu_plugin_tb_n_insns(tb);
     bool insn_count_registered = false;
-    /* PIMID 1.11.100 (C6 / H37): the block's record for the per-execution
+    /* PIMID 1.11.100: the block's record for the per-execution
      * COMPUTE event, and its instruction bytes for the side file. */
     {
         TbRec *rec = (TbRec *)calloc(1, sizeof(TbRec));   /* lives as long as the plugin */
@@ -597,7 +597,7 @@ static void plugin_exit(void *userdata) {
         time_str,
         (unsigned long)total_events,
         max_vcpu_seen + 1,
-        (unsigned long)roi_insns_in_file);   /* PIMID 1.11.100 (H40): the replay and the generator's summary read it back */
+        (unsigned long)roi_insns_in_file);   /* PIMID 1.11.100: the replay and the generator's summary read it back */
 
     /* Rewrite the header at the beginning of the file */
     TraceHeader hdr;
@@ -627,7 +627,7 @@ static void plugin_exit(void *userdata) {
     qemu_plugin_outs(msg);
     snprintf(msg, sizeof(msg),
              "PIMID trace: ROI instructions %lu (the blocks' instruction counts between the ROI markers, file order)\n",
-             (unsigned long)roi_insns_in_file);   /* PIMID 1.11.100 (H40) */
+             (unsigned long)roi_insns_in_file);   /* PIMID 1.11.100 */
     qemu_plugin_outs(msg);
 
     if (roi_transition_count > 0) {
@@ -807,7 +807,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 
     /* Open trace file and write placeholder header (will be rewritten at exit) */
     trace_file = fopen(output_path, "wb");
-    {   /* PIMID 1.11.100 (C6 / H37): the instruction-bytes side file */
+    {   /* PIMID 1.11.100: the instruction-bytes side file */
         size_t bl = strlen(output_path) + 8;
         char *bpath = (char *)malloc(bl);
         snprintf(bpath, bl, "%s.blocks", output_path);

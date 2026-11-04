@@ -49,7 +49,7 @@ struct DynUop {
 struct DynBbl {
     uint64_t addr;
     uint32_t uops;
-    /* 1.12.18 (ruling 2026-10-23 #2): approxInstrs and repInstrs are
+    /* 1.12.18: approxInstrs and repInstrs are
      * counts of instructions in ONE decoded block, which the plugin caps at
      * 1024 instructions (qemu_zsim_plugin.cpp, numInsns <= 1024; larger TBs
      * take the simple path with no DynBbl body), so 16 bits hold them
@@ -84,7 +84,7 @@ struct DynBbl {
 
 static_assert(offsetof(DynBbl, uop) == 20, "1.12.18: DynBbl header must stay 20 bytes (fpCensusIdx packing)");
 
-/* 1.12.18 (user ruling 2026-10-23 #2): STATIC census of a decoded
+/* 1.12.18: STATIC census of a decoded
  * block's floating-point OPERATIONS by type and precision, from the x86
  * decoder (x86_decoder.h decodeOne: opcode, the 66/F2/F3 or VEX.pp prefix
  * that selects ps/pd/ss/sd, VEX.L for 256-bit, VEX.W for FMA precision).
@@ -103,7 +103,7 @@ static_assert(offsetof(DynBbl, uop) == 20, "1.12.18: DynBbl header must stay 20 
  * moves a record once written, indexed by DynBbl::fpCensusIdx (see
  * decoder_simple.cpp for why the global heap). */
 #define FP_CENSUS_CATS 9
-/* PIMID 1.12.18: (user ruling 2026-10-23 #3) the same record also
+/* PIMID 1.12.18: the same record also
  * carries the block's STATIC census of scalar GPR integer operations by
  * class and operand width (x86_decoder.h intCensusCat):
  *   0 Alu8  1 Alu16  2 Alu32  3 Alu64   add/sub/adc/sbb/cmp/and/or/xor/test/

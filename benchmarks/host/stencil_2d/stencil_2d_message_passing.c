@@ -1,4 +1,4 @@
-/* stencil_2d_mpi.c — 2D 5-point Jacobi stencil (nearest-neighbor average)
+/* stencil_2d_mpi.c -- 2D 5-point Jacobi stencil (nearest-neighbor average)
  * MPI domain decomposition. Rows of the N*N grid are distributed across
  * ranks. Ghost rows are exchanged via MPI_Sendrecv between neighbors. */
 #include <stdio.h>

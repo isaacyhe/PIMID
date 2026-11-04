@@ -151,7 +151,7 @@ GarnetNetwork::init()
         m_num_cols = -1;
     }
 
-    // 1.11.94 (x03-garnet-custom-2): a ring whose routers have no "West"
+    // 1.11.94: a ring whose routers have no "West"
     // outport is the unidirectional ring; SHORTEST then goes clockwise.
     m_ring_cw_only = true;
     for (auto* r : m_routers) {
@@ -397,7 +397,7 @@ GarnetNetwork::makeInternalLink(SwitchID src, SwitchID dest, BasicLink* link,
     }
 }
 
-// 1.11.94 (x03-garnet-custom-3, ruling H33): build-time check for the
+// 1.11.94: build-time check for the
 // direction-based routings. XY, DOR and SHORTEST choose an output by port
 // NAME (East/West/North/South) as a pure function of (current router,
 // destination router), so walking every (source, destination) pair over the

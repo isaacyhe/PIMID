@@ -209,7 +209,7 @@ RoutingUnit::outportCompute(RouteInfo route, int inport,
     return outport;
 }
 
-// 1.11.94 (x03-garnet-custom-3, ruling H33): routing algorithm name for
+// 1.11.94: routing algorithm name for
 // messages.
 static const char*
 routingName(int a)
@@ -226,7 +226,7 @@ routingName(int a)
     }
 }
 
-// 1.11.94 (H33): the three direction-based algorithms ended with
+// 1.11.94: the three direction-based algorithms ended with
 // m_outports_dirn2idx[dirn], a std::map operator[] that INSERTS a missing
 // key with value 0 and returns it. Outport 0 is the first external (Local)
 // port, so a packet at a router without that direction was ejected to
@@ -299,7 +299,7 @@ RoutingUnit::directionFor(int routing_algorithm, int my_id, int dest_id,
         panic("DOR: src == dst should not reach here");
     }
     case SHORTEST_: {
-        // 1.11.94 (x03-garnet-custom-2, ruling H34): the ring size used to
+        // 1.11.94: the ring size used to
         // be getNumRows()*getNumCols(), which GarnetNetwork sets to -1 * -1
         // = 1 for every non-grid topology, so cw_dist = ccw_dist = 0 and
         // every packet went clockwise (8-node ring: 0->7 crossed 8 routers

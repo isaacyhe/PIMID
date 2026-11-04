@@ -69,7 +69,7 @@ set(ZSIM_SIM_SRCS
     src/memory_hierarchy.cpp
     src/network.cpp
 
-    # Cores (1.12.1: simple_core.cpp retired and deleted, ticket #114)
+    # Cores (1.12.1: simple_core.cpp retired and deleted)
     src/in_order_core.cpp
     src/timing_cache.cpp
     src/timing_event.cpp
@@ -96,9 +96,9 @@ set(ZSIM_SIM_SRCS
     src/lookahead.cpp
     src/monitor.cpp
 
-    # Memory controllers ((1.12.147, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
+    # Memory controllers ((1.12.147): the weave-timed ramulator_mem_ctrl.cpp is removed;
     # Ramulator2 times DRAM by epoch replay only)
-    src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
+    src/dram_epoch_replay.cpp   # 1.11.98
 
     # QEMU-specific replacements
     src/decoder_simple.cpp      # replaces decoder.cpp (no XED)
@@ -203,7 +203,7 @@ set(ZSIM_SIM_SRCS_TRACE
     src/memory_hierarchy.cpp
     src/network.cpp
 
-    # Cores (1.12.1: simple_core.cpp retired and deleted, ticket #114)
+    # Cores (1.12.1: simple_core.cpp retired and deleted)
     src/in_order_core.cpp
     src/timing_cache.cpp
     src/timing_event.cpp
@@ -230,9 +230,9 @@ set(ZSIM_SIM_SRCS_TRACE
     src/lookahead.cpp
     src/monitor.cpp
 
-    # Memory controllers ((1.12.147, user ruling 2026-10-28): the weave-timed ramulator_mem_ctrl.cpp is removed;
+    # Memory controllers ((1.12.147): the weave-timed ramulator_mem_ctrl.cpp is removed;
     # Ramulator2 times DRAM by epoch replay only)
-    src/dram_epoch_replay.cpp   # 1.11.98 (ruling 4 (c))
+    src/dram_epoch_replay.cpp   # 1.11.98
 
     # Shared replacements (no Pin/XED)
     src/decoder_simple.cpp

@@ -8,7 +8,7 @@
  * rank relocates ITS input chunk + its private histogram into ITS own PE slot;
  * the ROI scan is then PE-local. Slot layout: [chunk][local hist]. The final
  * MPI_Reduce (the shared cross-PE step) produces the result and is timed:
- * 1.12.18 (ruling 2026-10-23) moved it inside the ROI. Coarse placement runs
+ * 1.12.18 moved it inside the ROI. Coarse placement runs
  * the host path. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +68,7 @@ static void histogram_count(pimid_spm_t* s, int* hist, const int* data, size_t n
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): need of the largest rank share
+/* 1.11.94: need of the largest rank share
  * (rank 0 holds ceil(N/nprocs)) for [chunk][local hist]. */
 typedef struct { int nprocs; int nbins; } histogram_mpi_ctx;
 static size_t histogram_mpi_need(long n, const void* c) {
@@ -137,7 +137,7 @@ int main(int argc, char* argv[]) {
     int* dbuf = NULL;
     int* dpe = NULL, *hpe = NULL;
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+        /* 1.11.94: a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {
@@ -190,7 +190,7 @@ int main(int argc, char* argv[]) {
             histogram_count(&spm, local_hist, local_data, (size_t)local_n, (size_t)nbins);
     }
 
-    /* 1.12.18 (ruling 2026-10-23): the cross-rank merge that produces the
+    /* 1.12.18: the cross-rank merge that produces the
      * result is part of the kernel and is timed, as the shared-memory merge
      * is: every rank's private histogram (read straight from its PE slot when
      * prepped -- the post-ROI copy back to host layout is gone) is summed into

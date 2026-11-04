@@ -100,7 +100,7 @@ public:
 			bool x86_,
 			enum Device_ty device_ty_=Core_device,
 			enum Core_type core_ty_=Inorder,
-			double out_fanout_=-1.0);   /* PIMID (1.12.28): > 0 = DERIVED output load (minimum-size gates) */
+			double out_fanout_=-1.0);   /* PIMID (1.12.28): > 0 = derived output load (minimum-size gates) */
 	inst_decoder();
 	bool is_default;
 	int  opcode_length;
@@ -224,7 +224,7 @@ public:
  * already make (pipeline registers, array port registers, arbiter
  * flip-flops, link pipeline registers); the caller names the source.
  *
- * GATING (user ruling 2026-10-23: gate by measured activity). Runtime
+ * GATING (gate by measured activity). Runtime
  * energy follows Wattch's conditional-clocking style cc2 (Brooks, Tiwari,
  * Martonosi, ISCA 2000, and the Wattch 1.02 simulator's cc2 mode: a unit's
  * clocked power scales linearly with its measured port usage, zero when
@@ -239,7 +239,7 @@ public:
  * Repeater leakage is not gated: clock gating stops switching, not
  * leakage.
  *
- * PIMID 1.12.18: GLOBAL / LOCAL SPLIT (user ruling 2026-10-23 #4). Within a
+ * PIMID 1.12.18: GLOBAL / LOCAL SPLIT. Within a
  * component the GLOBAL part of the tree -- the H-tree levels that carry the
  * clock down to the unit boundaries -- switches EVERY cycle while the
  * component is powered; only the LOCAL part -- the last level to the
@@ -269,7 +269,7 @@ public:
  * otherwise: power gating is the only thing that stops the global part.
  * The ungated reference (every part every cycle) is kept.
  *
- * PIMID 1.12.18: IDLE HALT (user ruling 2026-10-23, XML sys pimid_idle_halt,
+ * PIMID 1.12.18: IDLE HALT (XML sys pimid_idle_halt,
  * YAML power.models.idle_halt). A core with nothing to run is HALTED as on
  * real chips (x86 HLT / C1: Intel SDM vol. 3, "HLT ... stops instruction
  * execution and places the processor in a HALT state", with the core clock
@@ -283,8 +283,8 @@ public:
  * memory controllers, routers and caches keep serving (refresh, traffic,
  * snoops) and keep global-on / local-gated.
  *
- * PIMID 1.12.18: PER-DIE TRUNK (user ruling "each die has its own clock
- * tree"). The die-level trunk that joins the components' tree roots is
+ * PIMID 1.12.18: PER-DIE TRUNK (each die has its own clock
+ * tree). The die-level trunk that joins the components' tree roots is
  * built in processor.cc (Processor, per die and clock domain) with this same
  * class: an H-tree over the die whose leaves are the component trees' roots
  * (n_sinks = component instances, no register pins: the trunk ENDS at each
@@ -307,11 +307,11 @@ public:
 	/* The measured activity (fraction of cycles, cc2) and where it is read;
 	 * a < 0 means the run carried none. Returns the activity to apply. */
 	double gate(double a, const string &src);
-	/* PIMID 1.12.18 (ruling #4): the measured power-gated residency of the
+	/* PIMID 1.12.18: the measured power-gated residency of the
 	 * component (0 = always powered) -- the only thing that stops the
 	 * global part. */
 	void set_powered(double r_gated, const string &src);
-	/* PIMID 1.12.18 (ruling #4): J per cycle per instance charged at
+	/* PIMID 1.12.18: J per cycle per instance charged at
 	 * runtime: global x global_on() + (local + pins_e) x a. */
 	double gated_cycle(double a, double pins_e) const;
 	/* PIMID 1.12.18 (idle halt): halt_on = power.models.idle_halt; r_mean /
@@ -330,14 +330,14 @@ public:
 	double rt_halted;                                 /* J over the run: the global part NOT charged (halted) */
 	void report_runtime(const string &what, double seconds) const;
 	double activity, rt_ungated;
-	double global_len_um, local_len_um;              /* PIMID 1.12.18 (ruling #4) */
+	double global_len_um, local_len_um;              /* PIMID 1.12.18 */
 	double e_tree_global_cycle, e_tree_local_cycle;  /* J per cycle per instance */
 	double powered;                                  /* fraction of cycles powered */
 	string powered_source;
 	double rt_global;                                /* J over the run: the global part charged */
-	/* PIMID 1.12.18 (ruling #4): XML sys pimid_clock_split (YAML
+	/* PIMID 1.12.18: XML sys pimid_clock_split (YAML
 	 * power.models.clock_global_local); false = the whole tree gated by the
-	 * measured activity (the pre-ruling model). Set once per McPAT run
+	 * measured activity (the pre-rule model). Set once per McPAT run
 	 * (Processor constructor), before any component is built. */
 	static bool split_enabled;
 	static double leaf_cluster_sinks;   /* PIMID (1.12.30, F2): sinks per local clock buffer (power.clock.leaf_cluster_sinks) */
@@ -371,7 +371,7 @@ public:
 //
 //};
 
-/* PIMID 1.12.18 (rulings 2026-10-23 #1-#3, #6): node scaling of a published
+/* PIMID 1.12.18: node scaling of a published
  * energy with CACTI's technology tables. Returns
  *   k = [C_inv(run) / C_inv(src_nm)] x (Vdd(run) / src_vdd)^2,
  * C_inv = switched capacitance of CACTI's minimum inverter (gate of the NMOS
@@ -385,12 +385,12 @@ public:
  * ae2 V^2 + ae1 V + ae0 with the Table 5 coefficients of node nm (45/32 nm: HP and LP rows;
  * 20 nm: HP and LSTP rows). Returns the number of rows written to f[] (0: no Table 5 row). */
 int pimid_sb17_energy_factors(int nm, double v, double f[2], const char *type[2]);
-/* PIMID (1.12.31, user ruling 2026-10-25 A): the published flip-flop (Nangate 45 nm DFF_X1, ASAP7 DFFHQNx1), node-scaled
+/* PIMID (1.12.31, A): the published flip-flop (Nangate 45 nm DFF_X1, ASAP7 DFFHQNx1), node-scaled
  * with Stillmaker & Baas 2017 (logic.cc). Energies in J, capacitances in F. */
 struct PimidDffPub {
 	const char *lib; double lib_nm; int row_nm; double ratio, ratio_lo, ratio_hi;
 	double c_ck, c_d, e_clock, e_switch, c_ck_lo, c_ck_hi, e_clock_lo, e_clock_hi;
-	/* PIMID (DST, user ruling 2026-10-26): the ratio APPLIED is DeepScaleTool's when it covers the node (dst true);
+	/* PIMID (DST): the ratio APPLIED is DeepScaleTool's when it covers the node (dst true);
 	 * the Stillmaker & Baas pair midpoint and the voltage-less DeepScaleTool ratio are kept for printing */
 	bool dst; double ratio_sb17, ratio_dst_vl;
 };
@@ -410,20 +410,20 @@ public:
 	double clockRate,executionTime;
 	double num_fu;
 	double energy, base_energy,per_access_energy, leakage, gate_leakage;
-	/* PIMID 1.12.18 (ruling 2026-10-23 #2): published per-operation FP
+	/* PIMID 1.12.18: published per-operation FP
 	 * energies at the run's node (J), FP32 add and FP32 multiply; set only
 	 * for an FPU with pimid_fpu_published (logic.cc). */
 	bool   pimid_pub = false;
-	/* PIMID 1.12.18 (ruling #2, extended): AddS MulS AddD MulD FmaS FmaD,
+	/* PIMID 1.12.18 (extended): AddS MulS AddD MulD FmaS FmaD,
 	 * the census order (XML_Parse.h pimid_fpc_name). */
 	double pimid_pub_e[6] = {0, 0, 0, 0, 0, 0};
-	/* PIMID 1.12.18 (ruling 2026-10-23 #3): published per-operation integer
+	/* PIMID 1.12.18: published per-operation integer
 	 * energies at the run's node (J): ALU unit {8-bit add, 32-bit add}, MUL
 	 * unit {8-bit mult, 32-bit mult}; set with pimid_int_alu_published. */
 	bool   pimid_int_pub = false;
 	double pimid_int_e[2] = {0, 0};
-	double pimid_int_e16 = 0, pimid_int_e64 = 0;   /* PIMID (1.12.32, ruling #1): ALU add/logic linear in width */
-	/* PIMID 1.12.29: (ruling 2026-10-25) the published area of ONE unit at
+	double pimid_int_e16 = 0, pimid_int_e64 = 0;   /* PIMID (1.12.32): ALU add/logic linear in width */
+	/* PIMID 1.12.29: the published area of ONE unit at
 	 * the run's node (um^2, before McPAT's macro layout overhead) that
 	 * replaced McPAT's literal; 0 = McPAT's literal (switch off, or no
 	 * published source for this unit and width). Reused by leakage_feedback. */

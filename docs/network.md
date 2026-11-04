@@ -13,32 +13,28 @@ credit-based flow control, deadlock-free routing.
   thread-MPI rank order (1.12.126), the same in every run. There is no
   approximate fast path inside `detailed`; if you need speed over cycle
   accounting, use `noc.model: analytical`.
-- **Rare MPI hang: resolved in 1.0.8.** Versions up to 1.0.7 could rarely
-  (~8% of runs) hang a multi-rank detailed-MPI simulation: a rank was
-  captured parked forever in a process-shared mutex acquisition on a free
-  mutex (its futex wake lost under syscall interception). The MPI transport
-  is now kernel-wait-free -- CAS spinlocks with usleep backoff for critical
-  sections, polling with predicate recheck for empty/full/barrier waits --
-  so lost wakes are impossible by construction. Validated with 120
-  consecutive runs of the previously freeze-prone cells across two
-  partitions, zero hangs. `PIMID_MPI_TRACE=1` still dumps per-rank
-  transport wait events to /tmp for diagnosis.
-- **ONE logical Garnet across MPI ranks.** All MPI ranks drive a single
+- **No lost wakes in the MPI transport (since 1.0.8).** Up to 1.0.7 a multi-rank
+  detailed-MPI simulation could hang in about 8% of runs: a rank stayed parked in a
+  process-shared mutex acquisition on a free mutex (its futex wake was lost under
+  syscall interception). The transport is now kernel-wait-free -- CAS spinlocks with
+  `usleep` backoff for critical sections, polling with predicate recheck for
+  empty/full/barrier waits -- so a wake cannot be lost; 120 consecutive runs of the
+  formerly affected cells did not hang. `PIMID_MPI_TRACE=1` dumps per-rank transport
+  wait events to /tmp for diagnosis.
+- **One logical Garnet across MPI ranks.** All MPI ranks drive a single
   logical network; cross-rank packets (memory traffic and MPI message payloads
-  alike) physically contend on shared links. There is NO isolated per-rank
+  alike) physically contend on shared links. There is no isolated per-rank
   network mode. Two realizations:
   - **exec / thread-MPI (the only exec-method MPI model, 1.8.3).** The N ranks
-    are core-threads inside **ONE process** sharing **ONE in-process Garnet**
+    are core-threads inside **one process** sharing **one in-process Garnet**
     directly (`sharedNoc() == null`) -- the same single-network machinery the
-    OpenMP/device path uses, not a per-rank record log. (1.9.0's fold-dump
-    instrumentation corrected the earlier assumption that thread-MPI went
-    through the per-rank shm consistent-cut; it does not.)
+    OpenMP/device path uses, not the per-rank record log of the trace method.
   - **trace method (per-rank processes).** Ranks run as separate processes and
     drive one logical network via a launcher-owned shared record log: every
     rank publishes its network-traversing accesses `{src, dst, cycle}` and at
     its own phase drain replays the identical merged multi-rank stream through
     its local Garnet replica. A drain resets Garnet and replays a record
-    window, so N replicas of the same merged stream ARE one network. No
+    window, so N replicas of the same merged stream are, in effect, one network. No
     barriers and no coordinator: ranks blocked in MPI, exited ranks, and
     pre-ROI ranks are exempt from the merge cut (deadlock-free by
     construction); if the shared log cannot be created or attached the run
@@ -60,14 +56,14 @@ credit-based flow control, deadlock-free routing.
   beside the run's zsim config, and removed when the run exits -- 1.12.2; it
   used to be written into the working directory and left there):
   only PE-hosting branches are materialized down to the placement level, and
-  every empty region hangs ONE abstract endpoint at its maximal-empty-subtree
+  every empty region hangs one abstract endpoint at its maximal-empty-subtree
   root -- so an access to a non-PE region still travels the real tiered
   distance (same bank as a PE < other bank-group < other channel) while the
   region's device time comes from the aggregate DRAM model. The emitter and
   the runtime routing share one builder (`sparse_htree.h`), so endpoint ids
   cannot drift. Node count scales with PEs x tree depth, not device size:
   sparse placements simulate fast, and a fully-placed device grows the
-  complete tree naturally. Accesses are priced purely by data LOCATION: an
+  complete tree naturally. Accesses are priced purely by data location: an
   access to the PE's own unit traverses zero network hops and pays no network
   latency (1.5.5); everything else pays the Garnet-measured distance.
   Per-link latency/width derive from the technology's JEDEC organization
@@ -75,7 +71,7 @@ credit-based flow control, deadlock-free routing.
   bandwidth is modeled by NI-side flit count; tree routing uses up/down
   virtual-channel classes and is deadlock-free (validated drain-complete
   across packet counts, technologies, and traffic patterns).
-- **Two-attachment nodes are links ((1.12.231)).** A node of the tree with exactly
+- **Two-attachment nodes are links (1.12.231).** A node of the tree with exactly
   two attachments -- its parent and one router child, or its parent and one
   endpoint -- whose two links have the same width and the same clock (the
   ladder's own width and clock, before the 128-bit flit clamp) arbitrates
@@ -94,7 +90,7 @@ credit-based flow control, deadlock-free routing.
   applies the same rule: such a node adds the latency of the links it
   replaces and no router stages; converters, merges and branch routers keep
   theirs.
-- **Links at full rate ((1.12.233)).** On the tree the writer emits, every link
+- **Links at full rate (1.12.233).** On the tree the writer emits, every link
   carries one flit per cycle at its width when nothing contends for it: the
   buffer each link feeds holds the link's credit round trip per VC -- link
   latency + the receiving router's pipe stages + the credit latency + 1 (a
@@ -109,7 +105,7 @@ credit-based flow control, deadlock-free routing.
   with a `buffers rtt` line. The same rule holds on every detailed fabric
   (see [Buffer depth](#buffer-depth)); an explicit `noc.buffers_per_vc`
   keeps that one depth on every link.
-- **SRAM and NVM devices: local groups under the die ((1.12.247)).** At the
+- **SRAM and NVM devices: local groups under the die (1.12.247).** At the
   `BANK` placement an SRAM, PCM, ReRAM or STT-MRAM device with no flat
   topology named is one die on which each processing element's interface and
   the banks of its slot form one local group on a local bus, and the groups
@@ -119,7 +115,7 @@ credit-based flow control, deadlock-free routing.
   access inside the element's slot crosses its local bus in both models: the
   request and the reply each cost one device cycle plus their flits beyond
   the first at the bus width, and the element's controller books the bus in
-  slots ((1.12.257)): the request takes the first free slot from its issue, the
+  slots (1.12.257): the request takes the first free slot from its issue, the
   bank starts when the request has arrived (and is free), and the reply takes
   the first free slot from the bank's answer, so a long array access holds no
   bus. The bus is priced as a link at the group tier, with no router.
@@ -136,7 +132,7 @@ credit-based flow control, deadlock-free routing.
   priced a different shape (every bank in one group, and rank and channel
   tiers the device does not have). The `MAT` (`SUBBANK`) placement keeps the
   flat fabric.
-- **`memory.local_path` ((1.12.258)).** How an SRAM or NVM element reaches the
+- **`memory.local_path` (1.12.258).** How an SRAM or NVM element reaches the
   banks of its own group, at the `BANK` placement. `bus` (the default) is the
   shared local bus above. `garnet` builds the group as a router instead: every
   bank of the group is its own network endpoint, the element's interface is
@@ -158,7 +154,7 @@ credit-based flow control, deadlock-free routing.
   full rate, 4 VCs per vnet, the device clock as the fabric clock); a group
   router has a port per bank, one for the element and one to the die router
   (18 for a group of 16 banks), and the power model's router classes stop at
-  16 ports, so it is priced as a 16-port router. `garnet_bus` ((1.12.259)) builds
+  16 ports, so it is priced as a 16-port router. `garnet_bus` (1.12.259) builds
   the same endpoints with each group's router a shared bus: one transfer per
   cycle over all its ports, granted in turn, in the tree's up/down VC classes
   and with the routers' pipe and buffer rules (the topology file's
@@ -168,7 +164,7 @@ credit-based flow control, deadlock-free routing.
   (CACTI's matrix arbiter, charged per access), and the group's link to the
   die router as a link. The key is refused on a DRAM device, at the `MAT` /
   `SUBBANK` placement, and with a named flat `noc.topology`.
-- **Posted writes: `memory.write_buffer_entries` ((1.12.266)).** On an SRAM or NVM
+- **Posted writes: `memory.write_buffer_entries` (1.12.266).** On an SRAM or NVM
   device at the `BANK` placement each element's controller has a write
   buffer, 32 entries by default. A write to a bank of the element's own slot
   is acknowledged one cycle after the controller has taken it into the
@@ -205,8 +201,8 @@ credit-based flow control, deadlock-free routing.
   `TORUS_2D`, `RING`, `FAT_TREE` and `BUS`, upper-cased at load (so the
   printed `System Network:` line is upper-case). The host fabric is analytic:
   `ring` (default), `crossbar` or `bus` (below).
-- **The in-die fabric (1.11.103, ruling 9).** A `MESH_2D`, `RING` or
-  `CROSSBAR` named on a DRAM device is that fabric INSIDE EACH DIE, over the
+- **The in-die fabric (1.11.103).** A `MESH_2D`, `RING` or
+  `CROSSBAR` named on a DRAM device is that fabric inside each die, over the
   die's organisations at the placement tier (the grid of a chip's bank
   groups x banks [x subarrays], `gridW x gridH` from the part record's
   counts). Every grid node is a router at the placement level with its own
@@ -221,7 +217,7 @@ credit-based flow control, deadlock-free routing.
   grid node and hub is a priced switch at the placement tier) take the same
   path. The detailed model runs the CROSSBAR and refuses a MESH or RING it
   cannot route deadlock-free by TABLE; the analytical model prices all three.
-  (1.12.143, user ruling 2026-10-28) On the analytical model the fabric's energy
+  Since 1.12.143, on the analytical model the fabric's energy
   follows the same walk: the grid tier's switches are priced as routers (not
   as a shared bus); the die's node links (MESH/RING node-node, CROSSBAR
   node-hub) are one link instance priced from the node-link traversals the
@@ -238,12 +234,12 @@ credit-based flow control, deadlock-free routing.
   replaced, find no endpoint and fall back to the arithmetic ladder -- so the
   analytical timing never crossed the die fabric and MESH_2D, RING and
   CROSSBAR ran identically.
-- **NoC energy (1.11.92).** McPAT charges one router access per FLIT per
-  ROUTER crossed. The network counts true flits (ceil(message bits / source
+- **NoC energy (1.11.92).** McPAT charges one router access per flit per
+  router crossed. The network counts true flits (ceil(message bits / source
   port width), 5 for a 576-bit data message on a 128-bit port) and routers
   crossed (links + 1 per packet); `Total hops` stays the link count, the
   latency input. On the detailed DRAM tree each level's accesses are
-  MEASURED: the Garnet routers' own crossbar counters, attributed to levels
+  measured: the Garnet routers' own crossbar counters, attributed to levels
   by the `rlevel` lines the tree builder writes into the `.topo` file, then
   re-cut at the level's own datapath width from the sourced ladder. The
   analytical NoC counts the same quantities from its tier walk. A stats file
@@ -260,6 +256,16 @@ credit-based flow control, deadlock-free routing.
   access goes to the node of the unit it reads, and a message between elements
   runs between their home nodes ((1.12.246); they used to take the hierarchy
   tree's endpoint ids, which put every bank without an element on one node).
+- **A link serves one flit of its width per cycle (1.12.171).** On the detailed
+  model's DRAM tree the network counts, per up-link, the cycles of service the
+  ROI's packets put on it (ceil(message bits / link width) each, at the width
+  the power model prices the level's links at; the topology file carries it as
+  `rlinkw`). When the busiest link needs more time than the PEs' own ends, the
+  run time closes at that link's service time (the link was the bottleneck) and
+  the run prints a line saying so; the link duty is taken over a window of at
+  least that service time, so it stays within 1. In a thread-MPI
+  co-simulation, records stamped after the ROI window closed are neither
+  replayed nor counted.
 
 ## `analytical` -- closed form
 
@@ -306,7 +312,7 @@ rather than read live:
   there takes the ladder cost of its distance on the built tree. The trace method's
   per-rank-process shared record log keeps the epoch's mean over all
   messages, read at `k-1`.
-- Until (1.12.237) an access was priced at the epoch's mean over every replayed
+- Until 1.12.237 an access was priced at the epoch's mean over every replayed
   message, read at epoch `k-2` only. The mean gave every rank the same cost per
   access, so ranks running the same code could fall into step and inject in
   bursts; and a rank running ahead of the slowest one read an epoch not yet
@@ -315,17 +321,17 @@ rather than read live:
 - This replaces a live per-drain EWMA read, which depended on how many drains
   a rank had blended and was read-depth inflated. On the epoch-mean model the
   frozen level sat **+5-12% above the analytical floor**.
-- Since 1.12.18 single-process runs (serial, OpenMP, co-sim OpenMP) use the
+- Since 1.12.18 single-process runs (serial, OpenMP, co-simulation OpenMP) use the
   same mechanism: per-core ROI-relative stamps, the consistent cut, and an
   epoch-frozen per-pair table read at epoch `k-2`
-  (`simulation.det_epoch_phases`, one phase by default since (1.12.187); see
+  (`simulation.det_epoch_phases`, one phase by default since 1.12.187; see
   the YAML reference).
 
 **Escape hatch.** `PIMID_MPI_ANALYTICAL_PRICING=1` forces the old analytical
 override (the topology-pure, load-independent `2 * nocAvgOneWayLatency`) for
 A/B comparison. It is no longer the default MPI model.
 
-## Host fabric and the host<->device bridge (co-sim)
+## Host fabric and the host<->device bridge (co-simulation)
 
 In a co-simulation the device H-tree above is joined to a **host fabric**
 by a **bridge**. The two are priced separately and traffic is charged to
@@ -333,14 +339,14 @@ exactly one of them:
 
 - **Device H-tree** prices every device-PE memory access (as above).
 - **Host fabric** (`system.hosts[].noc`, default `ring` / `analytical`)
-  prices host-core loads/stores. A 1-core host has NO fabric (core -> caches
+  prices host-core loads/stores. A 1-core host has no fabric (core -> caches
   -> MC direct). A multi-core host runs the topology it names (1.12.23):
   `ring` (default; the published Nehalem-EX ring, one stop per core and per
   host memory controller, 1 cycle per stop), `crossbar` (one hop,
   `hop_cycles`, core clock) or `bus`; any other word is refused (rc 1). Port
   contention is priced by the host memory controller (the replayed Ramulator2 controller since 1.12.18; the M/D/1 queue with `system.hosts[].memory.dram_replay: false`), so the fabric
   stays analytic: no host Garnet is instantiated, and a `noc.model` other
-  than `analytical` is accepted with a WARNING. The same topology is priced
+  than `analytical` is accepted with a warning. The same topology is priced
   in McPAT from the data messages and hops it measured
   (`power.models.host_noc`, 1.12.19; see [power.md](power.md)). Host
   memory bandwidth comes from the replayed Ramulator2 controller (since
@@ -429,7 +435,7 @@ refused at load.
 
 ### Bridge overrides (`noc.bridges.<boundary>`)
 
-The boundaries BETWEEN adjacent levels are modeled as bridges -- the
+The boundaries between adjacent levels are modeled as bridges -- the
 mux/TSV/bus transition points where the datapath changes width and clock.
 Valid boundary names: `subarray_bank`, `bank_bankgroup`, `bankgroup_chip`,
 `chip_rank`, `rank_channel`, `channel_system`.

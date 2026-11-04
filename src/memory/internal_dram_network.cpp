@@ -307,7 +307,7 @@ void InternalDRAMNetwork::initialize(int num_subarrays_per_bank,
     network_configs_[1].num_nodes = num_banks_per_bg_;
     network_configs_[2].num_nodes = num_bg_per_chip_;
     network_configs_[3].num_nodes = num_chips_per_rank_;
-    /* 1.11.57 (audit C006): the top two counts are the LAST two literals in
+    /* 1.11.57: the top two counts are the LAST two literals in
      * this ladder, and they are the only ones with no configuration surface at
      * all -- initialize() carries subarrays, banks, bank-groups and chips, and
      * overrideLevelConfig() sets width, frequency, latency, topology and router
@@ -1363,7 +1363,7 @@ void InternalDRAMNetwork::tick() {
 uint64_t InternalDRAMNetwork::getTransferLatency(NetworkLevel level,
                                                  int source_id, int dest_id,
                                                  uint64_t data_bytes) {
-    /* 1.11.60 (audit round 4, B017): ONE implementation, ONE answer.
+    /* 1.11.60: ONE implementation, ONE answer.
      *
      * This used to be a second, independent copy of the crossing cost --
      * hops x (router + fixed) + serialisation -- and 1.11.59's B014 change
@@ -1400,7 +1400,7 @@ double InternalDRAMNetwork::getTransferLatencyNs(NetworkLevel level,
                                                  int source_id, int dest_id,
                                                  uint64_t data_bytes,
                                                  bool with_router) {
-    /* 1.11.56 (audit B051): the cycles version above, divided by the clock
+    /* 1.11.56: the cycles version above, divided by the clock
      * those cycles belong to. Both terms are per-level: the router pipeline
      * and the fixed link latency tick at frequency_GHz, and a serialisation
      * beat moves link_width_bits at the same frequency. */
@@ -1416,7 +1416,7 @@ double InternalDRAMNetwork::getTransferLatencyNs(NetworkLevel level,
      * fixed latency and its serialisation, and charges no pipeline stages. */
     if (!with_router) per_hop_router = 0;
 
-    /* 1.11.59 (audit round 3, B014): a traversal costs its fixed latency ONCE
+    /* 1.11.59: a traversal costs its fixed latency ONCE
      * even when the routing hop count is zero.
      *
      * avgHops() returns 0.0 for "bus" and "crossbar" and for num_nodes <= 1,
@@ -1470,7 +1470,7 @@ double InternalDRAMNetwork::getBridgeLatencyNs(int boundary, uint64_t data_bytes
      * faster than the slower of the two. The old form added a BEAT COUNT
      * taken at the narrower width straight into a cycle total, with no
      * clock attached to either side. */
-    /* 1.11.97 (review H26, ruling 7 (c) release): THE PAYLOAD IS SERIALISED
+    /* 1.11.97 (release): THE PAYLOAD IS SERIALISED
      * ONCE PER TIER. computeHierTraversal charges, for every tier a traversal
      * crosses, getTransferLatencyNs(tier) -- which already serialises the
      * line at that tier's width -- AND this bridge at each tier boundary,
@@ -1489,7 +1489,7 @@ double InternalDRAMNetwork::getBridgeLatencyNs(int boundary, uint64_t data_bytes
 
 void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],
                                              const double bandwidth_GBs[7]) {
-    /* 1.11.59 (audit round 3, B014, second half): adopting the ladder RE-TIMES
+    /* 1.11.59 (second half): adopting the ladder RE-TIMES
      * every per-level fixed latency, because those constants are counts of
      * cycles at the level's own clock and this function changes that clock.
      * DDR5's L3 "I/O driver + package delay" of 5 cycles was authored against
@@ -1507,7 +1507,7 @@ void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],
         // f = BW * 8 / width reproduces the sourced bandwidth exactly, and
         // lands on the data rate for the DQ tiers and the core clock for the
         // array tiers without this class classifying them.
-        /* 1.11.57 (audit C003): that second sentence is only true because the
+        /* 1.11.57: that second sentence is only true because the
          * bank and bank-group rungs are now derived as a width times the core
          * clock. While they were frozen literals this line silently invented a
          * clock for them -- HBM3's array tiers came out at 1.0 GHz against a
@@ -1515,7 +1515,7 @@ void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],
         cfg.frequency_GHz = bandwidth_GBs[i] * 8.0 / static_cast<double>(width_bits[i]);
     }
 
-    /* 1.11.57 (audit C005): THE BRIDGES FOLLOW THE LEVELS THEY JOIN.
+    /* 1.11.57: THE BRIDGES FOLLOW THE LEVELS THEY JOIN.
      *
      * What was wrong: bridge[i] spans level i and level i+1, and its ingress
      * and egress links ARE those two levels' links -- that is what a tier
@@ -1544,7 +1544,7 @@ void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],
      * a reader can still see them for what they are. A YAML level override
      * applied after this changes the level and not the bridge, which is the
      * same division of authority as before. */
-    /* 1.11.75 (audit round 6, R6-1): EACH SIDE FOLLOWS ITS OWN LEVEL.
+    /* 1.11.75: EACH SIDE FOLLOWS ITS OWN LEVEL.
      *
      * The rule above is per BOUNDARY, but the two descriptions it sets are per
      * SIDE, and this loop required BOTH adjacent levels to be sourced before
@@ -1573,7 +1573,7 @@ void InternalDRAMNetwork::applySourcedLadder(const int width_bits[7],
     }
 }
 
-/* 1.11.57 (audit C006): the configuration surface the rank and channel rungs
+/* 1.11.57: the configuration surface the rank and channel rungs
  * never had. Both counts come from the run's own resolved organisation; a
  * non-positive value is ignored rather than turned into a zero-node network,
  * because a level with no nodes has no defined hop count. */
@@ -1844,7 +1844,7 @@ uint64_t InternalDRAMNetwork::getBridgeLatency(int boundary, uint64_t data_bytes
     return static_cast<uint64_t>(base + wait_time + 0.5);
 }
 
-/* 1.11.57 (audit C005): these are DEFAULTS ONLY, and on a technology whose
+/* 1.11.57: these are DEFAULTS ONLY, and on a technology whose
  * ladder reconciles they no longer survive: applySourcedLadder() overwrites
  * every ingress and egress width and clock with the two levels each bridge
  * joins. What is left of this table after that is the base latency, the FIFO

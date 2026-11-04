@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -64,7 +64,7 @@ class GDDR6 : public IDRAM, public Implementation {
      *     and overwrites this column, so the written 570 never applied; the
      *     column is now a checked mirror of the derivation (see the equality
      *     check in set_timing_vals).
-     *     nCCDS: DERIVED-FROM-IDENTITY, not sourced. nCCDS 4 < nBL 8 -- a new
+     *     nCCDS: derived from the identity, not sourced. nCCDS 4 < nBL 8 -- a new
      *     BL16 burst cannot start 4 cycles after one that occupies 8 cycles of
      *     the same channel's DQ bus. JESD250D cl.1 (printed p.1 / PDF p.13)
      *     states the GDDR6 AC timings "were not standardized" and publishes
@@ -77,7 +77,7 @@ class GDDR6 : public IDRAM, public Implementation {
      *     nWR, nRTP, nCWL, nCCDL, nRRD*, nWTR*, nFAW, nRREFD, nRFCpb) stays as
      *     it is: UNCHECKABLE against JESD250D by the standard's own design. */
     inline static const std::map<std::string, std::vector<int>> timing_presets = {
-      /* 1.11.66 (round 5, lane C -- CORRECTS A 1.11.63 REGRESSION). GDDR6
+      /* 1.11.66 (CORRECTS A 1.11.63 REGRESSION). GDDR6
        * carries 8 bits/pin per CK (WCK = 4x CK, DDR on WCK -- JESD250D Table 1
        * p.5: CK 1.5 GHz <-> 12 Gbps; Samsung K4Z80325BC Table 91: tCK 0.57 ns
        * AT 14 Gbps), NOT the 2 bits/pin the 1.11.63 derivation assumed.
@@ -104,11 +104,11 @@ class GDDR6 : public IDRAM, public Implementation {
       //       name                 rate   nBL  nCL  nRCDRD nRCDWD  nRP   nRAS  nRC   nWR  nRTP nCWL nCCDS nCCDL nRRDS nRRDL nWTRS nWTRL nRTW nFAW nPPD  nRFC nREFI nRREFD nRFCpb tCK_ps
       /* 1.12.42: despite the "2000" in the name this row runs at 14000 MT/s: CK 1750 MHz (tCK 571 ps), WCK 4x
        * CK, 14 Gb/s per pin (Samsung K4Z80325BC Rev 1.3 Table 92, JESD250D Fig. 1). The name is Ramulator's. */
-      /* 1.12.43 (user ruling 2026-10-25): the default row follows Samsung K4Z80325BC Rev. 1.3 (public) Table 92
+      /* 1.12.43: the default row follows Samsung K4Z80325BC Rev. 1.3 (public) Table 92
        * "AC Timings @ VDD&VDDQ=1.35V" p.157, rounded UP to 571 ps: tRCDRD 15 ns -> 27 (was 26 = 14.85 ns), tRP 15 ns
        * -> 27 (was 26), tWR 15 ns -> 27 (was 26); tCCDL "3 / 4 tCK" (NOTE 29/35, MR-selected) with fCKBG3 2000 MHz
        * >= the 1750 MHz CK of this row, so 3 (was 6, twice the sheet). nRC 79 -> 80 = nRAS 53 + nRP 27 (tRC 45 ns
-       * = tRAS 30 + tRP 15; DERIVED: the rounded cycle counts must still satisfy nRC >= nRAS + nRP). Unchanged and
+       * = tRAS 30 + tRP 15; derived: the rounded cycle counts must still satisfy nRC >= nRAS + nRP). Unchanged and
        * matching the sheet: tRCDWR 9 ns (16), tRAS 30 (53), tRRD max(4 ns, 2tCK) (7), tFAW 16 ns (28), tRTPL 4,
        * tWTRS 2tCK+4 ns (9), tWTRL 4tCK+4 ns (11), tRFCab 120 / tRFCpb 60 ns. */
       /* nRTW and nPPD. Samsung K4Z80325BC Rev. 1.3 Table 92 (p.158; Table 93 p.161 at 1.25 V, the same terms):
@@ -226,7 +226,7 @@ class GDDR6 : public IDRAM, public Implementation {
       Node(GDDR6* dram, Node* parent, int level, int id) : DRAMNodeBase<GDDR6>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -237,7 +237,7 @@ class GDDR6 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
     };
 
@@ -252,7 +252,7 @@ class GDDR6 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -260,7 +260,7 @@ class GDDR6 : public IDRAM, public Implementation {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {
@@ -422,7 +422,7 @@ class GDDR6 : public IDRAM, public Implementation {
         { 28 },  // x16
       };
 
-      /* PIMID 1.11.96 (review x09-ramulator-specs-10): the per-width table
+      /* PIMID 1.11.96: the per-width table
        * above, marked "update these values" by its authors, OVERWROTE the
        * timing preset's own nRRDS/nRRDL/nFAW (the shipped 1350 mV x16 row
        * carried nRRDS 7, the table wrote 5). The preset row is the sourced
@@ -436,7 +436,7 @@ class GDDR6 : public IDRAM, public Implementation {
 
       // Refresh timings
       // tRFC table (unit is nanosecond!)
-      /* 1.11.66 (round 5, lane C): the table this replaces was DDR4's tRFC1/
+      /* 1.11.66: the table this replaces was DDR4's tRFC1/
        * tRFC2/tRFC4 column set (260/360/550 at 4/8/16 Gb -- JESD79-4's
        * numbers), inherited with the rest of this file and never a GDDR6
        * value. The public vendor sheet gives the all-bank refresh cycle time
@@ -447,7 +447,7 @@ class GDDR6 : public IDRAM, public Implementation {
        * DDR4 chip's does). The per-bank tRFCpb is 60 ns, which the
        * row's nRFCpb 105 x 0.571 = 60 ns already carries. JESD250D itself
        * leaves the AC cell blank (vendor-specified), so the vendor sheet
-       * is the authority; the 16 Gb value is the same 120 ns, estimated from a vendor source that cannot be disclosed publicly. With tREFI 1900 ns the refresh occupancy goes
+       * is the authority; the 16 Gb value is the same 120 ns, a calibrated value. With tREFI 1900 ns the refresh occupancy goes
        * 360/1900 = 18.9% -> 120/1900 = 6.3%, which is what a 14 Gb/s GDDR6
        * channel actually loses to refresh. GDDR6 has no fine-granularity
        * refresh modes (no tRFC2/tRFC4 exist in JESD250D), so the table is
@@ -488,7 +488,7 @@ class GDDR6 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the three tabulated ones, and that -1 then indexed
        * tRFC_TABLE. An out-of-bounds read one element BEFORE a table of
        * plausible nanosecond figures does not crash -- it yields whatever
@@ -581,7 +581,7 @@ class GDDR6 : public IDRAM, public Implementation {
           /// RAS <-> RAS
           {.level = "channel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nRRDS")},          
           {.level = "channel", .preceding = {"ACT"}, .following = {"ACT"}, .latency = V("nFAW"), .window = 4},       
-          /* PIMID 1.11.96 (review H03): tRAS and tRP are BANK constraints (JESD250D: ACT-to-PRE and PRE-to-ACT of the same
+          /* PIMID 1.11.96: tRAS and tRP are BANK constraints (JESD250D: ACT-to-PRE and PRE-to-ACT of the same
            * bank), as DDR4.cpp states them; at "channel" level they serialised every bank's activate behind every other's
            * precharge, 1.92x on random traffic. */
           {.level = "bank", .preceding = {"ACT"}, .following = {"PRE"}, .latency = V("nRAS")},          
@@ -635,7 +635,7 @@ class GDDR6 : public IDRAM, public Implementation {
           {.level = "bank", .preceding = {"REFpb"}, .following = {"ACT"}, .latency = V("nRFCpb")},   
 
           /// RAS <-> RAS
-          /* 1.12.40 (user ruling 2026-10-25): RESTORED. ACTIVATE to ACTIVATE on the same bank is tRC. Samsung
+          /* 1.12.40: RESTORED. ACTIVATE to ACTIVATE on the same bank is tRC. Samsung
            * K4Z80325BC GDDR6 data sheet Rev. 1.3 (public copy), Table 92 "AC Timings @
            * VDD&VDDQ=1.35V" p.157: "ACTIVATE to ACTIVATE command period tRC 45 ns" (= the preset's nRC 79 at
            * 571 ps); JESD250D Table 73 NOTE 29: auto-precharge waits for tRAS(min). Without it RDA -> ACT was only

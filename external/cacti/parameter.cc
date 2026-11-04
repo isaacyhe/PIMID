@@ -189,7 +189,7 @@ void scan_five_input_double_temperature(char* line, const char* name, const char
  * scan above, unchanged). Between two rows the value is interpolated from
  * the two bracketing rows: log-linear (geometric) for these currents, which
  * are exponential in temperature to first order, and linear when either end
- * is zero or negative (a column the table leaves unpopulated). DERIVED
+ * is zero or negative (a column the table leaves unpopulated). Derived
  * values; the endpoints are the table's own rows. */
 static void scan_temperature_bracket(char* line, const char* name, int flavor,
                                      unsigned int temperature,

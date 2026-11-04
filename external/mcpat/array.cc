@@ -322,7 +322,7 @@ void ArrayST::optimize_array()
 	local_result.area *= total_overhead;
 
 	//maintain constant power density
-	/* PIMID 1.12.18 (user ruling 2026-10-24): macro x chip layout overheads are
+	/* PIMID 1.12.18: macro x chip layout overheads are
 	 * AREA overheads (place-and-route); upstream also scaled dynamic and
 	 * short-circuit energy by them 'to maintain constant power density' with no
 	 * published basis, and PIMID's direct CACTI pricing never applies it. Off
@@ -418,7 +418,7 @@ void ArrayST::leakage_feedback(double temperature)//TODO: add the code to proces
   double chip_PR_overhead        = g_tp.chip_layout_overhead;
   double total_overhead          = macro_layout_overhead*chip_PR_overhead;
 
-  /* PIMID 1.12.18 (user ruling 2026-10-24): as in optimize_array above. */
+  /* PIMID 1.12.18: as in optimize_array above. */
   const double e_overhead = pimid_layout_energy_overhead_g ? total_overhead : 1.0;
   double pppm_t[4]    = {e_overhead,1,1,e_overhead};
 

@@ -485,7 +485,7 @@ class DDR4RVRR : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the four tabulated ones, and that -1 then indexed
        * tRFC_TABLE. An out-of-bounds read one element BEFORE a table of
        * plausible nanosecond figures does not crash -- it yields whatever

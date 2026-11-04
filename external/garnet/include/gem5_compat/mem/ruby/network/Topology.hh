@@ -34,7 +34,7 @@ public:
     // Get number of routers
     uint32_t numRouters() const { return numRouters_; }
 
-    // 1.11.94 (x03-garnet-custom-3): the builder records the topology name
+    // 1.11.94: the builder records the topology name
     // so that a routing refusal can say which topology lacks the port.
     // Metadata only; nothing in routing or timing reads it.
     void setName(const std::string& n) { name_ = n; }

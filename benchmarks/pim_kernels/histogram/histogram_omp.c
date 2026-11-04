@@ -7,7 +7,7 @@
  * the simulator never moves data. Prep here (before the ROI, untimed):
  * PE p's slot holds [its input chunk][its private histogram]; the ROI scan is
  * then PE-local, and only the final merge into the shared host histogram
- * crosses. 1.12.18 (ruling 2026-10-23): that merge is PARALLEL -- after a
+ * crosses. 1.12.18: that merge is PARALLEL -- after a
  * barrier, thread t sums ITS slice of the bins across every thread's partial
  * histogram (no omp critical). Coarse/host-shared placement runs the host
  * layout. */
@@ -69,7 +69,7 @@ static void histogram_count(pimid_spm_t* s, int* hist, const int* data, size_t n
     }
 }
 
-/* 1.12.18 (ruling 2026-10-23): the parallel merge of one thread's slice
+/* 1.12.18: the parallel merge of one thread's slice
  * hist[b0, b0 + n) = sum over q < np of parts[q][b0, b0 + n), through the PE
  * scratchpad. The RAM holds two equal buffers: a tile of the result (summed in
  * the RAM, written back once) and a tile of one partial (each fetched once).
@@ -93,7 +93,7 @@ static void histogram_merge(pimid_spm_t* s, int* hist, int* const* parts, int np
     }
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): per-PE need of [chunk][hist]. */
+/* 1.11.94: per-PE need of [chunk][hist]. */
 typedef struct { int P; int nbins; } histogram_omp_ctx;
 static size_t histogram_omp_need(long n, const void* c) {
     const histogram_omp_ctx* x = (const histogram_omp_ctx*)c;
@@ -139,7 +139,7 @@ int main(int argc, char* argv[]) {
     size_t slot_bytes = 0;
     char* base = NULL;
     if (prep) {
-        /* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a need larger than the slot
+        /* 1.11.94: a need larger than the slot
          * is refused; it used to fall back to host layout in silence. */
         slot_bytes = pimid_devorg_slot_bytes(&dev);
         if (need > slot_bytes) {
@@ -163,7 +163,7 @@ int main(int argc, char* argv[]) {
     #pragma omp parallel num_threads(T)
     pimid_spm_open(&spms[omp_get_thread_num()]);
 
-    /* 1.12.18 (ruling 2026-10-23): parts[q] = partial histogram q, read by
+    /* 1.12.18: parts[q] = partial histogram q, read by
      * every thread in the parallel merge. Devorg prep: PE q's slot histogram
      * (filled here, before the ROI) for the np PEs that hold data; host
      * layout: each thread's own calloc'd histogram, published in the ROI. */
@@ -216,7 +216,7 @@ int main(int argc, char* argv[]) {
         /* 1.12.18: no scratchpad -- the 1.12.17 count (thread p runs PE p's
          * chunk, as schedule(static, 1) gave it); then a barrier and the
          * PARALLEL merge: thread t sums ITS slice of the bins across the np
-         * partials (ruling 2026-10-23; was an omp critical loop). */
+         * partials (was an omp critical loop). */
         if (!spms[0].cap) {
             #pragma omp parallel num_threads(P)
             {
@@ -265,7 +265,7 @@ int main(int argc, char* argv[]) {
         /* 1.12.18: no scratchpad -- the 1.12.17 count; each thread publishes
          * its private histogram in parts[], and after the barrier the merge is
          * PARALLEL: thread t sums ITS slice of the bins across all threads'
-         * partials (ruling 2026-10-23; was an omp critical loop). A second
+         * partials (was an omp critical loop). A second
          * barrier keeps every partial alive until all slices are summed. */
         if (!spms[0].cap) {
             #pragma omp parallel num_threads(T)

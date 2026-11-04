@@ -48,7 +48,7 @@ struct PCMOrganization {
 };
 
 struct PCMInnerBankTiming {
-    /* 1.11.107 (gate 1217B, E2): every member is value-initialised. The STT-MRAM
+    /* 1.11.107: every member is value-initialised. The STT-MRAM
      * extractor left four components unassigned and the printed inner-bank read
      * latency summed uninitialised memory (2.5e+180 ns on two corpus cells). */
     // READ path
@@ -88,7 +88,7 @@ struct PCMTiming {
     double mat_read_ns, bank_read_ns, chip_read_ns;
     double mat_set_ns, bank_set_ns, chip_set_ns;
     double mat_reset_ns, bank_reset_ns, chip_reset_ns;
-    /* 1.11.56 (audit D062): true when NVSim did not resolve
+    /* 1.11.56: true when NVSim did not resolve
      * FunctionUnit::setLatency and the *_set_ns fields therefore hold the
      * GENERIC WRITE latency. getSetLatency() has no cached branch, so this is
      * the normal state on a cache hit; without the flag the SET tier was

@@ -101,7 +101,7 @@ Wire::Wire(
     Component Wire::global_10;
     Component Wire::global_20;
     Component Wire::global_30;
-    Component Wire::global_ho;   /* user ruling 2026-10-25 */
+    Component Wire::global_ho;
     Component Wire::low_swing;
 
     int Wire::initialized;
@@ -239,7 +239,7 @@ Wire::calculate_wire_stats()
 				  compute_gate_area(INV, 1, min_w_pmos * repeater_size,
 						  g_tp.min_w_nmos_ * repeater_size, g_tp.cell_h_def));
 	  }
-	  else if (wt == Global_ho) {   /* PIMID (user ruling 2026-10-25) */
+	  else if (wt == Global_ho) {   /* PIMID */
 		  delay = global_ho.delay * wire_length;
 		  power.readOp.dynamic = global_ho.power.readOp.dynamic * wire_length;
 		  power.readOp.leakage = global_ho.power.readOp.leakage * wire_length;
@@ -707,7 +707,7 @@ Wire::init_wire(){
     }
   }
   repeated_wire.pop_back();
-  /* PIMID (user ruling 2026-10-25): the published energy-efficient repeater point of R. Ho, "On-Chip
+  /* PIMID: the published energy-efficient repeater point of R. Ho, "On-Chip
    * Wires: Scaling and Efficiency", PhD thesis, Stanford, 2003, Sec. 4.2: "underdriving the wires by 20%
    * and over-spacing the repeaters by 40% leads to only a 4% delay penalty" and, at l = 1.4 and w = 0.8,
    * "save 20% of the consumed energy". Evaluated with this wire's own model at 0.8x the delay-optimal

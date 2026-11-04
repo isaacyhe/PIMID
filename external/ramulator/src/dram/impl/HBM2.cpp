@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -61,7 +61,7 @@ class HBM2 : public IDRAM, public Implementation {
       // tREFI=3.9us). Cycle counts derived at tCK=833ps.
       // Replaces the earlier placeholder "HBM2_2Gbps" preset, which encoded
       // physically-impossible ~7ns row timings (~2x faster than any real HBM2).
-      /* PIMID 1.11.59 (audit F036): the nRFC/nRFCSB/nREFISB columns are -1,
+      /* PIMID 1.11.59: the nRFC/nRFCSB/nREFISB columns are -1,
        * because get_timing_vals() overwrites all three from the per-density
        * tables further down before anything reads them. This line used to
        * carry nRFC=265 with a comment claiming "tRFC=220ns @4Gb" -- a value
@@ -101,7 +101,7 @@ class HBM2 : public IDRAM, public Implementation {
        *   nRTW  10 -> 17 (Table 68 NOTE 23 p.112 closed form with this
        *     row's RL 20 / WL 10 / BL4, tDQSS(min) -0.2 tCK, tDQSCK(max)
        *     3.5 ns, tDQSQ(max) 71 ps at 2.4 Gbps = 13.82 ns -> 17 nCK.
-       *     LIVE since PIMID 1.11.96 (x09-11): populate_timingcons reads nRTW; until then its live RD->WR
+       *     LIVE since PIMID 1.11.96: populate_timingcons reads nRTW; until then its live RD->WR
        *     rule is nCL + nBL + 2 - nCWL -- kept correct for the
        *     completeness check's sake.)
        *   nRREFD 8 -> 10. UNIT ERROR: Table 68 p.110 gives tRREFD = 8 ns;
@@ -121,7 +121,7 @@ class HBM2 : public IDRAM, public Implementation {
        *
        * [1.12.42: RESOLVED -- the org presets below carry the Table 4 layout
        * (16 banks/PC, RA[13:0] at 4 Gb/channel) since 1.11.64; the note is kept
-       * as history.] KNOWN-DRIFTED, STAGED for the next release (R2 precedent: address-
+       * as history.] KNOWN-DRIFTED, STAGED for the next release (address-
        * layout movers ship separately for attribution): the ORG presets.
        * Table 4 p.6 at 4 Gb/channel gives BA[3:0] = 16 banks/PC (4 groups x
        * 4) and RA[13:0] = 16384 rows; this org carries 8 banks/PC x 32768
@@ -226,7 +226,7 @@ class HBM2 : public IDRAM, public Implementation {
       Node(HBM2* dram, Node* parent, int level, int id) : DRAMNodeBase<HBM2>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -237,7 +237,7 @@ class HBM2 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
     };
 
@@ -252,7 +252,7 @@ class HBM2 : public IDRAM, public Implementation {
       set_rowopens();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -260,7 +260,7 @@ class HBM2 : public IDRAM, public Implementation {
       int channel_id = addr_vec[m_levels["channel"]];
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
     };
 
     int get_preq_command(int command, const AddrVec_t& addr_vec) override {
@@ -393,7 +393,7 @@ class HBM2 : public IDRAM, public Implementation {
         { 160,  260,  350,  450},
       };
 
-      /* PIMID 1.11.59 (audit F034): this header said "tRFC table" over the
+      /* PIMID 1.11.59: this header said "tRFC table" over the
        * same-bank refresh INTERVAL table -- the copy-paste that hid the wrong
        * read below for as long as it stood. */
       // tREFIsb table (same-bank refresh INTERVAL, unit is nanosecond!)
@@ -401,7 +401,7 @@ class HBM2 : public IDRAM, public Implementation {
        * encoded JEDEC's 1/2/4/8 Gb-per-channel sequence under 2/4/8/16 Gb
        * labels. Table 68 p.111: 0.4875 us for 1-2 Gb/channel, 0.2438 us for
        * 4-8 Gb/channel; no 16 Gb/channel cell exists, so that entry is
-       * DERIVED from NOTE 29 p.112 ("tREFISB = tREFI / N; N = no. of
+       * derived from NOTE 29 p.112 ("tREFISB = tREFI / N; N = no. of
        * banks") with Table 4's SID+BA[3:0] = 32 banks: 3.9 us / 32 = 1219
        * ns. The NOTE-29 identity reproduces every published cell (3.9/8,
        * 3.9/16), which is the cross-check. Old 4 Gb value was 2x long. */
@@ -419,7 +419,7 @@ class HBM2 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037): the lambda returns -1 for any density
+      /* PIMID 1.11.59: the lambda returns -1 for any density
        * outside the four tabulated ones, and that -1 then indexed three
        * constexpr arrays. An out-of-bounds read one element BEFORE a table of
        * plausible nanosecond figures does not crash -- it yields whatever
@@ -436,7 +436,7 @@ class HBM2 : public IDRAM, public Implementation {
       }
 
       m_timing_vals("nRFC")  = JEDEC_rounding(tRFC_TABLE[0][density_id], tCK_ps);
-      /* PIMID 1.11.59 (audit F034): nREFISB read tRFC_TABLE -- the refresh
+      /* PIMID 1.11.59: nREFISB read tRFC_TABLE -- the refresh
        * TIME table -- while tREFISB_TABLE, the same-bank refresh INTERVAL
        * defined just above, sat unread. HBM3.cpp was corrected in 1.11.51 and
        * this twin was not, so the same upstream copy-paste survived here: at
@@ -452,7 +452,7 @@ class HBM2 : public IDRAM, public Implementation {
        * a stated UPPER BOUND (same reasoning as HBM3.cpp; AllBank refresh
        * never consumes it).
        *
-       * PIMID 1.11.59 (audit F035): the `if (nRFCSB == -1)` this replaces was
+       * PIMID 1.11.59: the `if (nRFCSB == -1)` this replaces was
        * unconditionally true -- the one shipped preset sets that column to -1
        * -- while nRFC and nREFISB beside it were overwritten with no guard at
        * all. The guard therefore documented a preset-wins precedence rule
@@ -524,7 +524,7 @@ class HBM2 : public IDRAM, public Implementation {
           {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"RD", "RDA"}, .latency = V("nCCDS")},
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"WR", "WRA"}, .latency = V("nCCDS")},
           /// RD <-> WR, Minimum Read to Write, Assuming tWPRE = 1 tCK                          
-          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nRTW")},   /* PIMID 1.11.96 (review x09-ramulator-specs-11): the row's derived nRTW (JESD235D Table 68 note 23 closed form, 17 nCK at 2.4 Gbps) instead of nCL + nBL + 2 - nCWL (14), which the file itself marked INERT */
+          {.level = "pseudochannel", .preceding = {"RD", "RDA"}, .following = {"WR", "WRA"}, .latency = V("nRTW")},   /* PIMID 1.11.96: the row's derived nRTW (JESD235D Table 68 note 23 closed form, 17 nCK at 2.4 Gbps) instead of nCL + nBL + 2 - nCWL (14), which the file itself marked INERT */
           /// WR <-> RD, Minimum Read after Write
           {.level = "pseudochannel", .preceding = {"WR", "WRA"}, .following = {"RD", "RDA"}, .latency = V("nCWL") + V("nBL") + V("nWTRS")},
           /// CAS <-> PREab

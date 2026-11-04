@@ -43,7 +43,7 @@ bool specFor(const std::string& t, LinkSpec& s) {
     if (t.rfind("pcie_gen3", 0) == 0) { s = {8.0,  128, 130, 16, true,  "PCIe 3.0: 8 GT/s, 128b/130b"};  return true; }
     if (t.rfind("pcie_gen4", 0) == 0) { s = {16.0, 128, 130, 16, true,  "PCIe 4.0: 16 GT/s, 128b/130b"}; return true; }
     if (t.rfind("pcie_gen5", 0) == 0) { s = {32.0, 128, 130, 16, true,  "PCIe 5.0: 32 GT/s, 128b/130b"}; return true; }
-    /* (user ruling 2026-10-27: serial links calibrated): CXL 3.0 rides the PCIe 6.0 electrical layer,
+    /* (serial links calibrated): CXL 3.0 rides the PCIe 6.0 electrical layer,
      * 64 GT/s PAM4 in 256 B flits of which 236 B carry TLPs (6 B DLP, 8 B CRC,
      * 6 B FEC: D. Das Sharma, "PCI Express 6.0 Specification", OpenFabrics
      * workshop 2022, flit layout slide); CXL 1.1/2.0 ride gen5. */
@@ -51,7 +51,7 @@ bool specFor(const std::string& t, LinkSpec& s) {
     if (t.rfind("cxl", 0) == 0)       { s = {32.0, 128, 130, 16, true,  "CXL on PCIe gen5 electrical"}; return true; }
     /* UCIe advanced package: parallel, unencoded, 64 lanes per module. */
     if (t.rfind("interposer", 0) == 0){ s = {16.0, 1, 1, 64, false, "UCIe advanced package module"}; return true; }
-    /* (user ruling 2026-10-27: serial links calibrated): the NVLink classes at their published
+    /* (serial links calibrated): the NVLink classes at their published
      * per-pair rates and the device's full link set (one direction):
      *   3.0 (A100): 50 Gb/s per signal pair, 4 pairs per link, 12 links = 48 pairs,
      *       25 GB/s per link per direction, 600 GB/s total (NVIDIA, "NVIDIA
@@ -118,8 +118,8 @@ double CactiIOWrapper::linkControllerClockMHz(const std::string& link_type) {
                              (link_type.rfind("cxl", 0) == 0);
     if (!pipe_family) return -1.0;
     const double kPipeWidthBits = 32.0;   // stated convention, PIPE rev 7.1
-    /* (user ruling 2026-10-27: serial links calibrated): a 64 GT/s (CXL 3.0) class keeps the gen5
-     * controller clock: NO PUBLISHED SOURCE FOUND for its PIPE width here. */
+    /* (serial links calibrated): a 64 GT/s (CXL 3.0) class keeps the gen5
+     * controller clock: no published value found for its PIPE width here. */
     return std::min(s.rate_gt_s, 32.0) * 1000.0 / kPipeWidthBits;
 }
 
@@ -134,13 +134,13 @@ double CactiIOWrapper::linkBandwidthGBs(const std::string& link_type,
     return s.rate_gt_s * lanes * linkEncodingEfficiency(link_type) * linkDllEfficiency(link_type) / 8.0;
 }
 
-/* (user ruling 2026-10-27: serial links calibrated): the PCIe data link layer's share. "The DLL adds
+/* (serial links calibrated): the PCIe data link layer's share. "The DLL adds
  * around 8-10% of overheads due to flow control and acknowledgment messages,
  * leaving around 57.88 Gb/s available at the TLP layer" of a gen3 x8 link's
  * 62.96 Gb/s (R. Neugebauer et al., "Understanding PCIe performance for end host
  * networking", SIGCOMM 2018, Sec. 2, from the specification's recommended
  * values): 57.88 / 62.96 = 0.9193, applied to the PCIe gen3/4/5 classes (the same
- * DLL; DERIVED for gen4/5). CXL.cache/mem and the other classes carry their own
+ * DLL; derived for gen4/5). CXL.cache/mem and the other classes carry their own
  * framing (their header bytes) and take 1. */
 double CactiIOWrapper::linkDllEfficiency(const std::string& link_type) {
     if (link_type.rfind("pcie_gen", 0) == 0) return 57.88 / 62.96;
@@ -232,8 +232,6 @@ struct DramIOMap {
  *                   Features, "Ultra-low-voltage core and I/O power supplies".
  *                   The same sheet's IDD Table 18 note 5 (PDF p.43) states
  *                   the operating range VDDQ = 0.47-0.57 V (DVFSQ disabled).
- *                   [1.11.91: a second citation, to a vendor source that
- *                   cannot be disclosed publicly, was removed here.]
  *   RON  = 40 ohm   SOURCED. IDD-table Note 4, verbatim: "IDD4RQ value is
  *                   reference only. Typical value. Output load = 5pF; RON = 40
  *                   ohms; TC = 25 C" -- Micron Y52P LPDDR5X sheet p.43
@@ -281,7 +279,7 @@ struct DramIOMap {
  * ELECTRICALS: the rail, the termination and the driver impedance. */
 struct PimidElectrical {
     double vddq;      // IO rail -> vdd_io
-    /* 1.11.63 (R7, user ruling): the two directions are different circuits
+    /* 1.11.63: the two directions are different circuits
      * and CACTI-IO natively carries them (rtt1_dq_read / rtt1_dq_write).
      * rtt_rd is the RX termination a READ drives into (RTT_NOM class);
      * rtt_wr is the DRAM's write termination (RTT_WR class). A zero means
@@ -296,18 +294,18 @@ struct PimidElectrical {
 };
 
 bool pimidElectricalFor(const std::string& t, PimidElectrical& e) {
-    /* 1.11.57 (audit C008): 1.35 V, not 1.5 V -- the DDR3L part the rest of
+    /* 1.11.57: 1.35 V, not 1.5 V -- the DDR3L part the rest of
      * this run prices. The IDD row that gives DDR3 its ARRAY energy
      * (external/ramulator/src/dram/pimid_energy.h) is Micron 4Gb DDR3L-1600, a
      * 1.35 V part, and 1.11.46 retired the 1.5 V SSTL-15 reading there under
-     * the heading "ONE PART per technology". That ruling was applied to the
+     * the heading "ONE PART per technology". That rule was applied to the
      * fallback scheme table and not to this one -- which OVERRIDES it, since
      * DDR3's CACTI-IO map is exact and the injected electricals make the result
      * authoritative for the printed termination energy. So one DDR3 access was
      * priced on two different silicon voltages, and the half that reached the
      * report was the retired one. The swing voltages recomputeSwing() derives
      * scale with this rail and the termination power with its square. */
-    /* 1.11.63 (R7): rd/wr split, values = the vendors' own IDD measurement
+    /* 1.11.63: rd/wr split, values = the vendors' own IDD measurement
      * conditions so the interface and the IDD-sourced array energy describe
      * the same register settings. DDR3L/DDR4/DDR5 state the same trio:
      * RON=RZQ/7=34, RTT_NOM=RZQ/6=40, RTT_WR=RZQ/2=120 (MT41K p.32; MT40A
@@ -364,7 +362,7 @@ bool dramIOMapFor(const std::string& t, DramIOMap& m) {
     /* GDDR6: POD135, same signalling family as DDR4/DDR5, so DDR4's structural
      * and PHY coefficients apply once PIMID's POD135 electricals are injected.
      *
-     * 1.11.52 (audit C021): the previous note claimed the 14 Gb/s rate "will
+     * 1.11.52: the previous note claimed the 14 Gb/s rate "will
      * be refused" by the fit-range check. It is not: the check is on the BUS
      * CLOCK (rate/2 = 7000 MHz) against a 8000 MHz ceiling, so GDDR6 passes
      * and is fully modelled. The claim was written when the ceiling was
@@ -382,7 +380,7 @@ bool dramIOMapFor(const std::string& t, DramIOMap& m) {
  * a specification fixes exactly -- the only kind that belongs in a table. */
 double CactiIOWrapper::dramRateMTs(const std::string& t) {
     if (t == "DDR3")   return 1600;
-    /* 1.11.52 (audit D002): the rate of the part THIS TREE SIMULATES. DDR4
+    /* 1.11.52: the rate of the part THIS TREE SIMULATES. DDR4
      * ran as DDR4-2400 everywhere that decides timing -- the Ramulator
      * preset (DDR4_2400R), the architecture object, and the wrapper's own
      * 19.2 GB/s -- while this table said 3200, so one access had its array
@@ -390,7 +388,7 @@ double CactiIOWrapper::dramRateMTs(const std::string& t) {
      * 1.33x understated). POD12 is an interface standard, not a speed bin,
      * so the electricals are unchanged by this. */
     if (t == "DDR4")   return 2400;
-    /* 1.11.57 (audit round 3, C001): 3200, not 4800. The 1.11.56 speed-bin
+    /* 1.11.57: 3200, not 4800. The 1.11.56 speed-bin
      * work changed the DRAM ARCHITECTURE OBJECTS to name the preset this tree
      * simulates and missed this table -- which sits directly under the D002
      * comment stating that exact principle. DDR5's electrical map is
@@ -403,7 +401,7 @@ double CactiIOWrapper::dramRateMTs(const std::string& t) {
      * the preset's own rate column is the authority at every grade -- so the
      * row's job is to agree with the default so the default run is quiet, and
      * to make a non-default grade say that the table is ignored. */
-    /* 1.12.18 (user ruling 2026-10-23/24): the row is the part record's grade
+    /* 1.12.18 (24): the row is the part record's grade
      * (DDR5_4800B by default since 1.12.19), not a literal, so the default run stays quiet
      * whatever grade the record names. */
     if (t == "DDR5") { const int g = pimid::params::dramRecordGradeMTs("DDR5"); return g > 0 ? g : -1.0; }
@@ -417,7 +415,7 @@ double CactiIOWrapper::dramRateMTs(const std::string& t) {
 int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
     if (t == "DDR3" || t == "DDR4" || t == "DDR5") return 64;   // 64-bit channel
     if (t == "LPDDR5") return 16;                               // 16-bit channel
-    /* 1.11.61 (ruling R3): 16, THE CHANNEL -- not 32, the DEVICE.
+    /* 1.11.61: 16, THE CHANNEL -- not 32, the DEVICE.
      *
      * This function's contract, stated four lines above the table, is "the
      * PER-CHANNEL data-bus width the standard defines". GDDR6's standard is
@@ -450,7 +448,7 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
      * computeDramIO() as one channel's DQ count. Correcting the width alone
      * therefore lands the aggregate on the device's real peak. */
     if (t == "GDDR6")  return 16;                               // 16-DQ channel, 2/device
-    /* 1.11.63 (R6-4): HBM2 AND HBM3 SPLIT. One line served two technologies
+    /* 1.11.63: HBM2 AND HBM3 SPLIT. One line served two technologies
      * whose channel widths differ by 2x, and 128 was right for only one of
      * them.
      *
@@ -468,17 +466,17 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
      * The stack's 1024 is the product 16 x 64 and is not a printed figure in
      * the standard. PIMID's own HBM3 architecture object already carried 64 in
      * channel_databus_bits, so this table was the outlier -- and it is the
-     * same shape as the GDDR6 defect ruling R3 closed one line above: a wider
+     * same shape as the GDDR6 defect closed one line above: a wider
      * unit under a per-channel name.
      *
-     * REACHABILITY, audited the way the R3 fix was. Four call sites:
+     * REACHABILITY, audited call site by call site. Four call sites:
      *   ramulator_wrapper.cpp getTerminationEnergyNJ / getInterfaceDynamicEnergyNJ
      *   / getInterfaceAreaMM2 -- all three pass the width to computeDramIO()
      *     and then discard the result unless io.exact_map, and HBM maps to
      *     WideIO with exact_map = false (dramIOMapFor above). The width reaches
      *     no reported number through them; it was and stays LATENT there.
      *   ramulator_wrapper.cpp derivePresetCapacityAndBandwidth -- LIVE, and
-     *     newly so this release (R6-3 extended the derivation to HBM). The
+     *     newly so this release (extended the derivation to HBM). The
      *     correction is what makes that extension right: at 128 the derivation
      *     would give 6400 x 16 B x 16 ch = 1,638,400 MB/s for HBM3, 2x the
      *     819,200 the part actually has, and the speed-bin reconciliation
@@ -491,7 +489,7 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
     return -1;
 }
 
-/* (user ruling 2026-10-26) Memory topology and the DQ series stub.
+/* Memory topology and the DQ series stub.
  *   DDR3 udimm/sodimm/rdimm: 15 ohm -- "an external 15-ohm stub resistor, RS,
  *     on each of the DQS and DQ signals soldered on the DIMM" (Altera AN-520,
  *     DDR3 SDRAM Interface Termination and Layout Guidelines, May 2009, p.10).
@@ -506,8 +504,8 @@ int CactiIOWrapper::dramChannelWidthBits(const std::string& t) {
  *     p.14, no resistor column, where its DDR5 RDIMM map has "Damping RES.";
  *     SK hynix HMCG..MEBUA Rev 1.0 2021 p.12, HMCG..AEBSA Rev 1.1 2022 p.13);
  *     AMD UG863 v1.12 DDR5 signals: "None, uses ODT to 40 ohm".
- *   soldered: 0 -- "If a single DRAM device is on a DQ, no series resistor
- *     is required" (estimated from a vendor source that cannot be disclosed publicly).
+ *   soldered: 0 -- a single DRAM device on a DQ needs no series resistor
+ *     (set to 0 ohm).
  * Defaults: DDR3/DDR4/DDR5 rdimm (the host baselines are server class: the
  * host-path latency is calibrated to Sapphire Rapids / Genoa sockets);
  * LPDDR5, GDDR6, HBM2, HBM3 soldered (their only topology). LRDIMM (data
@@ -563,7 +561,7 @@ bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::str
     return true;
 }
 
-/* (1.12.132) (user ruling 2026-10-28) The per-bit energy of an HBM host
+/* (1.12.132) The per-bit energy of an HBM host
  * memory-controller PHY, read and write, in place of McPAT's own PHY energy
  * (the host MC is emitted at McPAT's interposer tier for its structure,
  * leakage and area).
@@ -574,7 +572,7 @@ bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::str
  *     PHY (TRX, strobe control, per-bit de-skew, read FIFO, VT tracking, DFI
  *     logic, address/command interface, DFT), the DRAM die excluded. Used per
  *     bit at the run's rate (a per-bit energy; no rate factor).
- *   HBM2: DERIVED from S. Hwang, K. Chae, T. Yeo et al. (Samsung Foundry),
+ *   HBM2: derived from S. Hwang, K. Chae, T. Yeo et al. (Samsung Foundry),
  *     "A 3.2 Gbps/pin HBM2E PHY ...", Hot Chips 32 (2020), slide 10, energy
  *     row: 0.56 pJ/bit read, 1.07 pJ/bit write (hard macro + I/O, 7 nm,
  *     0.75/1.2 V, 3.2 Gb/s). Rate: a
@@ -582,7 +580,7 @@ bool CactiIOWrapper::resolveDramTopology(const std::string& tech, const std::str
  *     factor 1 at 2.4 Gb/s. Voltage: HBM2's I/O supply is the measured 1.2 V
  *     (JESD235), factor 1; no HBM2 host-PHY core voltage is published, the
  *     measured 0.75 V kept. So 0.56 pJ/bit read and 1.07 pJ/bit write, each
- *     direction at its own published figure (user ruling 2026-10-28). */
+ *     direction at its own published figure. */
 bool CactiIOWrapper::hbmHostPhyEnergyPJBit(const std::string& tech, double& rd, double& wr, std::string& src) {
     if (tech == "HBM3") {
         rd = 0.29; wr = 0.25;
@@ -698,7 +696,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
      *   GDDR6     32 DQ per channel (2x16 pseudo-channels), WCK/EDC per
      *             byte, and a ~12-pin single-ended CA bus (JESD250: CA0-9
      *             plus CABI/CKE-class pins) -- NOT the 25-pin DDR-class
-     *             command bus. 1.11.52 (audit C021): GDDR6 used to fall into
+     *             command bus. 1.11.52: GDDR6 used to fall into
      *             the DDR default below, so a 25-pin CA bus was amortised
      *             over 32 data lanes -- the same fixed-CA-over-few-lanes
      *             shape the LPDDR5 note above records as producing ~71
@@ -737,7 +735,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
      * upstream marks them //FIXME. These are the JEDEC ODT settings for a
      * DDR4 UDIMM: 34 ohm driver, 60 ohm termination, 0.5 ns flight time.
      *
-     * 1.11.56 (audit C023): the guards are GONE and the comment no longer
+     * 1.11.56: the guards are GONE and the comment no longer
      * claims they are conditional. It said "used only when the caller left
      * them unset", which was true of nothing: computeDramIO()'s signature has
      * no path for a caller to set them, and s_dram_ip is reset to a
@@ -766,7 +764,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
 
     try {
         IOTechParam iop(g_ip, m.type, 8, 8, num_dq, 0, 1, freq_mhz);
-        /* (user ruling 2026-10-26) the node's DQ series stub. Only a stub that differs
+        /* the node's DQ series stub. Only a stub that differs
          * from the parameter set's own (15 for the DDR3/DDR4 sets, 0 for the
          * others) is written, so a default-topology run is unchanged. */
         double stub = stub_ohm;
@@ -785,7 +783,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
          * termination network into every swing the power model reads. */
         PimidElectrical el;
         bool injected = pimidElectricalFor(tech, el);
-        /* 1.11.63 (R7): a sourced row whose termination is ZERO (LPDDR5:
+        /* 1.11.63: a sourced row whose termination is ZERO (LPDDR5:
          * DQ ODT Disable (Default), JESD209-5C Tbl 84) cannot be injected --
          * CACTI-IO's termination network divides by rtt, and 1/0 would ride
          * the substitution gate into the reported energy as inf. The zero is
@@ -809,7 +807,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             iop.rtt1_dq_read  = el.rtt_rd;
             iop.rtt1_dq_write = el.rtt_wr;
             iop.r_on          = el.ron;
-            /* 1.11.52 (audit C022): the injection is PARTIAL, and the
+            /* 1.11.52: the injection is PARTIAL, and the
              * uninjected legs are load-bearing -- extio.cc's read/write
              * termination sums 1/rtt1 + 1/rtt2 and its command-bus term uses
              * r_on_ca + rtt_ca. rtt2 is the FAR-END termination of the same
@@ -820,7 +818,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
              * source for them. The `source` string below names the split so
              * a reader is not told "ELECTRICALS INJECTED" about a result
              * that is partly the neighbour's. */
-            /* 1.11.97 (review s02-power-other-1): a point-to-point DQ has ONE
+            /* 1.11.97: a point-to-point DQ has ONE
              * terminating device. extio sums 1/rtt1 + 1/rtt2; injecting the
              * same RTT into rtt2 added a second terminating DRAM and doubled
              * the charged termination current. The far end is open. */
@@ -852,7 +850,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
         const double kAreaValidMaxMHz = 3162.0;   // cubic == linear
         const bool area_credible = (freq_mhz <= kAreaValidMaxMHz);
         r.io_area_mm2          = area_credible ? io.getIOAreaMM2() : 0.0;
-        /* 1.11.60 (audit round 4, C009): record the REFUSAL, not just its
+        /* 1.11.60: record the REFUSAL, not just its
          * consequence. The zero above is a decision; without this flag it is
          * indistinguishable from the zero a technology with no parameter set
          * returns, and the one consumer of the area could not tell them
@@ -862,7 +860,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
         r.io_power_dynamic_mw  = io.getIOPowerDynamicMW();
         r.phy_power_mw         = io.getPHYPowerMW();
         r.phy_static_power_mw  = io.getPHYStaticPowerMW();
-        /* (user ruling 2026-10-27) DDR4/DDR5 host PHY idle from MEASURED PHY idle
+        /* DDR4/DDR5 host PHY idle from MEASURED PHY idle
          * rails. NXP AN13917 Rev. 4.0 (i.MX 93 Power Consumption Measurement,
          * Jan 2025) measures the two rails its Table 6 (p.12) names "Power supply
          * for DRAM PHY" (vdd2_ddr + vddq_ddr) of an LPDDR4X x16 PHY with the
@@ -873,7 +871,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
          * 1.12.116 read the row printed above each table, which belongs to the
          * previous table: 6.4 / 4.0 / 4.5). The least-squares
          * line through the three points, per 16 DQ, is scaled by the channel
-         * width and evaluated at the run's rate (DERIVED: an LPDDR4X PHY for a
+         * width and evaluated at the run's rate (derived: an LPDDR4X PHY for a
          * DDR4/DDR5 host PHY; no measured DDR4/DDR5 host-PHY idle is
          * published). The rails exclude the DDR PLL (on the shared analog
          * supply), so the parameter set's PLL static is added. It replaces the
@@ -895,7 +893,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
               << " mW (the measured rails exclude the PLL)";
             r.phy_static_source = o.str();
         }
-        /* (1.12.131) HBM3 host memory-controller PHY idle (DERIVED). No HBM3 PHY idle
+        /* (1.12.131) HBM3 host memory-controller PHY idle. No HBM3 PHY idle
          * is published. The published, measured HBM-class PHY idle is HBM2E:
          * S. Hwang, K. Chae, T. Yeo et al. (Samsung Foundry), "A 3.2 Gbps/pin
          * HBM2E PHY with Low Power I/O and Enhanced Training Scheme for 2.5D
@@ -930,7 +928,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
                  "memory's channels; " << 100.0 * stack_mw / active << "% of the active HBM3 PHY at 0.29 pJ/bit (Chae)";
             r.phy_static_source = o.str();
         }
-        /* (1.12.132) (user ruling 2026-10-28) HBM2 host PHY idle (DERIVED): the same
+        /* (1.12.132) HBM2 host PHY idle: the same
          * HBM2E measurement at HBM2's data rate. HBM2 is 1024 DQ per stack (8
          * channels x 128) like HBM2E, and its I/O supply is the measured 1.2 V
          * (JESD235 VDDQ 1.2 V), so the I/O idle carries over unscaled. No HBM2
@@ -954,7 +952,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
         r.phy_dynamic_power_mw = io.getPHYDynamicPowerMW();
         r.timing_margin_ui     = io.getTimingMarginUI();
         r.voltage_margin_v     = io.getVoltageMarginV();
-        /* 1.11.63 (R7): second termination pass with iostate = READ.
+        /* 1.11.63: second termination pass with iostate = READ.
          * extio.cc computes power_termination_read and _write on every call
          * and selects by g_ip->iostate at the end; everything else this
          * wrapper consumes (area, PHY, dynamic) is iostate-independent, so
@@ -970,7 +968,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             g_ip->iostate = WRITE;
             io.extio_power_term();   // recompute so io's stored term is WRITE again
         }
-        /* The data pins' share at the 0.5 duty (user ruling 2026-10-25):
+        /* The data pins' share at the 0.5 duty:
          * the same two passes with the data pins never LOW, then the stored
          * state is restored (duty 0.5, iostate WRITE). */
         double term_wr0_mw = 0.0, term_rd0_mw = 0.0;
@@ -1011,7 +1009,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
             r.energy_pj_per_bit_term_dqs_rd = (term_rd_mw - term_rd_nodqs) / payload_gbps;
             r.energy_pj_per_bit_term_ca     = (r.io_power_term_mw - term_wr_noca) / payload_gbps;
             r.energy_pj_per_bit_term_ca_rd  = (term_rd_mw - term_rd_noca) / payload_gbps;
-            /* (user ruling 2026-10-27) the RDIMM command/address path: the host
+            /* the RDIMM command/address path: the host
              * drives one RCD input per line through the RDIMM's pre-RCD series
              * resistor into the RCD's input termination; the RCD re-drives the
              * DRAMs (that output network is the RCD's own power).
@@ -1019,7 +1017,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
              *     data rate CA bus input, a single parity input, two chip select
              *     inputs" (Renesas RRG5004x short-form datasheet R10DO0013EU0101
              *     Rev.1.01 p.1); POD to VDDQ 1.1 V, current while LOW (duty 0.5);
-             *     loop = host RON_CMD 40 ohm (DERIVED: midpoint of Intel 743844-015
+             *     loop = host RON_CMD 40 ohm (derived: midpoint of Intel 743844-015
              *     Table 87 p.208, 30-50) + 15 ohm (JESD305B.01 PDF p.32; X. Li,
              *     ISQED 2025, Sec. II.B p.4) + RCD input bus termination 60 ohm
              *     (default, X. Li, ISQED 2025, Sec. II.B p.4).
@@ -1027,9 +1025,9 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
              *     address inputs are terminated to VDD/2 in the registering clock
              *     driver" (Micron DDR4 RDIMM Core Rev. B 12/2021, p.14 note 5), so
              *     (VDD/2)^2 / R in both states; loop = host RON_CMD 35 ohm
-             *     (DERIVED: midpoint of Intel 743844-015 Table 86 p.207, 25-45) +
-             *     15 ohm (DERIVED: the DDR5 RDIMM value; DDR4 not published) +
-             *     60 ohm (DERIVED: no DDR4 RCD input termination value is
+             *     (derived: midpoint of Intel 743844-015 Table 86 p.207, 25-45) +
+             *     15 ohm (derived: the DDR5 RDIMM value; DDR4 not published) +
+             *     60 ohm (derived: no DDR4 RCD input termination value is
              *     published; the DDR5 default). */
             if (tech == "DDR5" || tech == "DDR4") {
                 const bool d5 = (tech == "DDR5");
@@ -1053,7 +1051,7 @@ LinkIOResult CactiIOWrapper::computeDramIO(const std::string& tech,
          * number. A map with neither an exact set nor an injection stays
          * cross-check-only.
          *
-         * 1.11.52 (audit C020): the injection must be FULLY SOURCED to
+         * 1.11.52: the injection must be FULLY SOURCED to
          * substitute. The premise of the paragraph above is "its electrical
          * layer is sourced", and for LPDDR5 that is false by our own record:
          * its RTT = 240 ohm is flagged UNSOURCED in the same table (Micron

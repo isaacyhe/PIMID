@@ -79,8 +79,8 @@ class NoC :public Component {
 	ClockNetwork clk_router, clk_link;
 	Component clk;
 	double clk_rt_ungated;   /* J, the ungated reference of clk.rt_power */
-	double clk_rt_global;    /* PIMID 1.12.18 (ruling #4): J, the global part of clk.rt_power */
-	/* PIMID 1.12.18 (user ruling "pass-through routers as wire"): the
+	double clk_rt_global;    /* PIMID 1.12.18: J, the global part of clk.rt_power */
+	/* PIMID 1.12.18 (pass-through routers as wire): the
 	 * router accesses this instance charges, total_accesses less the
 	 * pass-through routers' accesses (set_noc_param). */
 	double router_accesses;

@@ -157,7 +157,7 @@ static inline size_t pimid_devorg_slot_bytes(const pimid_devorg_t* d) {
  * short-lived. Returns NULL when the mapping fails. *slot_bytes_out gets the
  * per-slot span.
  *
- * 1.11.94 (b01-pim-kernels-6, ruling H41): exact sizing with MAP_NORESERVE.
+ * 1.11.94: exact sizing with MAP_NORESERVE.
  * Before this the buffer was malloc(slot*num_pes + period + 4 KiB): about twice
  * the device's address span (DDR4 BANK 8 PEs 16 GiB, DDR5 32 GiB, HBM2 64 GiB,
  * HBM3 256 GiB), committed under heuristic overcommit, so it failed on any host
@@ -186,7 +186,7 @@ static inline void* pimid_devorg_alloc(const pimid_devorg_t* d, size_t* slot_byt
     return (void*)aligned;
 }
 
-/* 1.11.94 (b01-pim-kernels-1/-2, rulings H44/H45): a PE's prepared working set
+/* 1.11.94: a PE's prepared working set
  * must fit the PE's slot. A kernel whose per-PE need exceeds slot_bytes would
  * spill into the next PE's slot (gemv_omp / stream_triad_omp: overlapping
  * slots, wrong results, heap overflow) or, in the kernels that checked, fall

@@ -52,7 +52,7 @@ class BranchPredictorPAg {
         uint8_t pht[1 << LB];
 
     public:
-        /* PIMID 1.11.97 (R2476) / 1.11.98 (user ruling (a) 2026-10-03): table
+        /* PIMID 1.11.97 / 1.11.98: table
          * WRITES, one per update to each table, whole run (the cores rebase
          * them at roi_begin, like every activity count). */
         uint64_t histWrites = 0;   // level-1 history table (bhsr)
@@ -97,9 +97,9 @@ class BranchPredictorPAg {
             // info("BP Pred: 0x%lx bshr[%d]=%x taken=%d pht=%d pred=%d", branchPc, bhsrIdx, phtIdx, taken, pht[phtIdx], pred);
 
             // Update
-            /* PIMID 1.11.97 (R2476): count the table WRITES McPAT prices
+            /* PIMID 1.11.97: count the table WRITES McPAT prices
              * (its estimate was mispredicts + "10% of BR will flip internal
-             * bits", mcpat core.cc). 1.11.98 (user ruling (a) 2026-10-03):
+             * bits", mcpat core.cc). 1.11.98:
              * EVERY update is a write to each table -- McPAT prices the
              * history and counter tables as arrays with an energy per write
              * access, and the write enable is asserted on every update
@@ -123,7 +123,7 @@ class BranchPredictorPAg {
 /* Control-flow kinds fed through the branchPtr callback. Values 0/1 are the
  * classic conditional-branch direction (not-taken/taken); >= 2 are indirect
  * control-flow resolutions handled by IndirectPredictor (BTB + RAS).
- * PIMID 1.12.1 (ticket #114): CF_DIR_JMP, a direct jmp, is fed so the
+ * PIMID 1.12.1: CF_DIR_JMP, a direct jmp, is fed so the
  * predictor-less in-order mode (branchPredictor none) can charge its decode
  * resteer; the OOO core and the PAg in-order core ignore it (default: break),
  * as they ignored the unfed jmp before. */
@@ -516,7 +516,7 @@ class OOOCore : public Core {
         // UPDATE: Now pht index is XOR-folded BSHR. This has 6656 bytes total -- not negligible, but not ridiculous.
         BranchPredictorPAg<11, 18, 14> branchPred;
 
-        /* PIMID 1.11.97 (R2355 (b)): wrong-path fetch depth DERIVED from the
+        /* PIMID 1.11.97: wrong-path fetch depth derived from the
          * core record (params/core/default.yaml, ooo.*), emitted by PIMID as
          * the required zsim keys mispredPenalty / fetchBytesPerCycle:
          * wrongPathBytes = mispredict penalty (cycles) x fetch width (bytes
@@ -526,7 +526,7 @@ class OOOCore : public Core {
          * FETCH_BYTES_PER_CYCLE throughput step of that loop. */
         uint32_t fetchBytesPerCycle;
         uint32_t wrongPathBytes;
-        /* 1.12.0 (#50, user ruling (b) 2026-10-05): the same penalty is the
+        /* 1.12.0: the same penalty is the
          * TOTAL cost of a mispredict counted from the branch's resolution.
          * The fetch restart is placed redirectGap = penalty - R cycles after
          * resolution, R = the 9-cycle refill the stage model charges after
@@ -640,7 +640,7 @@ class OOOCore : public Core {
         uint64_t roiBaseMispred  = 0;
         uint64_t roiBaseIndir    = 0;   // 1.11.93 (F6): see in_order_core.h
         uint64_t roiBaseRas      = 0;
-        uint64_t roiBaseBpHist   = 0;   // 1.11.97 (R2476): predictor table writes
+        uint64_t roiBaseBpHist   = 0;   // 1.11.97: predictor table writes
         uint64_t roiBaseBpPht    = 0;
 
 #ifdef OOO_STALL_STATS
@@ -693,12 +693,12 @@ class OOOCore : public Core {
             return (c > pimidPhantomWait) ? (c - pimidPhantomWait) : 0;
         }
 
-        uint64_t pimidRawCycle() const override { return curCycle; }   // 1.12.18 (R2)
+        uint64_t pimidRawCycle() const override { return curCycle; }   // 1.12.18
         void contextSwitch(int32_t gid);
 
         virtual void join();
         virtual void leave();
-        /* 1.11.97 (review H05): an MPI message charge stalls dispatch -- the
+        /* 1.11.97: an MPI message charge stalls dispatch -- the
          * same rebase the weave end performs (advance), so the window and
          * decode cursor move together. Was the empty default. */
         void addDelay(uint32_t cycles) override;
@@ -706,7 +706,7 @@ class OOOCore : public Core {
          * Cove 16; a processing element: Westmere 10); a core configured without a limit overlaps as many misses as
          * its load and store queues hold */
         uint32_t memMissCapacity() const override { return fillBufferN ? fillBufferN : lqEntries_ + sqEntries_; }
-        /* 1.12.18 (user ruling 2026-10-23, "model the lock word"), see core.h:
+        /* 1.12.18 (model the lock word), see core.h:
          * the raw clock (global phase axis), advanced like addDelay. */
         uint32_t lockClockDomain() const override { return 1; }
         uint64_t lockClock() const override { return curCycle; }
@@ -735,7 +735,7 @@ class OOOCore : public Core {
             roiBaseIfetchChunks = ifetchChunks;   // PIMID (1.12.71)
             roiBaseBranches = branches; roiBaseMispred = mispredBranches;
             roiBaseIndir = indirBranches; roiBaseRas = rasReturns;   // 1.11.93 (F6)
-            roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97 (R2476)
+            roiBaseBpHist = branchPred.histWrites; roiBaseBpPht = branchPred.phtWrites;   // 1.11.97
             roiBaseSyntheticInstrs = syntheticInstrs;  // 1.9.33
             /* 1.11.9 (audit): cCycles was "left absolute as diagnostic", but
              * the parser SUMS it with ROI-windowed cycles for

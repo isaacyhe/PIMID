@@ -56,7 +56,7 @@ struct Link { int a, b, w, lat; int li = -1; };
 
 struct SparseHTree;
 
-/* 1.11.97 (ruling 7 (c); gate 1206B arm P2): the per-access tier walk of the
+/* 1.11.97 (arm P2): the per-access tier walk of the
  * ANALYTICAL path, taken over the BUILT tree -- the same tree the detailed
  * path routes on and the power model is priced from.
  *
@@ -69,14 +69,14 @@ struct SparseHTree;
  * at the rank tier. The two disagreed on where the traffic goes: on HBM3,
  * 16 elements at BANK, the arithmetic walk put every remote access through
  * a chip-level LCA and nothing through the rank router, while Garnet
- * measured one rank-router crossing per packet (gate 1206B: analytical NoC
+ * measured one rank-router crossing per packet (analytical NoC
  * dynamic 8x detailed; 3.3x at equal work). This walker follows the tree:
  * endpoint -> its router -> parent pointers up to the lowest common ancestor
  * -> down to the destination endpoint's router. It counts the routers it
  * visits per tier (the quantity Garnet's crossbars count) and prices the
  * path as censusSparseTree does for the hotspot and mean-cost walk: every
  * router's tier latency plus the bridge at every tier boundary. */
-/* 1.11.103 (sweep-94 ruling 9, user "a" 2026-10-05): the NON-TREE IN-DIE FABRIC.
+/* 1.11.103: the NON-TREE IN-DIE FABRIC.
  * A DRAM device whose configuration asks for a mesh, ring or crossbar is
  * modelled with that fabric INSIDE EACH DIE, over the die's organisations at
  * the placement tier (the grid: the bank groups x banks [x subarrays] of one
@@ -182,7 +182,7 @@ struct SparseHTree {
     std::vector<int> gridX, gridY, gridDie;
     std::map<int,int> dieExitOf;
     int gridRouters = 0;
-    /* 1.12.18 (user ruling, HBM TSV layout): the stack CORE DIE each
+    /* 1.12.18 (HBM TSV layout): the stack CORE DIE each
      * chip-slot (L3) router sits on, counted up from the base logic die
      * (0, where the hub above L3 sits): 1 = the bottom core die. -1 = not on
      * a stacked core die (every other router, or a part that is not
@@ -196,7 +196,7 @@ struct SparseHTree {
      * (a PE sits AT its organisation) plus every organisation behind an abstract
      * endpoint. Must equal the memory's total organisation count. */
     long coveredOrgs() const {
-        /* 1.11.94 (H14 m02-main-1576-3440-1): one organisation per DISTINCT
+        /* 1.11.94: one organisation per DISTINCT
          * PE home, not per PE. PEs that share a home organisation land on the
          * same leaf router (peOfLeaf has one entry per leaf), and counting
          * numPEs counted that organisation once per PE, so 8 PEs on 4
@@ -248,7 +248,7 @@ struct SparseHTree {
         }
         auto p = peOfLeaf.find(parent);   // full path live -> a PE leaf
         if (p != peOfLeaf.end()) return p->second;
-        /* 1.11.94 (H13 x02-zsim-garnet-htree-2): a full path can also end on
+        /* 1.11.94: a full path can also end on
          * a materialised channel router that hosts no PE (a placement at or
          * above the channel tier); its own aggregated endpoint serves it. */
         auto a = abstractOf.find(parent);
@@ -300,7 +300,7 @@ inline int rootFanout(int peLevel, int N,
     /* If the channel count is already folded below, the id space spans one
      * channel and the root is single-child. Detect that rather than assume it:
      * a folded technology has its channel count equal to a lower fan-out. */
-    /* 1.11.94 (H13 x02-zsim-garnet-htree-2 / H15): ...but only while the
+    /* 1.11.94: ...but only while the
      * placement sits BELOW the folded channel tier. At CHANNEL (5) or
      * LOGIC_DIE (6) decompose() yields the unit id itself as the root's child
      * coordinate, and that id spans the channels (slots = channel count), so
@@ -529,7 +529,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
      * every endpoint sits inside exactly one channel. */
     {
         int chLevel = channelBearingLevel(N, CpR);
-        /* 1.11.94 (H13 / H15): at CHANNEL or LOGIC_DIE placement the tree's
+        /* 1.11.94: at CHANNEL or LOGIC_DIE placement the tree's
          * channel routers are the root's children (level 5) whatever the
          * technology folds: decompose() returns the unit id, which IS the
          * channel, as the only coordinate. The folded chip-slot tier (3) does
@@ -564,7 +564,7 @@ inline SparseHTree buildSparseHTree(const std::vector<uint64_t>& peHomes,
     // Abstract endpoints: a router at level L (> peLevel) whose live-child count is
     // below its fan-out has empty children -> one abstract endpoint, hung on it via
     // the child link layer. Deterministic order = router id.
-    /* 1.11.94 (H13 x02-zsim-garnet-htree-2 / H15): THE EMPTY-REGION RULE AT
+    /* 1.11.94: THE EMPTY-REGION RULE AT
      * THE PE'S OWN LEVEL TOO. The routers of the placement level are the
      * leaves (level min(peLevel,5): decompose() puts a LOGIC_DIE unit on a
      * level-5 router). A leaf router that hosts no PE exists only when the
@@ -714,7 +714,7 @@ inline bool TreeWalker::path(const SparseHTree& t, int srcEp, int dstEp, std::ve
     }
     return true;
 }
-/* 1.12.18 (user ruling, HBM TSV layout): place the chip-slot (L3) routers
+/* 1.12.18 (HBM TSV layout): place the chip-slot (L3) routers
  * of a stacked part on its core dies. On a folded part (HBM) the chip slot
  * IS the channel, and a router's chip-slot index is the last coordinate of
  * its routerOf key. Channel c sits on core die c / channelsPerDie + 1 (the

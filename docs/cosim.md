@@ -8,18 +8,18 @@ PEs and back; the boundary costs -- launch, coherence, and the host<->device
 bridge -- are priced explicitly. The device-side execution is the *identical*
 code path a standalone device run (no hosts) uses (same PE memory interfaces,
 same Garnet/analytical NoC, same JEDEC-based memory timing), so device-only
-cycles are unchanged by co-sim.
+cycles are unchanged by co-simulation.
 
-A co-sim system is declared under `system.hosts[]` / `system.devices[]`. The
+A co-simulation system is declared under `system.hosts[]` / `system.devices[]`. The
 flat spelling of 1.12.2 to 1.12.7 (`scope: cosim`, a top-level `host:` block
 and the device keys at the left margin) is retired: since 1.12.8 a hardware
 block at the margin is dropped with a warning, and since 1.12.9 a `scope:`
 word is ignored with a warning (see
 [yaml_reference.md](yaml_reference.md#host-block-host-scope-cosim----retired-in-1128)).
 
-There are **no special co-sim workloads**: any ordinary ROI-marked workload
-runs in co-sim unchanged. In a standalone device simulation only the ROI
-(the kernel) is counted; in co-sim the host phases and the boundary costs are
+There are **no special co-simulation workloads**: any ordinary ROI-marked workload
+runs in co-simulation unchanged. In a standalone device simulation only the ROI
+(the kernel) is counted; in co-simulation the host phases and the boundary costs are
 added around that same region.
 
 ```bash
@@ -29,25 +29,21 @@ added around that same region.
     --workload-type openmp
 ```
 
-> **Power + energy (1.7.6).** Co-sim runs now emit `total_power_W` and
-> `total_energy_nJ` alongside cycles, exactly like the device-only figures --
-> the host OoO McPAT power path is fixed (a missing `fp_issue_width` XML param
-> had left the FP issue queue with zero ports, crashing power analysis; earlier
-> 1.7.x co-sim had to run `--no-power`, cycles-only). Power is on by default;
-> `--no-power` remains available for fast timing-only iteration.
+> **Power.** A co-simulation reports `total_power_W` and `total_energy_nJ` beside its
+> cycles, as a device run does (since 1.7.6). Power is on by default; `--no-power` gives a
+> faster timing-only run.
 
 ## System model
 
-- **Host.** The fig5 co-sim host is a **single OoO core** at 2 GHz (a 1-core
-  host has no fabric: core + MC + bridge ports); the `system.hosts[]`
-  defaults are `ooo_core`, 4 cores, 3000 MHz. Under **OMP** offload the host
+- **Host.** The host of the paper's co-simulation experiment (Fig. 5) is a **single
+  OoO core** at 2 GHz (a 1-core host has no fabric: core + MC + bridge ports); the
+  `system.hosts[]` defaults are `ooo_core`, 4 cores, 3000 MHz. Under **OMP** offload the host
   busy-waits on the device fence during the kernel (decision 1). Under
   **MPI** the finalized model (1.8.7) is different: the MPI ranks **are** the
   device PEs, so the host is not a busy-waiting rank-0 master -- it does the
   per-rank prep before the window and the final readback after it (see
-  [Co-sim MPI](#co-sim-mpi-the-per-rank-device-window)). The fig5 cells use a
-  single OoO core; an **in-order host core is also supported**
-  as of 1.7.7 (the recorder `memRespCycle` skew fix -- see
+  [Co-simulation MPI](#co-simulation-mpi-the-per-rank-device-window)). That experiment
+  uses a single OoO core; an **in-order host core is also supported** (since 1.7.7; see
   [Limitations](#limitations)).
 - **Device = PIM.** PEs (default `alu_core`) placed at a memory level (BANK,
   SUBARRAY, ...) behind the device's own memory technology and NoC.
@@ -55,7 +51,7 @@ added around that same region.
   the host crossbar are separate; the host<->device **bridge** joins them and
   carries only boundary traffic (launch cmd/ack, coherence flush, Case-2 DMA).
   See [architecture.md](architecture.md) and [network.md](network.md).
-- **One process, node workloads.** The system runs as ONE simulated process.
+- **One process, node workloads.** The system runs as one simulated process.
   `system.hosts[].workload` and `system.devices[].workload` take `binary`,
   `args` and `env`; a node without a `binary` inherits the top-level binary
   and args. A node's `env` map (read since 1.11.106; documented earlier and
@@ -132,23 +128,23 @@ per-channel bandwidth and array energy, so the host memory and the PIM device
 may run at different speeds; the device's figures do not move. One host, one
 device and one host memory in this build; `system.hosts[].mem` is retired.
 
-**Power.** `--method exec` and `--method trace` in system scope price the
+**Power.** In a co-simulation `--method exec` and `--method trace` price the
 nodes the same way, each from its own fields (the per-node path; trace since
 1.12.5).
 
 ## The measurement window (task region)
 
-Co-sim vs baseline compares the **task region**, not device-kernel-only and
+Co-simulation vs baseline compares the **task region**, not device-kernel-only and
 not the whole process. The window opens when "inputs are ready in host
 memory" and closes when "results are visible in host memory":
 
-- **Co-sim** opens BEFORE the first boundary action; the flush/invalidate,
+- **Co-simulation** opens before the first boundary action; the flush/invalidate,
   launch cmd/ack, kernel execution, host busy-wait (OMP offload), and readback
-  all sit INSIDE it. At `roi_begin` the plugin snapshots each core's baseline
+  all sit inside it. At `roi_begin` the plugin snapshots each core's baseline
   (`markRoiBegin`) so the reported cycles cover only the task region, not the
   pre-ROI array-init/setup. Under **MPI** the window is per-rank and the
   device-resident collective tail replaces the single host busy-wait -- see
-  [Co-sim MPI](#co-sim-mpi-the-per-rank-device-window).
+  [Co-simulation MPI](#co-simulation-mpi-the-per-rank-device-window).
 - **Baseline** (see [NO_OFFLOAD](#no_offload-baseline)) wraps the equivalent
   host compute, including MPI communication.
 
@@ -196,10 +192,10 @@ the end of every device PE: the run time takes the move, together with the devic
 PEs' own balances, and the run prints it (`[roi] the DRAM balance of doorbell host
 core ... moves the device's start by ... cycles`).
 
-Under **co-sim MPI** there is no single launcher: every rank charges its own
+Under **co-simulation MPI** there is no single launcher: every rank charges its own
 flush + launch on its host core at its kernel-entry barrier and migrates
 **itself** into its device PE (the per-rank device window, 1.8.4/1.8.5). See
-[Co-sim MPI](#co-sim-mpi-the-per-rank-device-window).
+[Co-simulation MPI](#co-simulation-mpi-the-per-rank-device-window).
 
 A rank's device kernel starts no earlier than its launch completes. The launch
 completes at the host core's ROI-relative clock once the rank's flush and
@@ -216,16 +212,16 @@ the launch train together.
 
 Coherence follows **address-space visibility**, not physical placement.
 
-- **Case 1 -- `mode: unified`** (default; our HBM3/DDR5 figure: PEs
-  dereference host pointers). Before the device reads DRAM the host must make
+- **Case 1 -- `mode: unified`** (default; PEs dereference host pointers,
+  as in the paper's HBM3/DDR5 experiment). Before the device reads DRAM the host must make
   its caches consistent. At `roi_begin`, on the host core, all as one charge:
   `flush(inputs)` writes back dirty lines (real writeback traffic) and
   `invalidate(outputs)` discards stale output lines (placed at BEGIN to kill
-  the mid-kernel stale-eviction hazard). Since 1.11.62 the cost is MEASURED,
+  the mid-kernel stale-eviction hazard). Since 1.11.62 the cost is measured,
   per arriving rank: each participating rank performs its own walk over the
   host cache registry, cleaning dirty lines (M -> E) and charging exactly the
-  DELTA dirtied since the previous walk, plus the per-rank fixed cost
-  (each core issues its own flush instruction and stalls -- ruling 5a):
+  delta dirtied since the previous walk, plus the per-rank fixed cost
+  (each core issues its own flush instruction and stalls):
 
   ```
   flush_cycles(rank k) = flush_fixed_ns + ceil(delta_k / writeback_bytes_per_cycle)
@@ -250,8 +246,8 @@ Coherence follows **address-space visibility**, not physical placement.
   prices the crossing. A named configuration, parked for the discrete-device
   (Mode-2) studies.
 
-Baselines **never** flush (the host keeps using its caches), so this cost is
-PIM-side only and honesty demands it. Defaults: `flush_fixed_ns: 200`,
+Baselines **never** flush (the host keeps using its caches), so this cost falls
+on the PIM side only. Defaults: `flush_fixed_ns: 200`,
 `writeback_bw_gbs` auto = host memory aggregate bandwidth (per-channel x
 channels). The footprint has no default: it is measured, and a configured
 `footprint_bytes` is refused (above).
@@ -276,7 +272,7 @@ other topology word is refused (rc 1).
 
 > **Shipped behavior (1.12.23).** No host Garnet is instantiated: a
 > `noc.model` other than `analytical` (`detailed` included) is accepted with a
-> WARNING and runs the analytical model of the chosen topology. The fabric is
+> warning and runs the analytical model of the chosen topology. The fabric is
 > priced in McPAT as the topology the timing ran, from the data messages and
 > hops it measured (`power.models.host_noc`, 1.12.19; see
 > [power.md](power.md)). Until 1.12.18 a host NoC had no power model, and
@@ -286,21 +282,21 @@ other topology word is refused (rc 1).
 
 The link class prices the crossing's energy (pJ/bit band per class) and its
 controller, and fills the link's timing for the fields the configuration did
-not set. Since 1.11.103 (ruling COSIM-LINK-CLASS) the class DEFAULTS to the
+not set. Since 1.11.103 the class defaults to the
 attachment the device's placement implies: an on-package part (an HBM stack,
 SRAM, the NVMs) with `attachment: internal` crosses an `interposer`; a
 DDR-family part (DDR3/DDR4/DDR5/LPDDR5/GDDR6) with `attachment: internal` is
 reached over its own DRAM channel, the `dram_channel` class -- bandwidth =
 channels x channel width x the preset's data rate, base latency = tRCD + tCL,
-header 0, NO separate link energy (the channel's I/O and termination are in
-the DRAM energy model) and NO link controller (the host memory controller is
+header 0, no separate link energy (the channel's I/O and termination are in
+the DRAM energy model) and no link controller (the host memory controller is
 priced as itself); an `external` device crosses `pcie_gen5`. A named class
 overrides the default and the run prints a `[link]` note naming both.
 `attachment` accepts `internal` or `external` only: any other word is refused
 at load (1.11.106; it used to run as `external` and take the PCIe class).
 `power.pcie` is the legacy name of the `power.link` block (giving both is
 refused); the class list, with `pcie_gen3` added in 1.11.106, is in
-[yaml_reference.md](yaml_reference.md#link-types-system-scope).
+[yaml_reference.md](yaml_reference.md#link-types-co-simulation).
 
 **The interposer link is a UCIe link (1.12.18).** Its energy is computed inside
 the McPAT fork: measured crossing bytes x 8 x (analog PHY + digital interface)
@@ -352,51 +348,56 @@ Per-tech defaults (BW reuses the simulator's channel rates):
 | PCM | cxl_mem | serdes | 64 GB/s | 200 ns | 1 | 300 ns |
 
 The interposer latency is **wire + command-interface/MC pipeline** (~5-6 ns
-wire + ~24-25 ns pipeline), NOT a SerDes tail -- HBM has no SerDes. The NVM
+wire + ~24-25 ns pipeline), not a SerDes tail -- HBM has no SerDes. The NVM
 trio (SRAM/STT on_die, ReRAM pcb, PCM serdes) deliberately spans the attach
 ladder; overriding to a common attach isolates the media alone.
 
-### 5. Memory topology -- `is_default_mem` + `host.mem`
+### 5. Memory topology -- the device as main memory, or a separate host memory
 
-Each attached device carries `is_default_mem`:
+The node lists decide whether the PIM device is the host's main memory (1.12.10):
 
-- **`true`** (default) -- the PIM device **is** the host's main memory; host
-  tech = device tech by construction (preserves the host-tech = device-tech
-  matrix). Ordinary host traffic lands in it. A `host.mem` block here is
-  redundant and ignored with a warning.
-- **`false`** -- the device is accelerator-side memory only; the host **must**
-  supply a `host.mem` block (technology + optional capacity/BW/channels), a
-  plain non-PIM memory of any of the 11 techs. Omission is a **config error**
-  (no silent DDR5 fallback). Host-memory tech then becomes an explicit
-  variable, and only true host<->device traffic crosses the bridge.
+- **Hosts and a device** -- the device **is** the host's main memory
+  (`is_default_mem` true, the default); host tech = device tech by construction
+  (preserving the host-tech = device-tech matrix), and ordinary host traffic lands
+  in it.
+- **Hosts, a memory and a device** -- the `system.memories[]` entry is the host's
+  own main memory, a plain non-PIM memory of any of the 11 technologies with its own
+  `memory.technology` and `memory.dram.ddr5_speed_grade`; the device is
+  accelerator-side memory only (`is_default_mem` derived false; a written
+  `is_default_mem: true` is ignored with a warning). Host-memory technology then
+  becomes an explicit variable, and only true host<->device traffic crosses the
+  bridge. A device with `is_default_mem: false` and no memory entry is refused.
+
+The `host.mem` / `system.hosts[].mem` block that named the separate host memory from
+1.7.4 to 1.12.9 is retired: it is dropped with a warning.
 
 The two are orthogonal to the coherence Case 1/2 knob (natural pairings
 true<->Case 1, false<->Case 2, but independent -- CXL can expose unified
 addressing over non-default memory). **Baselines always run on the device's
-tech** regardless (no host-tech confound -- the retired v140 mistake).
+tech** regardless (no host-tech confound).
 
 **Array energy of a shared memory (`true`, 1.11.89).** The one array is
 charged once, but its accesses are priced by origin. PE-originated accesses
 use the PE placement's DQ answer (on-die placements pay no termination) and
-the row-buffer miss fraction MEASURED by the PE memory interface.
+the row-buffer miss fraction measured by the PE memory interface.
 Host-originated accesses and the coherence-flush writebacks always pay DQ
 termination (a host access drives the DQ pins; HBM's termination is zero by
 citation, JESD238B cl. 9.1) and, having no row counters, use the stated 0.5
 activate/precharge fallback. The background descends by the array's measured
 idle residency with or without `memory.power_down` (that flag only adds the
-IDD2P step), exactly as in device scope; on a shared array the residency
+IDD2P step), exactly as in a device run; on a shared array the residency
 counts device-MC and host-MC activity (the union is printed as a band and its
 least-idle end used), and the device-MC gap histogram is lowered by the most
 the host's accesses could take from it. A decoupled array uses its own
 controller's counter only.
 
 **IDD3N share, IDDQ and IPP (1.11.91).** The share of background priced at
-active standby (IDD3N) is the MEASURED bank-open fraction -- Ramulator2's
+active standby (IDD3N) is the measured bank-open fraction -- Ramulator2's
 `bankOpenCycles / bankOpenWindow` (memory cycles with >= 1 bank open, the
-active state of the IDD method) -- when the controller that saw ALL of the array's
+active state of the IDD method) -- when the controller that saw all of the array's
 accesses exported it; the idle residency above is then the power-down input
 only. The PE memory interface keeps no bank state, so a shared array with
-PE-originated traffic, every decoupled device array and every device-scope
+PE-originated traffic, every decoupled device array and every device
 run print `bank-open fraction UNMEASURED (...)` and keep the traffic-phase
 share (1 - idle residency). Accesses that cross the DQ pins (the termination
 rule) also pay the DQ output rail, printed `iddq=` on the DQ interface line;
@@ -415,7 +416,7 @@ through it, so PIM-side timing stays clean. It ships both as an aggregate
 Full calibration methodology and anchors:
 [cosim_calibration.md](cosim_calibration.md).
 
-**The host memory is replayed through Ramulator2 (1.12.18, ruling 17).** Like
+**The host memory is replayed through Ramulator2 (1.12.18).** Like
 the device memory, every host access is recorded per epoch and replayed through
 a Ramulator2 controller at the epoch boundary; the host access is priced at the
 previous epoch's measured service latency of its interface (bank, row hit /
@@ -423,7 +424,7 @@ miss / conflict, queueing at the bank, refresh, turnaround, the burst) **plus
 the host-path adder**, which holds no DRAM timing, so tRCD + tCAS is not
 counted twice. The aggregate M/D/1 queue (tRCD + tCAS + adder + queue at
 per-channel x channels GB/s) prices only the bootstrap, the accesses before
-the first replayed epoch. Where the device IS the host's memory
+the first replayed epoch. Where the device is the host's memory
 (`is_default_mem`, the default), the host's interface joins the device's
 replay instance (numbered after the device interfaces, Ramulator source_id 1),
 so the shared array has one controller and one refresh schedule, and a host
@@ -436,7 +437,7 @@ uses the same cut mode as the device replay. The run prints
 `[mem] host DRAM controller: ...` and, with `PIMID_DEBUG_REPLAY`, the host
 share (`[replaydbg] ... host share`). `system.hosts[].memory.dram_replay:
 false` restores the M/D/1 host controller and the line says so; it changes
-TIMING (the latency of every host access) as well as the energy inputs. The
+timing (the latency of every host access) as well as the energy inputs. The
 replay is off, and says why, for a non-DRAM host memory, for trace-method MPI,
 and on a shared array whose device memory is not replayed.
 
@@ -458,33 +459,21 @@ This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.
 
-**Host parallelism (fixed 1.8.0).** The baseline parallelises across the
-configured host cores for **both** programming models: OpenMP sizes its team to
-`host.num_cores`, and MPI runs `host.num_cores` ranks as guest threads of one
-process (thread-MPI, the same emulation the device scope uses). Before 1.8.0
-this was broken two ways in system scope, both silently and with exit 0:
-
-- Thread-MPI was never wired outside device scope (no `libpimid_mpi.so`
-  preload, no `PIMID_MPI_RANKS`), so the guest resolved MPI against the system
-  MPI runtime and ran as a **single rank** -- host baselines *and* co-sim.
-- `host.num_cores` was read only from a top-level `host:` block, never from
-  `system.hosts[]`, so it stayed at its default and capped OMP threads, MPI
-  ranks, and the devorg `--pes` injection.
-
-System-scope MPI results produced before 1.8.0 are single-rank and must be
-regenerated. Device-scope sweeps were never affected.
+**Host parallelism.** The baseline parallelises across the configured host cores for
+**both** programming models: OpenMP sizes its team to `system.hosts[].num_cores`, and
+MPI runs `system.hosts[].num_cores` ranks as guest threads of one process
+(thread-MPI, the same emulation a device run uses). Before 1.8.0 a co-simulation
+or host baseline ran MPI as a single rank and capped its cores silently (exit 0);
+message-passing results of a co-simulation or host baseline from before 1.8.0 are
+single-rank and must be regenerated. Device runs were never affected (changelog,
+1.8.0).
 
 ## Limitations
 
-- **In-order host supported (fixed 1.7.7).** Both `ooo_core` and
-  `in_order_core` now work as the co-sim host. Earlier 1.7.x required an OoO
-  host: the in-order pipeline's CoreRecorder event chain asserts
-  `startCycle >= prevRespCycle`, but `CoreRecorder::cSimEnd` folds a contention
-  skew into the phase-1 clock while InOrderCore's private `memRespCycle` cursor
-  never received it, so an in-order host on the migration path tripped that
-  recorder assertion. The 1.7.7 one-line fix advances `memRespCycle` by the
-  same skew, so the cursor and the recorded clock stay consistent. (The
-  busy-wait / boundary-charge accounting is core-type agnostic.)
+- **In-order host supported (since 1.7.7).** Both `ooo_core` and `in_order_core`
+  work as the co-simulation host; the busy-wait and boundary-charge accounting is
+  core-type agnostic. (Before 1.7.7 an in-order host tripped the recorder's
+  `startCycle >= prevRespCycle` assertion on the migration path; changelog, 1.7.7.)
 - **One host, one device, at most one host memory (1.12).** A co-simulation
   is one host and one PIM device, optionally with the host's own main memory
   as one `system.memories[]` entry (1.12.10). Multi-node systems -- several
@@ -502,7 +491,7 @@ regenerated. Device-scope sweeps were never affected.
 - **Phase-exclusivity assumed.** Host and PEs are temporally disjoint by
   construction in serial offload (host touches memory only outside the ROI,
   PEs only inside), so the only shared cost at the boundary is the flush. This
-  is honest for our kernels; streaming/overlapped offload would need explicit
+  holds for the shipped kernels; streaming/overlapped offload would need explicit
   host<->PE channel contention (future).
 
 ## MPI semantics
@@ -516,12 +505,14 @@ default thresholds (binomial, scatter-allgather, recursive doubling, Bruck,
 ring, Rabenseifner, pairwise; Thakur, Rabenseifner and Gropp, IJHPCA 2005), and
 reduce-style ops apply the builtin reduction operators. The shim's own transport
 memory (mailboxes, staging) is not priced: a message costs the sender's read of
-its buffer, the Garnet transfer and the receiver's write (1.12.17). A send never
+its buffer, the Garnet transfer and the receiver's write (1.12.17). The receiver
+writes its buffer after the message has arrived, and no mailbox lock is held
+across priced work (1.12.177). A send never
 waits for the receiver; messages the receiver has not taken yet wait in its
 staging, which grows as needed, so how fast the host runs a rank's thread
-neither stops a run nor changes its results (since (1.12.196)).
+neither stops a run nor changes its results (since 1.12.196).
 
-Under `noc.model: detailed`, all ranks drive ONE logical Garnet network:
+Under `noc.model: detailed`, all ranks drive one logical Garnet network:
 message payloads and every rank's memory traffic contend on the same tree.
 For the exec method the ranks are core-threads inside one process sharing one
 in-process Garnet directly (the shared record-log / consistent-cut path is the
@@ -530,26 +521,28 @@ its 1.9.0 pricing note). Each rank also occupies its own placement slice of the
 device (rank r's address space maps into PE r's region), so rank-local data is
 near-data by construction.
 
-## Co-sim MPI: the per-rank device window
+## Co-simulation MPI: the per-rank device window
 
-In a co-simulation the co-sim MPI model is **ranks-are-PEs** (finalized
-1.8.7): each MPI rank IS a device PE, computes on its PE, and the host is
+In a co-simulation the MPI model is **ranks-are-PEs** (finalized in
+1.8.7): each MPI rank is a device PE, computes on its PE, and the host is
 involved only at the final readback. The measurement window is a **per-rank
 device window**, not a single host-driven offload:
 
 - **Window open -- every rank migrates itself (1.8.4/1.8.5).** At its own
   kernel-entry barrier each rank charges its flush + launch on its host core
   (its own program order -- no wall-order race), then migrates **itself** into
-  its device PE and computes there. Window open is thus a per-rank event; the
-  1.8.4 fix replaced a broken rank-0-only ROI (the defect was four layers deep:
-  rank-0-only `roi_begin`; a `ROI_BEGIN` thread-branch early-return skipping the
-  offload; a parked-opener wall-order race; and non-thread-safe migration under
-  the rank stampede). 1.8.5 reinstated the per-rank flush + launch charges that
-  1.8.4 had deferred.
-- **Window close -- ZERO migrations (1.8.6/1.8.7).** No rank migrates back to
+  its device PE and computes there. Window open is thus a per-rank event (1.8.4
+  replaced a rank-0-only ROI; 1.8.5 reinstated the per-rank flush and launch
+  charges; changelog). No rank is charged the entry barrier's pre-ROI wait: the
+  release of the barrier that synthesizes the ROI baseline is discarded by every
+  rank alike (1.12.176). A rank that reaches its kernel after rank 0's `roi_end`
+  still enters the window at its next block or barrier, charged its own flush and
+  launch; the window drains only when every rank has entered and left, and the
+  statistics freeze at the last rank's marker (1.12.170).
+- **Window close -- zero migrations (1.8.6/1.8.7).** No rank migrates back to
   the host at the closing barrier. The ranks are device-resident PEs, so the
   post-ROI inter-PE collective tail (closing barrier + Reduce + Finalize)
-  **executes ON THE DEVICE**: the ranks reduce among their PEs (1.12.17:
+  **executes on the device**: the ranks reduce among their PEs (1.12.17:
   MPICH's binomial or Rabenseifner reduce) and rank 0 holds the result. The host's only remaining role is reading back the result. Removing
   the device->host closing legs is also what eliminates the 1.8.6 exit race by
   construction (below). Since 1.12.3 the tail is reported and **not priced**
@@ -559,32 +552,32 @@ device window**, not a single host-driven offload:
   marker, and `roiCycles` = the marker itself, the PE's kernel-window cycles
   (`roiCycles + protocolTail == cycles` for every marked rank; `roiCycles` is 0
   for a rank that was never marked). Neither alters `cycles`. Emitted **only**
-  in co-sim runs (host + device cores present) and stored in fixed global
-  arrays, so device-scope `Core` object size and `initStats` stay
+  in co-simulation runs (host + device cores present) and stored in fixed global
+  arrays, so a device run's `Core` object size and `initStats` stay
   byte-identical (a `Core` field or an unconditional stat would shift heap
   layout and perturb a device PE).
 
 **Counting contract.** Host cores are counted across the task region around the
 kernel. Device PEs are counted within their per-rank kernel windows: the window
 opens where the rank leaves its kernel-entry barrier (after the barrier's own
-cost, since (1.12.199)) and closes at its closing-barrier marker. The device wall clock is the maximum over PEs of `cycles -
+cost, since 1.12.199) and closes at its closing-barrier marker. The device wall clock is the maximum over PEs of `cycles -
 protocolTail`, and energy, the device fabric and the power-gating residency
-window are priced over it (1.12.3, ruling 1 (a)). The post-kernel collective
+window are priced over it (1.12.3). The post-kernel collective
 tail is outside the priced window: during it the waiting ranks' clocks follow
 the global simulation clock, so its length is host thread scheduling, not
-modelled device work. On the 1.12.1 and 1.12.2 smoke cells it was 91 to 98% of
+modelled device work. On the 1.12.1 and 1.12.2 test cells it was 91 to 98% of
 the reported device cycles, and the same HBM3 cell reported 11.8M and 3.1M
 device cycles in two runs with an identical 276k-cycle kernel window. Through
-1.12.2 the tail was inside the window, so every co-sim MPI device cycle and
+1.12.2 the tail was inside the window, so every co-simulation MPI device cycle and
 energy figure before 1.12.3 carries it. The run prints one `[cosim] device
 kernel window` line naming the trimmed window, the number of marked PEs and
 the largest tail. A rank with no closing barrier after its kernel (bfs) is
-never marked; its window is the whole run, as before. Co-sim OpenMP cells and
+never marked; its window is the whole run, as before. Co-simulation OpenMP cells and
 the no-offload baseline report no tail and are unchanged. The kernel window
 is what a co-simulation's message-passing device side is compared with a device
 run on (see Parity above).
 
-### Fixes folded into the co-sim MPI window (1.8.6/1.8.7)
+### Fixes folded into the co-simulation MPI window (1.8.6/1.8.7)
 
 - **Exit-protocol heap corruption (1.8.6).** The 1.8.4 closing device->host
   migrate-out freed a rank's core slot mid-handler while a peer immediately
@@ -594,38 +587,38 @@ run on (see Parity above).
   "malloc(): unaligned tcache chunk" / QEMU SIGSEGV / Garnet "No output port for
   vnet" panics right after the last rank drained). Fix: drop the closing
   migrate-out entirely -- the drained rank finishes its short post-ROI protocol
-  on its device PE. (The mirror migrate-IN at window open never corrupts.) 1.8.7
+  on its device PE. (The mirror migrate-in at window open never corrupts.) 1.8.7
   then removed the last residual host legs, including rank 0's `roi_end`
   migration, making the window strictly zero-migration.
 - **tid/cid ROI-baseline aliasing (1.8.7, defect #15 class).** `roiRelCycles(tid)`
   read the ROI baseline table by rank id (`tid`) while it is written by **core
-  index** (`cid`). In system scope a rank's `cid != tid`, so for `tid` 0..3 the
-  slot aliased HOST cores' ~16.5M pre-ROI (MPI_Init-era) clock; `roiRel` then
+  index** (`cid`). In a co-simulation a rank's `cid != tid`, so for `tid` 0..3 the
+  slot aliased the host cores' ~16.5M pre-ROI (MPI_Init-era) clock; `roiRel` then
   clamped to 0 and collapsed the SEND/RECV rendezvous (the reduce root
   accumulated senders' stamps instead of advancing to their max). Fix: index the
   baseline by the rank's **actual** core (`cids[tid]`) so `getCycles()` and the
   baseline share one clock axis; a per-rank cache holds the last valid-cid
   baseline so a transient cid-invalid window cannot flip `roiRel` back to the
-  buggy path. Scoped to co-sim (`g_cosim_mode`): device scope keeps the `tid`
+  buggy path. Scoped to co-simulation (`g_cosim_mode`): a device run keeps the `tid`
   indexing verbatim (correct there; `cids[tid]` would tie it to the core a rank happens to
   run on).
 - **Cross-axis invariant guard (1.8.7).** At the recv rendezvous, if a single
   message's advance exceeds the ROI span the clock axes are mismatched -- the
-  guard shouts and caps rather than advancing a PE by a garbage delta (the
+  guard warns and caps rather than advancing a PE by a garbage delta (the
   defect-13 / 1.7.7 tripwire lineage; it eliminated a rare ~4% `2^32`
   rendezvous overflow that had tripped Garnet's "event too far into the future"
   assert).
 
-### Known residuals (deferred to a later 1.9.x)
+### Known limitations of the message-passing window
 
 - `MPI_TIME` / `MPI_ADVANCE` handlers fall outside the magic-op window that
   `isMpiMagicOp()` checks, so the barrier max-arrival ADVANCE path is currently
   dead code.
-- `mpiNocRoiBase` (max over ALL cores) picks up host cores' pre-ROI clocks in
-  co-sim (the "idle cores near 0" assumption breaks with host cores present).
-- Device-scope per-rank stamp skew from the shared per-core-slot baseline table
+- `mpiNocRoiBase` (max over all cores) picks up host cores' pre-ROI clocks in
+  co-simulation (the "idle cores near 0" assumption breaks with host cores present).
+- Device-run per-rank stamp skew from the shared per-core-slot baseline table
   (deterministic, present in all prior data). All three point at one redesign:
-  a per-RANK baseline table.
+  a per-rank baseline table.
 
 ## Diagnostics
 
@@ -636,5 +629,5 @@ run on (see Parity above).
 | `PIMID_DEBUG_COHERENCE` | the deterministic Case-1 flush charge the plugin will apply at roi_begin |
 | `PIMID_DEBUG_LAUNCH` | the deterministic launch charge (doorbell + dispatch + bridge cmd/ack) |
 
-These last three are login-node observable (printed at config emission), so
-you can inspect the charges without running the simulator on a compute node.
+These last three are printed at config emission, so the charges can be inspected
+without running a simulation.

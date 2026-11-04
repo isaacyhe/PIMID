@@ -1,8 +1,8 @@
 // part_records.h -- shipped parameter records (the values that used to be
 // bound into the code), loaded at startup.
 //
-// 1.11.94 (user ruling 2026-09-27 "we should not bind the sim and param hard",
-// sweep-94 rulings 13a/16/22): a calibrated set is ONE record per part, all
+// 1.11.94 ( "we should not bind the sim and param hard",
+// /16/22): a calibrated set is ONE record per part, all
 // fields required, provenance beside each value, selectable or replaceable as
 // a whole, never patched per field. 1.11.94 was STEP 1 of the two-step
 // migration: the loader read the record AND cross-checked every field against
@@ -27,7 +27,7 @@ namespace params {
  * refresh); rungs are listed in ascending temperature. */
 struct RefreshRung { double above_c; double factor; };
 
-/* 1.11.104 (IDD-RECORDS step 1, user ruling (a) 2026-10-05): the part's
+/* 1.11.104 (IDD-RECORDS step 1): the part's
  * measured data, transcribed into the record with its source beside each
  * value. In this release the energy model still prices from its code table
  * and CROSS-CHECKS every record value against it at registration (a
@@ -51,7 +51,7 @@ struct IddRow {
     /* 1.12.18 (bug 2b/8a): the I/O-equivalent share inside idd4r / idd4w of a
      * row that carries one (optional block idd.io_share). */
     bool has_io_share = false; double idd4r_io = -1.0, idd4w_io = -1.0; std::string io_share_provenance, io_share_source;
-    /* 1.12.18 (user ruling 2026-10-23, "Re-derive I/O share"): an io_share ANCHORED on a published
+    /* 1.12.18 (Re-derive I/O share): an io_share ANCHORED on a published
      * I/O energy carries the anchor (pJ/bit per direction) and the channel rate its mA were computed at.
      * The loader checks idd4r_ma = anchor_read_pj_bit x channel_gbps / vdd (and the write) to 0.05 mA,
      * and the energy model prices a DQ-crossing access's I/O at this share. All four keys or none. */
@@ -77,40 +77,40 @@ struct IddBlock {
     std::string provenance;            // MEASURED | CALIBRATED | DERIVED
     std::string idd3n_bank_state;      // ALL_BANKS | ONE_BANK | UNVERIFIED
     std::map<int, IddRow> by_grade;    // keyed by the data rate (DDR5: 3200 / 4800 / 5600); 0 = the single row
-    /* (1.12.48) (user ruling 2026-10-25): optional per-device-width rows (key "x4" | "x8" | "x16") of a single-grade
+    /* (1.12.48): optional per-device-width rows (key "x4" | "x8" | "x16") of a single-grade
      * record: the single row with the width's own published columns replacing it (idd.by_width). */
     std::map<std::string, IddRow> by_width;
     double e_actpre_pj_override = -1.0;   // GDDR6: the IDD7-route activation energy, pJ
-    /* user ruling 2026-10-25 (second supply rails): the VPP share of an e_actpre_pj_override activation, pJ per IDD
+    /* second supply rails: the VPP share of an e_actpre_pj_override activation, pJ per IDD
      * unit, on the same route (GDDR6: IDD7 - IPP3N), at the maximum (not scaled by the activate factor). Needs
      * e_actpre_pj_override and an ipp row; refused together with ipp.ipp0 (that would price the VPP activation twice). */
     double vpp_actpre_pj_override = -1.0;
     double stack_floor_mw = -1.0;         // HBM: the per-stack static floor, mW
-    /* 1.12.18 (user ruling 2026-10-24, option 5): WHAT LOOP THE ROW'S idd0 IS. HBM records
+    /* 1.12.18: WHAT LOOP THE ROW'S idd0 IS. HBM records
      * must say ONE_PC_PER_TRC: one 1 KB pseudo-channel activation per tRC per channel, the
      * loop the SAFARI base ran. The JEDEC IDD0 loops (JESD235D Table 60, JESD238B.01
      * Table 85) activate PC0 AND PC1 every nRC, i.e. two pages per tRC; such a value
      * must be converted before it is entered (the loader refuses any other label). */
     std::string idd0_loop;
-    /* 1.12.18 (user ruling 2026-10-24): HBM activation VPP priced as a RATIO of the VDD
+    /* 1.12.18: HBM activation VPP priced as a RATIO of the VDD
      * activate energy (Xilinx XPE 2023.1.2 HBM_Data VPP Activate / VDD activate (read)),
-     * DERIVED; alt_* is the other XPE stack column, printed beside it. Refused together
+     * derived; alt_* is the other XPE stack column, printed beside it. Refused together
      * with an ipp.ipp0 row (that would price the VPP activation twice). */
     bool has_vpp_act = false;
     double vpp_act_ratio = -1.0, vpp_act_alt_ratio = -1.0;
     std::string vpp_act_device, vpp_act_alt_device, vpp_act_provenance, vpp_act_source;
-    /* (1.12.142) (user ruling 2026-10-28): HBM standby VPP priced as a RATIO of the VDD standby
-     * power (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynamic' / 'idle VDD dynamic'), DERIVED;
+    /* (1.12.142): HBM standby VPP priced as a RATIO of the VDD standby
+     * power (Xilinx XPE 2023.1.2 HBM_Data 'Idle VPP Dynamic' / 'idle VDD dynamic'), derived;
      * alt_* is the other XPE stack column, printed beside it. Refused together with an ipp
      * row (that would price the standby VPP twice). */
     bool has_vpp_standby = false;
     double vpp_standby_ratio = -1.0, vpp_standby_alt_ratio = -1.0;
     std::string vpp_standby_device, vpp_standby_alt_device, vpp_standby_provenance, vpp_standby_source;
-    /* 1.12.18 (user ruling 2026-10-24): activate+precharge guard per 1 KB row, nJ (printed, never priced) */
+    /* 1.12.18: activate+precharge guard per 1 KB row, nJ (printed, never priced) */
     bool has_act_guard = false;
     double act_guard_lo = -1.0, act_guard_ceiling = -1.0, act_guard_hi = -1.0;
     std::string act_guard_source;
-    /* 1.12.18 (user ruling 2026-10-24, floor option 2): like-for-like XPE background guard per stack, mW
+    /* 1.12.18 (floor option 2): like-for-like XPE background guard per stack, mW
      * (DRAM VDD + VDDQ + VPP rails; printed by readEnergyGuardLines, never priced) */
     bool has_bg_guard = false;
     double bg_guard_lo_mw = -1.0, bg_guard_hi_mw = -1.0;
@@ -127,7 +127,7 @@ struct TerminationRec {                // DQ termination scheme and electricals;
     std::string source;
 };
 struct IddqBandRec { bool valid = false; double lo = 0.0, hi = 0.0; std::string source; };   // HBM VDDQ I/O band, pJ/bit
-/* 1.12.18 (user ruling 2026-10-23): published whole-device read energy of older generations, a GUARD
+/* 1.12.18: published whole-device read energy of older generations, a GUARD
  * printed against the model's derived total read energy (never priced, never tuned). */
 struct ReadEnergyGuardRec {
     bool valid = false;
@@ -158,7 +158,7 @@ struct DramPartRecord {
     int channels = 0;              // channels the preset instantiates (HBM: per stack; DDR5: the two 32-bit sub-channels of one DIMM channel)
     int channel_width_bits = 0;    // 1.11.101: JEDEC data width of ONE channel; the DDR family's devices per rank = this / device width
     int stack_dies = 0;            // HBM core dies per stack (0 for non-stacked)
-    /* (1.12.52) GDDR6 die count (user ruling 2026-10-25, clean fix): channels ONE die carries, for a non-stacked part.
+    /* (1.12.52) GDDR6 die count (clean fix): channels ONE die carries, for a non-stacked part.
      * 1 (default) for the DDR family and LPDDR5 (one x16 channel per die); GDDR6 2 (JESD250D 4.1, required in its
      * record). The die population, the per-die clock trunk and the placement capacity divide by it. */
     int channels_per_die = 1;
@@ -176,7 +176,7 @@ struct DramPartRecord {
     std::map<std::string, VariantRec> variants;
     std::string trfc_basis_default, trfc_basis;
     std::map<std::string, TrfcBasisRec> trfc_bases;
-    /* (1.12.61) (user ruling 2026-10-25): optional data-dependent column-burst energy (data_pattern block).
+    /* (1.12.61): optional data-dependent column-burst energy (data_pattern block).
      * ONES_LINEAR: factor 1 + k (f_ones - 0.5); DQ_TOGGLE_RELATIVE: pJ(dq, tsv, bg) / pJ(reference). */
     struct DataPatternRec {
         bool valid = false;
@@ -214,7 +214,7 @@ int dramRecordGradeMTs(const std::string& tech);
 /* The record's internal consistency (there is no table left to compare
  * with): the channel width is a power of two from 16 to 256 bits, the ladder
  * rises in temperature with factors in (0, 1], an HBM record's die capacity
- * equals the named preset's stack capacity over its dies (ruling 16), and the
+ * equals the named preset's stack capacity over its dies, and the
  * channel count equals the IDD row's basis the energy model prices with. */
 bool validateDramPartRecord(const DramPartRecord& rec, std::vector<std::string>& errors);
 
@@ -236,7 +236,7 @@ struct HostCacheRecord {
 struct CacheRecord {
     std::string file, record;
     int slice_mb = 2;
-    /* 1.11.101 (review-93 BIG-CACHE ruling (b)): a cache above max_slices x
+    /* 1.11.101: a cache above max_slices x
      * slice_mb is REPLICATED slices -- area, leakage and energy scale with the
      * slice count; latency = one slice's CACTI access + the mean mesh hop
      * count to the home slice x home_hop_cycles. Up to the bound the slice
@@ -265,7 +265,7 @@ struct CoreTypeRecord {
     int fetch_width_bytes = -1;           // fetch bytes per cycle: ooo wrong-path step; both: a PE's instruction-cache read width (1.12.71)
     int retire_width = -1;                // commit width McPAT prices; in_order: -1 = issue width
     int l1d_fill_buffers = -1;            // (1.12.189) ooo: a processing element's L1D fill buffers (-1: not carried)
-    /* 1.12.1 (ticket #114): the in-order element's branch predictor, "pag" |
+    /* 1.12.1: the in-order element's branch predictor, "pag" |
      * "none" (in_order only; ooo always runs its PAg). A config sets it per
      * element (pim.pe.branch_predictor, devices[].pim.pe.branch_predictor,
      * hosts[].branch_predictor); this is the value where none is set. */

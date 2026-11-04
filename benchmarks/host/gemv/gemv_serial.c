@@ -1,5 +1,5 @@
-/* gemv.c — General Matrix-Vector Multiply: y = A * x
- * Serial baseline. A is N×N, x and y are N-vectors. */
+/* gemv.c -- General Matrix-Vector Multiply: y = A * x
+ * Serial baseline. A is NxN, x and y are N-vectors. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -1,4 +1,4 @@
-/* stream_triad_omp.c — STREAM Triad: a[i] = b[i] + scalar * c[i]
+/* stream_triad_omp.c -- STREAM Triad: a[i] = b[i] + scalar * c[i]
  * OpenMP parallel version. Standalone, no shared headers. */
 #include <stdio.h>
 #include <stdlib.h>

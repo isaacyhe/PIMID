@@ -120,7 +120,7 @@ struct Decoded {
      * operations the instruction performs (lanes). */
     uint8_t  fpCat1;
     uint8_t  fpLanes;
-    /* PIMID 1.12.18: (ruling 2026-10-23 #3) operand size of a GPR
+    /* PIMID 1.12.18: operand size of a GPR
      * instruction from the prefixes: REX.W (VEX.W on VEX forms) 64, 66h 16,
      * else 32; the byte opcode forms are recognised in intCensusCat. */
     uint8_t  intW;
@@ -244,7 +244,7 @@ static inline bool decodeOne(const uint8_t* b, uint32_t len, Decoded& d) {
     }
     (void)p66; (void)pF2; (void)vex; (void)vexMap;
     d.intW = (uint8_t)(vex ? (vexW ? 64 : 32) : ((rex & 8) ? 64 : (p66 ? 16 : 32)));   /* PIMID 1.12.18: */
-    /* 1.12.18 (ruling 2026-10-23 #2): SSE/AVX FP arithmetic format
+    /* 1.12.18: SSE/AVX FP arithmetic format
      * from the mandatory prefix (or VEX.pp): F3 = ss (1 single), F2 = sd
      * (1 double), 66 = pd (2 doubles), none = ps (4 singles); VEX.L doubles
      * the packed lane count (256-bit). kind: 0 add/sub, 1 mul, 2 div/sqrt. */
@@ -1049,7 +1049,7 @@ static inline void emitUops(const Decoded& d, std::vector<DynUop>& v,
     }
 }
 
-/* PIMID 1.12.18: (user ruling 2026-10-23 #3) integer census
+/* PIMID 1.12.18: integer census
  * category + 1 of a decoded instruction (decoder_simple.h; 0 = not
  * counted): scalar GPR add/logic (C_ALU) and multiply (C_IMUL of the
  * one-byte map and 0F AF; the 0F38 F5 pdep/pext is a bit deposit, not a
@@ -1089,7 +1089,7 @@ static inline BblInfo* createDecodedBblInfo(uint64_t bblAddr,
     uint32_t decWidth = 4;  /* front-end decode/issue width for decCycle spread */
     uint32_t emitted = 0;
 
-    /* 1.11.10 (#112): census the classes the decoder already determines, so
+    /* 1.11.10: census the classes the decoder already determines, so
      * the instruction mix is COUNTED rather than assumed. Saturating at
      * uint16_t max because a basic block with 65k instructions of one class
      * is not a thing that happens -- if it ever did, clamping is visible in

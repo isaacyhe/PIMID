@@ -5,7 +5,7 @@
 #ifndef NOC_WIRE_DATA_H_
 #define NOC_WIRE_DATA_H_
 
-/* Measured wire activity (user ruling 2026-10-25, "Measured"). A NoC link,
+/* Measured wire activity. A NoC link,
  * a bus or a TSV bundle is a W-bit bus carrying successive flits; its dynamic
  * energy is C V^2 per 0->1 transition of a wire (the DSENT / ORION 2.0 physical
  * convention: a 0->1 edge draws C V^2 from the supply, a 1->0 edge draws none).
@@ -62,7 +62,7 @@ class NocWireData {
         struct Stream {
             uint8_t last[NW][32];
             bool have = false;
-            uint32_t nextTag = 0;   // the source port's next outstanding-access tag (user ruling 2026-10-26: PIMID's own packet header)
+            uint32_t nextTag = 0;   // the source port's next outstanding-access tag (PIMID's own packet header)
             std::mutex mu;
         };
 
@@ -142,9 +142,9 @@ class NocWireData {
             for (int i = wlo; i <= whi; i++) { bits[i].atomicInc(b[i]); rise[i].atomicInc(r[i]); toggles[i].atomicInc(t[i]); }
         }
 
-        /* PIMID's packet header (user ruling 2026-10-26: PIMID's own packet header), bounded to ONE 64-bit word -- the
+        /* PIMID's packet header (PIMID's own packet header), bounded to ONE 64-bit word -- the
          * noc.header_bits (64) the fabric timing already moves with every data message, so
-         * timing and energy see the same 576-bit message. (user ruling 2026-10-26: control messages): a remote
+         * timing and energy see the same 576-bit message. (control messages): a remote
          * access is TWO messages -- a read: a READ REQUEST (control: the header word alone, to
          * the target) + a READ RESPONSE (the line, back to the requester); a write: a WRITE
          * REQUEST (the line, to the target) + a WRITE ACK (control, back) -- the 64-bit
@@ -181,7 +181,7 @@ class NocWireData {
                               uint32_t slotTag, const uint8_t* line, uint32_t lineBytes) {
             countAccess(st, dst, src, isWrite, addrOffset, slotTag, line, lineBytes, false);
         }
-        /* One remote access (user ruling 2026-10-26: control messages): with ctrl, its control message
+        /* One remote access (control messages): with ctrl, its control message
          * (a read's request before its response; a write's ack after its request) on the
          * same stream, in transfer order, under the access's one tag. */
         void countAccess(Stream& st, uint32_t dst, uint32_t src, bool isWrite, uint64_t addrOffset,

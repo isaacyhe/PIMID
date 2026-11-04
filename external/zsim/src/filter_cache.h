@@ -104,7 +104,7 @@ class FilterCache : public Cache {
             parentStat->append(cacheStat);
         }
 
-        /* 1.11.97 (review x05-zsim-cores-5, gate 1207D): the L1 HIT latency,
+        /* 1.11.97: the L1 HIT latency,
          * for the in-order core's load-use charge. zsim builds every terminal
          * cache with accLat = 0 (init.cpp: "terminal caches has no access
          * latency b/c it is assumed accLat is hidden by the pipeline"), so a
@@ -189,7 +189,7 @@ class FilterCache : public Cache {
             futex_unlock(&filterLock);
         }
 
-        /* 1.11.60 (audit round 4, D004): THE M -> E CLEAN HAS TO DROP THE L0
+        /* 1.11.60: THE M -> E CLEAN HAS TO DROP THE L0
          * WRITE FILTER, or a store after the flush never re-dirties the line.
          *
          * store() above returns at the fGETXHit line WITHOUT calling

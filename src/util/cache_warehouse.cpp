@@ -70,7 +70,7 @@ const char* env(const char* name) {
     return (v && v[0]) ? v : nullptr;
 }
 
-/* 1.11.52 (user ruling): the cache SHIPS WITH PIMID and starts EMPTY.
+/* 1.11.52: the cache SHIPS WITH PIMID and starts EMPTY.
  *
  * It used to default to ~/.cache/pimid, which put the tool's generated
  * memory designs in a per-user location outside the tree -- invisible to
@@ -83,7 +83,7 @@ const char* env(const char* name) {
  * /proc/self/exe, take its directory, and drop a trailing /build so both
  * `pimid/build/pimid` and an installed `pimid/bin/pimid` resolve to
  * `pimid/cache`. --cache-dir / PIMID_CACHE_DIR still override; without them
- * and without /proc the run is refused (1.12.5, ruling F5: no wrong folders
+ * and without /proc the run is refused (1.12.5, no wrong folders
  * and no old cache files -- the pre-1.11.52 per-user store ~/.cache/pimid is
  * neither a default nor a fallback any more). */
 std::string exeDir() {
@@ -113,7 +113,7 @@ std::string defaultRoot() {
     }
     std::cerr << "[cache] FATAL: the cache warehouse root could not be located from the running binary"
                  " (/proc/self/exe unreadable) and none was given. Pass --cache-dir <path> or set"
-                 " PIMID_CACHE_DIR; no home-directory store stands in (1.12.5, ruling F5)." << std::endl;
+                 " PIMID_CACHE_DIR; no home-directory store stands in (1.12.5)." << std::endl;
     std::exit(2);
 }
 
@@ -188,7 +188,7 @@ void configure(const std::string& cli_mode, const std::string& cli_dir,
     if (!cli_dir.empty())                  dir = cli_dir;
     else if (env("PIMID_CACHE_DIR"))       dir = env("PIMID_CACHE_DIR");
     else if (env("PIMID_NVSIM_CACHE_DIR")) {
-        /* 1.12.5 (ruling F5): the pre-1.11.52 variable named the nvsim subdir of
+        /* 1.12.5: the pre-1.11.52 variable named the nvsim subdir of
          * the old per-user store. It is no longer a location: refused, so a stale
          * environment cannot point a run at old cache files in silence. */
         std::cerr << "[cache] FATAL: PIMID_NVSIM_CACHE_DIR is set. It named the pre-1.11.52 per-user store, which this"

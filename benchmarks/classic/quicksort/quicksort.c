@@ -1,5 +1,5 @@
 /*
- * Quicksort — In-place iterative (stack-based) quicksort benchmark
+ * Quicksort -- In-place iterative (stack-based) quicksort benchmark
  * Lomuto partition scheme, single-threaded.
  *
  * Compile: g++ -O2 -I<path-to-zsim/misc/hooks> quicksort.c -o quicksort
@@ -106,7 +106,7 @@ static void quicksort(int* arr, int n) {
 int main(int argc, char** argv) {
     int size = parse_int_arg(argc, argv, "--size", 65536);
 
-    printf("Quicksort (iterative Lomuto) — size=%d\n", size);
+    printf("Quicksort (iterative Lomuto) -- size=%d\n", size);
 
     /* Init array from the generator */
     int* arr = (int*)malloc((size_t)size * sizeof(int));

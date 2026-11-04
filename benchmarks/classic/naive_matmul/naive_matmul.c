@@ -1,5 +1,5 @@
 /*
- * Naive Matrix Multiply — C = A * B, triple-loop i-j-k
+ * Naive Matrix Multiply -- C = A * B, triple-loop i-j-k
  * Single-threaded, no blocking, no optimisation.
  *
  * Compile: g++ -O2 -I<path-to-zsim/misc/hooks> naive_matmul.c -o naive_matmul
@@ -33,7 +33,7 @@ static uint32_t bench_rand(uint32_t* s) {
 int main(int argc, char** argv) {
     int N = parse_int_arg(argc, argv, "--size", 128);
 
-    printf("Naive MatMul (i-j-k) — size=%dx%d\n", N, N);
+    printf("Naive MatMul (i-j-k) -- size=%dx%d\n", N, N);
 
     size_t mat_bytes = (size_t)N * (size_t)N * sizeof(float);
 

@@ -179,8 +179,8 @@ typedef struct{
 	int fetch_width;
 	int number_instruction_fetch_ports;
 	int pimid_dma_engine;   /* PIMID 1.12.18: line bytes of the scratchpad DMA engine's buffer (0 = no engine) */
-	int pimid_ib_entries;   /* PIMID 1.12.18 (ruling 2026-10-23 #3): instructions the TIMING core's front-end buffer holds (0 = not given: McPAT's instruction_buffer_size) */
-	/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): the MEASURED fraction
+	int pimid_ib_entries;   /* PIMID 1.12.18: instructions the TIMING core's front-end buffer holds (0 = not given: McPAT's instruction_buffer_size) */
+	/* PIMID 1.12.18 (idle halt): the MEASURED fraction
 	 * of the run a thread was runnable on the core (device PE: its busy
 	 * cycles; host core: zsim's unhalted cycles), mean and max over the cores
 	 * this template stands for. < 0 = not measured. */
@@ -226,7 +226,7 @@ typedef struct{
 	double fp_instructions;
 	double branch_instructions;
 	double branch_mispredictions;
-	/* PIMID 1.11.97 (R2476): MEASURED predictor table writes (value-changing
+	/* PIMID 1.11.97: MEASURED predictor table writes (value-changing
 	 * updates counted by the timing core): level-1 local history table and
 	 * level-2 local counter table. -1 = absent; the runtime path then keeps
 	 * the upstream estimate (mispredictions + 10% of branches). */
@@ -238,11 +238,11 @@ typedef struct{
 	double load_instructions;
 	double pimid_dma_lines;  /* PIMID 1.12.18: lines the DMA engine moved */
 	double pimid_dma_cmd_reads, pimid_dma_cmd_writes;   /* PIMID 1.12.18: its command-register accesses */
-	/* PIMID 1.12.18 (ruling 2026-10-23 #2): measured FP operations by type and
+	/* PIMID 1.12.18: measured FP operations by type and
 	 * precision (PIMID's decoder census, all cores), instructions and scalar
 	 * lane operations; categories pimid_fpc_name[] below. */
 	double pimid_fp_ins[9], pimid_fp_lanes[9];
-	/* PIMID 1.12.18 (ruling 2026-10-23 #3): measured scalar GPR integer
+	/* PIMID 1.12.18: measured scalar GPR integer
 	 * operations by class and operand width (PIMID's x86 decoder census, all
 	 * cores); categories pimid_ic_name[] below. */
 	double pimid_int_ops[9];
@@ -403,7 +403,7 @@ typedef struct{
 	double duty_cycle;
 
 	bool   merged_dir;
-	/* PIMID 1.12.18 (user ruling "sharer bits from the real child count"):
+	/* PIMID 1.12.18 (sharer bits from the real child count):
 	 * > 0 = the children this cache's SBT directory tracks per line (the
 	 * caches below it); 0 (default) = upstream, number_of_cores. */
 	int    dir_sharers;
@@ -455,7 +455,7 @@ typedef struct{
 	double duty_cycle;
 
 	bool   merged_dir;
-	/* PIMID 1.12.18 (user ruling "sharer bits from the real child count"):
+	/* PIMID 1.12.18 (sharer bits from the real child count):
 	 * > 0 = the children this cache's SBT directory tracks per line (the
 	 * caches below it); 0 (default) = upstream, number_of_cores. */
 	int    dir_sharers;
@@ -557,7 +557,7 @@ typedef struct{
 	/* PIMID (1.12.259): > 1 = a BUS level (type 0) whose bus arbitrates this many requesters (a router built as a
 	 * shared bus): one CACTI arbiter per bus, charged per access. 0 (default) = a bus with no arbiter priced. */
 	int bus_arbiter_ports;
-	/* PIMID (user ruling 2026-10-25): link_kind 2 = an off-package link
+	/* PIMID: link_kind 2 = an off-package link
 	 * riding the DRAM channel, priced per bit crossed at this energy (pJ/bit,
 	 * given by PIMID from the part's DQ crossing); < 0 = not set. */
 	double link_io_pj_per_bit;
@@ -608,7 +608,7 @@ typedef struct{
 	int number_mcs;
 	bool withPHY;
 	double pimid_command_ops;   /* PIMID 1.12.18: command-only operations the controller issued (counted refresh commands) */
-	double background_fraction;   /* PIMID 1.11.98 (row 28): the routine-job share of peak dynamic power per cycle; McPAT's 0.1 unless the run measures it */
+	double background_fraction;   /* PIMID 1.11.98: the routine-job share of peak dynamic power per cycle; McPAT's 0.1 unless the run measures it */
 	int type;
 
 	//FCParam
@@ -667,7 +667,7 @@ typedef struct{
 	//stats
 	double duty_cycle;
 	double total_load_perc;
-	/* PIMID 1.11.7 (#85): activity-driven link energy. transferred_bytes is
+	/* PIMID 1.11.7: activity-driven link energy. transferred_bytes is
 	 * the MEASURED crossing byte count; link_pj_per_bit the per-link-type
 	 * transfer energy (selected by PIMID from its cited table: PCIe gen3/4/5,
 	 * CXL = gen5 PHY + coherence delta, NVLink, or user override). When
@@ -676,7 +676,7 @@ typedef struct{
 	 * constant-load scaling. Both default 0 = legacy behavior. */
 	double transferred_bytes;
 	double link_pj_per_bit;
-	/* PIMID 1.12.18: UCIe link class (user rulings 2026-10-23). Sources:
+	/* PIMID 1.12.18: UCIe link class. Sources:
 	 *  [UCIe11] D. Das Sharma, "The UCIe 1.1 Specification: Future
 	 *           Applications of Chiplets", UCIe Consortium, 2023, table
 	 *           "UCIe 1.0/1.1: Characteristics and Key Metrics".
@@ -692,7 +692,7 @@ typedef struct{
 	 *                 package; >=0 = a user value (printed as such).
 	 * link_energy_end 1 = this end prices the link's per-bit energy (the
 	 *                 link is priced once, at one end); 0 = the far end.
-	 * link_node_nm    PIMID 1.12.18 (user ruling 2026-10-23, two nodes):
+	 * link_node_nm    PIMID 1.12.18 (two nodes):
 	 *                 process node (nm) of the die the link sits on, which
 	 *                 selects the UCIe energy row; only 22 and 3 are priced
 	 *                 (iocontrollers.cc). <= 0 = this McPAT run's node.
@@ -706,7 +706,7 @@ typedef struct{
 	double phy_pj_per_bit;
 	int link_energy_end;
 	int link_node_nm;   /* PIMID 1.12.18: see above */
-	/* PIMID (user ruling 2026-10-27: serial links calibrated): 1 = price the link when it carries no
+	/* PIMID (serial links calibrated): 1 = price the link when it carries no
 	 * traffic: a SerDes class in ASPM L1 between transfers, in L0 for its entry
 	 * timer and its L1 exits (link_l0_idle_s, link_l1_exits x link_l1_exit_s,
 	 * measured by the plugin); a UCIe link clock-gated (0.05 of 0.33 pJ/b,
@@ -715,7 +715,7 @@ typedef struct{
 	double link_l0_idle_s;
 	double link_l1_exits;
 	double link_l1_exit_s;
-	/* PIMID (user ruling 2026-10-28: link controller logic priced): 1 = price the SerDes-class link controller's
+	/* PIMID (link controller logic priced): 1 = price the SerDes-class link controller's
 	 * logic from the published FPGA hard-block figures (iocontrollers.cc); 0 = McPAT's model */
 	int link_ctrl_published;
 } system_pcie;
@@ -755,28 +755,28 @@ typedef struct{
 	bool power_gating;
 	bool Embedded;
 	int  pimid_clock_network;   /* PIMID 1.12.18: 0 = clock distribution not priced (user option power.models.clock_network) */
-	int  pimid_layout_energy_overhead;   /* PIMID 1.12.18 (ruling 2026-10-24): 1 = layout area overheads also scale array dynamic energy (upstream) */
-	int  pimid_fu_base_energy;  /* PIMID 1.12.18 (ruling 2026-10-23 #1): 0 = the OOO FU fixed base energy is not charged */
-	int  pimid_fpu_published;   /* PIMID 1.12.18 (ruling 2026-10-23 #2): 1 = published per-op FP energies (logic.cc) */
-	int  pimid_int_alu_published;   /* PIMID 1.12.18 (ruling 2026-10-23 #3): 1 = published per-op integer energies (logic.cc) */
-	int  pimid_fu_area_published;   /* PIMID 1.12.29: (ruling 2026-10-25) 1 = published functional-unit areas (logic.cc) */
-	/* PIMID 1.12.18 (ruling 2026-10-23 #4): measured power-gated residency
+	int  pimid_layout_energy_overhead;   /* PIMID 1.12.18: 1 = layout area overheads also scale array dynamic energy (upstream) */
+	int  pimid_fu_base_energy;  /* PIMID 1.12.18: 0 = the OOO FU fixed base energy is not charged */
+	int  pimid_fpu_published;   /* PIMID 1.12.18: 1 = published per-op FP energies (logic.cc) */
+	int  pimid_int_alu_published;   /* PIMID 1.12.18: 1 = published per-op integer energies (logic.cc) */
+	int  pimid_fu_area_published;   /* PIMID 1.12.29: 1 = published functional-unit areas (logic.cc) */
+	/* PIMID 1.12.18: measured power-gated residency
 	 * (fraction of the run) of the components the described design gates,
 	 * 0 = always powered; stops the GLOBAL part of their clock tree
 	 * (logic.h ClockNetwork). */
 	double pimid_clock_pg_core, pimid_clock_pg_cache, pimid_clock_pg_noc, pimid_clock_pg_mc;
 	int    pimid_clock_leaf_sinks;   /* PIMID (1.12.30, F2): sinks per leaf cluster (power.clock.leaf_cluster_sinks) */
-	int    pimid_clock_split;   /* PIMID 1.12.18 (ruling #4): 1 = global part every powered cycle, local gated */
-	/* PIMID 1.12.18 (user ruling 2026-10-23, idle halt): 1 = a core with
+	int    pimid_clock_split;   /* PIMID 1.12.18: 1 = global part every powered cycle, local gated */
+	/* PIMID 1.12.18 (idle halt): 1 = a core with
 	 * nothing to run is halted (x86 HLT/C1, ARM WFI): its whole clock tree,
 	 * global part included, is off for the halted time (core param
 	 * pimid_running_fraction). 0 = upstream (global part every powered cycle). */
 	int    pimid_idle_halt;
-	/* PIMID 1.12.18 (user ruling, per-die process): the technology of the
+	/* PIMID 1.12.18 (per-die process): the technology of the
 	 * LOGIC die the components off the DRAM die sit on (node nm, CACTI device
 	 * type). 0 / -1 = the chip's core_tech_node / device_type. */
 	int    pimid_logic_die_node, pimid_logic_die_device_type;
-	/* PIMID 1.12.18 (user ruling, per-die clock trunk): 1 = one die-level
+	/* PIMID 1.12.18 (per-die clock trunk): 1 = one die-level
 	 * H-tree trunk per die feeding the component trees on it; the DRAM-die
 	 * kind has pimid_dram_die_count dies of pimid_dram_die_area_mm2 each
 	 * (0 = the area of the components McPAT puts there); the logic die is
@@ -830,7 +830,7 @@ typedef struct{
 	double dram_periph_pitch;   /* PIMID 1.11.34 (E11): core-only pitch penalty */        // area factor
 	double dram_periph_dyn;         // dynamic factor
 	double dram_periph_leak;        // leakage factor (on PLAIN leakage)
-	/* PIMID 1.11.56 (audit C010): dram_periph_scope is DELETED. It was a
+	/* PIMID 1.11.56: dram_periph_scope is DELETED. It was a
 	 * bitmask (1=core 2=caches 4=noc 8=mcs) that nobody emitted and nobody
 	 * read -- the wrapper stopped writing the parameter and processor.cc
 	 * removed the mask -- leaving a declaration, a parse hook and a default
@@ -838,10 +838,10 @@ typedef struct{
 	 * longer has. Per-level scoping is now NoC[i].on_dram_die. */
 } root_system;
 
-/* PIMID 1.12.18 (ruling 2026-10-23 #2): FP census categories, in PIMID's
+/* PIMID 1.12.18: FP census categories, in PIMID's
  * order (zsim decoder_simple.h FpOpCensus). */
 static const char* const pimid_fpc_name[9] = {"AddS", "MulS", "AddD", "MulD", "FmaS", "FmaD", "DivS", "DivD", "X87"};
-/* PIMID 1.12.18 (ruling 2026-10-23 #3): integer census categories, in
+/* PIMID 1.12.18: integer census categories, in
  * PIMID's order (zsim decoder_simple.h, IntOp census): add/logic by operand
  * width, multiply by width, divide (all widths). */
 static const char* const pimid_ic_name[9] = {"Alu8", "Alu16", "Alu32", "Alu64", "Mul8", "Mul16", "Mul32", "Mul64", "Div"};

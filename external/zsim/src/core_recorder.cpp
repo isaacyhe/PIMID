@@ -109,7 +109,7 @@ void CoreRecorder::notifyLeave(uint64_t curCycle) {
     assert(prevRespEvent);
     //Taper off the event
     // Cover delay to curCycle
-    /* PIMID 1.11.96 (review C7, the weave assertion): a core cannot leave
+    /* PIMID 1.11.96 (the weave assertion): a core cannot leave
      * before its last recorded memory response. The in-order core's issue
      * cursor can sit behind the response cycle of its last access (a miss
      * whose response outran the front-end), and a barrier/futex leave taken

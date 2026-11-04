@@ -31,7 +31,7 @@ all: serial shared_memory
 ifeq ($(HAS_MPI),yes)
 all: message_passing
 else
-	@echo "NOTE: mpicxx not found — skipping message_passing (forked-MPI) variants"
+	@echo "NOTE: mpicxx not found -- skipping message_passing (forked-MPI) variants"
 endif
 
 serial: $(SERIAL)

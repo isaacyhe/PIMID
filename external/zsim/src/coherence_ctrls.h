@@ -62,12 +62,12 @@ class CC : public GlobAlloc {
         virtual bool isValid(uint32_t lineId) = 0;
         /* Coherence-flush footprint interface.
          *
-         * 1.11.40 (audit N7) introduced countDirtyLines(): the flush moves the
+         * 1.11.40 introduced countDirtyLines(): the flush moves the
          * lines in M, and that is measurable rather than a 16 MiB constant.
          * 1.11.55 (F017) added cleanDirtyLines() so the flush actually left the
          * lines clean. Both were UNLOCKED walks of the MESI state array.
          *
-         * 1.11.57 (audit D001/D002/D003): those two entry points are replaced
+         * 1.11.57: those two entry points are replaced
          * by one LOCKED, FUSED operation. Three reasons, all of them defects
          * the split interface made possible:
          *  - D003: cleanDirtyLines() writes array[i] while another rank is
@@ -458,7 +458,7 @@ class MESICC : public CC {
         //Repl policy interface
         uint32_t numSharers(uint32_t lineId) {return tcc->numSharers(lineId);}
         bool isValid(uint32_t lineId) {return bcc->isValid(lineId);}
-        /* 1.11.57 (audit D003): the flush walk takes the BOTTOM cc lock only.
+        /* 1.11.57: the flush walk takes the BOTTOM cc lock only.
          * The access path takes tcc then bcc (startAccess above), so a thread
          * blocked on bcc while holding tcc simply waits for us; we acquire
          * nothing else while holding bcc, so no cycle exists. */
@@ -553,7 +553,7 @@ class MESITerminalCC : public CC {
         //Repl policy interface
         uint32_t numSharers(uint32_t lineId) {return 0;} //no sharers
         bool isValid(uint32_t lineId) {return bcc->isValid(lineId);}
-        /* 1.11.57 (audit D003): see MESICC::flushLock. */
+        /* 1.11.57: see MESICC::flushLock. */
         void flushLock() {bcc->lock();}
         void flushUnlock() {bcc->unlock();}
         void takeDirtyLineIds(std::vector<uint32_t>& out) {bcc->takeDirtyLineIds(out);}

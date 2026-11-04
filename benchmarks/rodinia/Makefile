@@ -1,4 +1,4 @@
-# Rodinia Benchmarks Makefile — 10 OpenMP benchmarks
+# Rodinia Benchmarks Makefile -- 10 OpenMP benchmarks
 BENCHDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ZSIM_HOOKS := $(BENCHDIR)/../../external/zsim/misc/hooks
 

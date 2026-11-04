@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -46,7 +46,7 @@ class DDR4 : public IDRAM, public Implementation {
       {"DDR4_2133R",  {2133,   4,  16,  16,   16,   36,   52,   16,   8,   11,   4,    6,   -1,   -1,    3,    8,   -1,  -1,  -1,   2,    937} },
       {"DDR4_2400P",  {2400,   4,  15,  15,   15,   39,   54,   18,   9,   12,   4,    6,   -1,   -1,    3,    9,   -1,  -1,  -1,   2,    833} },
       {"DDR4_2400R",  {2400,   4,  16,  16,   16,   39,   55,   18,   9,   12,   4,    6,   -1,   -1,    3,    9,   -1,  -1,  -1,   2,    833} },
-      /* 1.12.42 (user ruling 2026-10-25): the 2400 T/U rows were swapped against this file's own letter -> CL
+      /* 1.12.42: the 2400 T/U rows were swapped against this file's own letter -> CL
        * mapping (2666T = 17, 2666U = 18): T = 17-17-17 (Micron -083), U = 18-18-18 (Micron -083D, MT40A Table 156). */
       {"DDR4_2400T",  {2400,   4,  17,  17,   17,   39,   56,   18,   9,   12,   4,    6,   -1,   -1,    3,    9,   -1,  -1,  -1,   2,    833} },
       {"DDR4_2400U",  {2400,   4,  18,  18,   18,   39,   57,   18,   9,   12,   4,    6,   -1,   -1,    3,    9,   -1,  -1,  -1,   2,    833} },
@@ -184,7 +184,7 @@ class DDR4 : public IDRAM, public Implementation {
       Node(DDR4* dram, Node* parent, int level, int id) : DRAMNodeBase<DDR4>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -195,7 +195,7 @@ class DDR4 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
       
       // Check if there is any future action at this cycle
@@ -203,7 +203,7 @@ class DDR4 : public IDRAM, public Implementation {
         auto& future_action = m_future_actions[i];
         if (future_action.clk == m_clk) {
           handle_future_action(future_action.cmd, future_action.addr_vec);
-          m_pimid_bank_open.touch(future_action.addr_vec);   // PIMID 1.11.91 (R8-7)
+          m_pimid_bank_open.touch(future_action.addr_vec);   // PIMID 1.11.91
           m_future_actions.erase(m_future_actions.begin() + i);
         }
       }
@@ -221,7 +221,7 @@ class DDR4 : public IDRAM, public Implementation {
       set_powers();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -230,7 +230,7 @@ class DDR4 : public IDRAM, public Implementation {
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_powers(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
       
       // Check if the command requires future action
       check_future_action(command, addr_vec);
@@ -435,7 +435,7 @@ class DDR4 : public IDRAM, public Implementation {
 
       // Refresh timings
       // tRFC table (unit is nanosecond!)
-      /* 1.11.66 (round 5, F10): tRFC1[8Gb] 360 -> 350 ns. Micron MT40A
+      /* 1.11.66: tRFC1[8Gb] 360 -> 350 ns. Micron MT40A
        * p.369: "tRFC1 MIN = 350 ns" for the 8 Gb die (260 / 550 for 4 / 16
        * Gb, which the table already had right); JESD79-4 gives the same
        * 350, and pimid_energy.h's DDR4 row had carried 350 all along -- the
@@ -458,7 +458,7 @@ class DDR4 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the four tabulated ones, and that -1 then indexed
        * tRFC_TABLE. An out-of-bounds read one element BEFORE a table of
        * plausible nanosecond figures does not crash -- it yields whatever

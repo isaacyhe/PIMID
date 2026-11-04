@@ -1,4 +1,4 @@
-# PIMID cache part record (1.11.95, sweep-94 rulings: review R2 "c with b", l03-config-flow-9).
+# PIMID cache part record (1.11.95).
 # One coherent set for the cache hierarchy the simulator builds and prices: the
 # geometry fields every level is characterised with (CACTI for latency, McPAT's
 # embedded CACTI for power/area). cache.<level>.ways / .banks and
@@ -14,7 +14,7 @@
 #   since Sandy Bridge, which CACTI's 32-bank limit accommodates up to 64 MB);
 #   L1/L2 at <= 2 MB are one bank. An integer here fixes the count instead.
 #   Every count is checked against CACTI's range (1..32) and refused outside it.
-# max_slices / home_hop_cycles (1.11.101, review-93 BIG-CACHE ruling (b), user 2026-10-03):
+# max_slices / home_hop_cycles (1.11.101):
 #   a cache above max_slices x slice_mb (64 MB) is the distributed LLC of a
 #   many-core chip: S = size / slice_mb identical slices, each ONE CACTI array
 #   (2 MB, 1 bank), priced as S McPAT instances (area, leakage, clock trees and

@@ -44,7 +44,7 @@ class Network;
  * too, but to avoid virtual function call overheads we work with MESI
  * controllers, since for now we only have MESI controllers
  */
-/* 1.11.40 (audit N7): global cache registry. Function-local static so it is
+/* 1.11.40: global cache registry. Function-local static so it is
  * safe before any other static initialiser runs; populated once per cache in
  * InitSystem. Read ONLY at roi_begin, to measure the coherence-flush footprint
  * that used to be a 16 MiB constant. */
@@ -78,7 +78,7 @@ class Cache : public BaseCache {
 
         virtual uint64_t access(MemReq& req);
 
-        /* 1.11.57 (audit D001/D002/D003): the coherence flush's one entry
+        /* 1.11.57: the coherence flush's one entry
          * point into a cache, replacing dirtyBytes() (1.11.40 N7) and
          * cleanDirtyBytes() (1.11.55 F017).
          *
@@ -101,14 +101,14 @@ class Cache : public BaseCache {
          * is the per-level sum and is legitimately larger than the distinct
          * count -- the flush log prints both, labelled.
          *
-         * 1.11.62 (ruling 5b): this is now called once per ARRIVAL at the
+         * 1.11.62: this is now called once per ARRIVAL at the
          * flush point, not once per epoch. Because the pass CLEANS, each
          * caller's walk returns only what has been dirtied since the previous
          * walk, and that delta property is what makes the per-rank charges sum
          * to the working set exactly once. Anything that made this measure
          * without cleaning would break that invariant.
          *
-         * 1.11.60 (audit round 4, D004): VIRTUAL, because cleaning the tag
+         * 1.11.60: VIRTUAL, because cleaning the tag
          * array is not the whole job on a cache that also owns an L0 filter.
          * FilterCache::store() can return a hit without ever calling
          * Cache::access, so an M -> E clean that touches only the array

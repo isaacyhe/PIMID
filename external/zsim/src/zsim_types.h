@@ -31,13 +31,13 @@ typedef uint64_t Address;
 #define FALSE 0
 #endif
 
-/* 1.11.8 (#84): active-phase tracker for power-gating residency. Touched on
+/* 1.11.8: active-phase tracker for power-gating residency. Touched on
  * an object's own event path (one compare+branch); CAS keeps shared trackers
  * race-safe (a lost race undercounts one phase, negligible). */
 struct PhaseActivity {
     volatile uint64_t activePhases = 0;
     volatile uint64_t lastActivePhase = ~0ull;
-    /* 1.11.36 (user ruling E14): MONOTONIC. lastActivePhase is the "have I
+    /* 1.11.36: MONOTONIC. lastActivePhase is the "have I
      * already counted this phase?" marker, and this used to CAS it to whatever
      * phase the calling thread held -- so a thread carrying a stale number
      * could walk it BACKWARDS:
@@ -80,7 +80,7 @@ struct PhaseActivity {
     }
 };
 
-/* 1.11.40 (audit E17, measurement pass): INTER-EVENT GAP HISTOGRAM.
+/* 1.11.40 (measurement pass): INTER-EVENT GAP HISTOGRAM.
  *
  * PhaseActivity above answers "was this component busy in this phase?" at
  * 10000-cycle granularity -- 20 us at the 500 MHz device clock, roughly 2000x
@@ -96,12 +96,12 @@ struct PhaseActivity {
  *
  * 1.11.51 made this LOAD-BEARING: gapPowerDownResidency() reads it back to
  * weight DRAM background power, so it is no longer instrumentation only and
- * the two notes below were corrected accordingly (audit F006).
+ * the two notes below were corrected accordingly.
  *
  * Concurrency follows the E14 lesson: lastCycle never rewinds, and a thread
  * that loses the CAS drops its sample rather than retrying.
  *
- * 1.11.54 (audit F001): THE DIRECTION OF THAT BIAS WAS STATED BACKWARDS. The
+ * 1.11.54: THE DIRECTION OF THAT BIAS WAS STATED BACKWARDS. The
  * old note claimed dropping "biases toward FEWER recorded gaps, never toward
  * larger ones, so it cannot manufacture gating opportunity". It does exactly
  * that. A lost CAS does not shrink a gap -- it MERGES two: for arrivals
@@ -137,7 +137,7 @@ struct GapHist {
      * start -- event() replaces it with the first actual event, which is
      * where the recorded gaps really begin. */
     inline void arm(uint64_t c) {
-        /* 1.11.54 (audit F002): CLEAR THE BUCKETS TOO. arm() reset the span
+        /* 1.11.54: CLEAR THE BUCKETS TOO. arm() reset the span
          * but left count[]/cycles[]/events/samples standing, and it fires at
          * EVERY ROI_BEGIN -- so a workload with several ROIs accumulated gap
          * cycles across all of them while spanCycles() described only the
@@ -168,7 +168,7 @@ struct GapHist {
         if (c <= last) return;                  // out of order or repeat: no gap
         if (!__sync_bool_compare_and_swap(&lastCycle, last, c)) return;  // lost: drop
         if (last == 0) {
-            /* 1.11.54 (audit F004): the FIRST EVENT defines the span's start.
+            /* 1.11.54: the FIRST EVENT defines the span's start.
              * arm() stored the roi_begin cycle in firstCycle, but the gaps
              * recorded here telescope to (lastEvent - firstEvent), not
              * (lastEvent - armCycle) -- so spanCycles() returned a
@@ -193,7 +193,7 @@ struct GapHist {
      * usable cycles, because the wake penalty is paid out of the gap itself.
      * Bucket b holds gaps in [2^b, 2^(b+1)).
      *
-     * 1.11.57 (audit round 3, residual on F003): THE BUCKET THAT STRADDLES THE
+     * 1.11.57 (residual on F003): THE BUCKET THAT STRADDLES THE
      * THRESHOLD IS DROPPED, WHICH UNDER-STATES. The note here used to claim
      * the opposite -- "reported as its whole contents, an OVER-estimate
      * confined to one bucket" -- while the loop below has always skipped that

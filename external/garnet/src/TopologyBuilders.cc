@@ -253,7 +253,7 @@ TopologyBuilders::buildMeshImpl(uint32_t rows, uint32_t cols,
                 makeRouter(i, vcs_per_vnet, virt_nets, router_latency, width));
             continue;
         }
-        // 1.11.94 (H35): torus router = RingRouter with one dateline per
+        // 1.11.94: torus router = RingRouter with one dateline per
         // dimension on its wrap link (the link buildTorus adds from the last
         // column/row back to the first) and a class reset on the X->Y turn.
         GarnetRouterParams rp;
@@ -339,7 +339,7 @@ TopologyBuilders::buildTorus(uint32_t rows, uint32_t cols,
                              Cycles link_latency, Cycles router_latency,
                              uint32_t width)
 {
-    // 1.11.94 (x03-garnet-custom-1, ruling H35): the torus used to be the
+    // 1.11.94: the torus used to be the
     // plain-router mesh plus wrap links, so DOR over the wrap links closed a
     // cyclic channel dependency on every row and column ring with nothing to
     // break it (an 8x8 tornado with 4 packets per node delivered 0/256). The
@@ -968,7 +968,7 @@ TopologyBuilders::buildFromFile(const std::string& filename,
 
     TopologyResult result;
     result.topology = new Topology(num_routers);
-    // 1.11.94 (x03-garnet-custom-3): name used in routing refusals only.
+    // 1.11.94: name used in routing refusals only.
     /* (1.12.233): each router's pipe stages (rp.latency), the receiving end of the
      * credit round trip below: its level's pipe line, else the network's. */
     std::vector<Cycles> router_stages(num_routers, router_latency);

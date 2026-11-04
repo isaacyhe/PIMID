@@ -257,7 +257,7 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 	   */
 	  set_pcie_param();
 	  local_result = init_interface(&interface_ip);
-	  /* PIMID (user ruling 2026-10-28: link controller logic priced): 16 nm (the FPGA hard block's node) -> this run's node */
+	  /* PIMID (link controller logic priced): 16 nm (the FPGA hard block's node) -> this run's node */
 	  pimid_ctrl_scale = pimid_logic_op_scale(16.0, 0.85, &pimid_ctrl_scale_silicon);
 
 	  if (pciep.type == 0) //high performance NIU
@@ -277,7 +277,7 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 		  //	  //Cadence ChipEstimate using 65nm soft IP;
 		  //	  frontend_dyn = 0.27e-9/8*g_tp.peri_global.Vdd/1.1*g_tp.peri_global.Vdd/1.1*(interface_ip.F_sz_nm/65.0);
 		  //SerDer_dyn is power not energy, scaling from 10mw/Gb/s @90nm
-		  /* PIMID 1.11.29 (user ruling, step 3): the lane rate is a PARAMETER.
+		  /* PIMID 1.11.29 (step 3): the lane rate is a PARAMETER.
 		   * It was the literal 4 -- PCIe 2.0's 4 Gb/s per lane, a 2007
 		   * standard -- applied to every link class PIMID can configure:
 		   * gen5 (32 GT/s, 8x), CXL (gen5/6 PHY), NVLink, UALink (200G-class,
@@ -293,7 +293,7 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 		  //Cadence ChipEstimate using 65nm
 		  ctrl_gates       = 900000/8*pciep.num_channels;
 		  //	  frontend_gates   = 120000/8;
-		  /* PIMID 1.11.60 (audit round 4, D009): THE HIGH-PERFORMANCE ARM GAVE
+		  /* PIMID 1.11.60: THE HIGH-PERFORMANCE ARM GAVE
 		   * THE SerDes AREA AND DYNAMIC AND ZERO LEAKAGE.
 		   *
 		   * SerDer_gates is declared `= 0.` at the top of this constructor and
@@ -391,7 +391,7 @@ PCIeController::PCIeController(ParseXML *XML_interface,InputParameter* interface
 		   * [MS26] (flow control, calibration, error correction, repair) is
 		   * the adapter-level logic McPAT's controller term also prices, so
 		   * the controller DYNAMIC stays excluded (no double count).
-		   * CROSS-CHECK 1 (user: "verify with 3"), printed, NEVER charged:
+		   * CROSS-CHECK 1, printed, NEVER charged:
 		   * McPAT's own controller dynamic for this link, per bit:
 		   *   ctrl_dyn_per_cycle [J/cycle, all lanes] / (lanes x GT/s x 1e9 /
 		   *   clock [Hz]) [bits/cycle]. */
@@ -449,14 +449,14 @@ void PCIeController::computeEnergy(bool is_tdp)
     			execTimeSec = XML->sys.total_cycles / (XML->sys.target_core_clockrate * 1e6);
     		const double bytes = XML->sys.pcie.link_energy_end ? XML->sys.pcie.transferred_bytes : 0.0;
     		ucie_phy_joules = bytes * 8.0 * ucie_pj_per_bit * 1e-12;
-    		/* PIMID (user ruling 2026-10-27: serial links calibrated): THE IDLE LINK. A UCIe link that
+    		/* PIMID (serial links calibrated): THE IDLE LINK. A UCIe link that
     		 * carries nothing is clock-gated, not off: "When fully clock gated, the
     		 * system achieves a power efficiency of 0.05pJ/b" against "0.33pJ/b at
     		 * 24Gb/s" at 0% clock gating, with zero wake penalty (R. Shivnaraine et
     		 * al., ISSCC 2026 8.3, 3 nm); the UCIe 1.1 white paper's KPI "Power
     		 * savings estimated at >= 85%" with 0.5-1 ns entry/exit agrees (0.05/0.33 =
     		 * 15%). Priced at that fraction of the full-rate per-bit power over the
-    		 * time the link is not moving the measured bytes (DERIVED at 22 nm: the
+    		 * time the link is not moving the measured bytes (at 22 nm: the
     		 * same fraction). Once, at the end that prices the link. */
     		double ucie_idle_j = 0.0;
     		if (XML->sys.pcie.link_idle_l0 == 1 && XML->sys.pcie.link_energy_end && execTimeSec > 0.0 &&
@@ -497,7 +497,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     		             " interface's per-bit figure (DERIVED: no published split)." << std::endl;
     		return;
     	}
-    	/* PIMID (user ruling 2026-10-27: serial links calibrated): THE IDLE SerDes LINK, IN ASPM L1.
+    	/* PIMID (serial links calibrated): THE IDLE SerDes LINK, IN ASPM L1.
     	 * Between transfers a PCIe-class link sits in L0 for its L1 entry timer and
     	 * in L1 after it; a transfer that finds it in L1 runs its L1 exit in L0 (the
     	 * plugin measures both: link_l0_idle_s, link_l1_exits; the exit latency and
@@ -510,7 +510,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     	 *            Reducing PCI Express Power Consumption to Mobile Levels", Synopsys
     	 *            technical bulletin, 2015-10-26; 10-25 mW, S. Knowlton, Synopsys,
     	 *            2012), the band's middle; a Gen3-era PHY figure, carried to
-    	 *            Gen4/5, CXL, NVLink and UALink (DERIVED);
+    	 *            Gen4/5, CXL, NVLink and UALink;
     	 * and the energy end adds the active bits (bytes x 8 x pJ/bit, as before).
     	 * McPAT's SerDes dynamic is removed (E008, the same silicon). The whole-run
     	 * L0 figure is printed beside it (INFORMATION). */
@@ -535,7 +535,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     		const double e_end = p_l0 * l0_s + p_l1 * l1_s;
     		const double e_bits = bytes_all * 8.0 * XML->sys.pcie.link_pj_per_bit * 1e-12;   // 0 at the far end
     		const double clk = (pciep.clockRate > 0) ? pciep.clockRate : 1.0;
-    		/* PIMID (user ruling 2026-10-28: link controller logic priced): THE CONTROLLER'S LOGIC, PUBLISHED.
+    		/* PIMID (link controller logic priced): THE CONTROLLER'S LOGIC, PUBLISHED.
     		 * McPAT's controller dynamic (Cadence ChipEstimate 65 nm per lane x the MEASURED duty,
     		 * a few microwatts on an offload run) gave way to the only public per-configuration
     		 * figure found: the PCI Express integrated block of the AMD/Xilinx UltraScale+ family
@@ -553,9 +553,9 @@ void PCIeController::computeEnergy(bool is_tdp)
     		 * A link whose lane rate and width are a row of this table takes the row; any other
     		 * (Gen5, CXL, NVLink, UALink) takes the least-squares line over the 20 rows,
     		 * I = 117.95 + 1.98762 x (lanes x GT/s) mA (R^2 0.953), an EXTRAPOLATION in
-    		 * bandwidth (DERIVED). Power at 16 nm = I x 0.85 V, scaled to this node by the
+    		 * bandwidth. Power at 16 nm = I x 0.85 V, scaled to this node by the
     		 * published-silicon logic-energy ratio (DeepScaleTool, ISCAS 2021, via
-    		 * pimid_logic_op_scale; DERIVED). */
+    		 * pimid_logic_op_scale). */
     		double ctrl_w = 0.0;
     		if (XML->sys.pcie.link_ctrl_published == 1) {
     			static const double kRate[4] = {2.5, 5.0, 8.0, 16.0};
@@ -591,7 +591,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     		          << " W per end (INFORMATION)" << std::endl;
     		return;
     	}
-    	/* PIMID 1.11.7 (#85): activity-driven link energy. When PIMID
+    	/* PIMID 1.11.7: activity-driven link energy. When PIMID
     	 * supplies measured crossing bytes and a per-link-type pJ/bit
     	 * (PCIe gen3/4/5, CXL, NVLink -- selected and cited PIMID-side),
     	 * runtime dynamic is computed FROM the transfer: total joules =
@@ -610,7 +610,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     		double units = (XML->sys.pcie.number_units > 0) ?
     		               (double)XML->sys.pcie.number_units : 1.0;
     		double denom = units * ((pciep.clockRate > 0) ? pciep.clockRate : 1.0);
-    		/* PIMID 1.11.41 (audit E20, user ruling): ADD, do not replace.
+    		/* PIMID 1.11.41: ADD, do not replace.
     		 *
     		 * This used to ASSIGN, discarding the perc_load result above it on
     		 * the rationale that pJ/bit is "an end-to-end link figure". The
@@ -626,7 +626,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     		 * array in E18. Assigning deleted the controller's dynamic power on
     		 * every co-sim run while leaving its area and leakage in place, so
     		 * the reported controller had area, leaked, and did no work. */
-    		/* PIMID 1.11.54 (audit E008): DO NOT PAY FOR THE SerDes TWICE.
+    		/* PIMID 1.11.54: DO NOT PAY FOR THE SerDes TWICE.
     		 *
     		 * The 1.11.41 note above is right that McPAT's ctrl term is the
     		 * digital protocol engine and our pJ/bit figures are PHY-side --
@@ -645,7 +645,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     		 * and LEAKAGE keep it: the SerDes is real silicon that really
     		 * leaks, and our pJ/bit figure prices switching only.
     		 *
-    		 * PIMID 1.11.60 (audit round 4, D009): "AREA AND LEAKAGE KEEP IT"
+    		 * PIMID 1.11.60: "AREA AND LEAKAGE KEEP IT"
     		 * WAS A CLAIM ABOUT THE ARGUMENT, NOT ABOUT THE CODE. Area kept
     		 * it on both arms, but leakage kept it only on the LOW-POWER arm
     		 * (pciep.type != 0): SerDer_gates was declared `= 0.` and assigned
@@ -675,7 +675,7 @@ void PCIeController::computeEnergy(bool is_tdp)
     			 * -- 34.7 mW/channel at gen5 and 217 mW at UALink, against a
     			 * controller term of a few mW. Stderr: the parent's stdout is
     			 * /dev/null in the forked child. */
-    			/* PIMID 1.11.57 (audit D009): PRINT WATTS UNDER THE " W".
+    			/* PIMID 1.11.57: PRINT WATTS UNDER THE " W".
     			 *
     			 * serdes_rt is ENERGY PER CLOCK CYCLE, not power: SerDer_dyn is
     			 * divided by pciep.clockRate at construction ("covert to energy
@@ -749,8 +749,8 @@ void PCIeController::set_pcie_param()
 
 	  /* PIMID 1.12.18: UCIe link class and the controller clock.
 	   *
-	   * CLOCK (user ruling 2026-10-23: "parameter as it is but default to
-	   * published number"). A given clockrate (> 0) is used as is. When none
+	   * CLOCK (parameter as it is but default to
+	   * published number). A given clockrate (> 0) is used as is. When none
 	   * is given (clockrate <= 0) and the link describes a D2D interface
 	   * (lanes, lane_rate_gts, fdi_width_bytes), the D2D adapter clock is the
 	   * rate at which the FDI moves one fdi_width_bytes word:
@@ -826,10 +826,9 @@ void PCIeController::set_pcie_param()
 			               " [UCIe 1.1 white paper, Das Sharma 2023]." << std::endl;
 			  exit(2);
 		  }
-		  /* PIMID 1.12.18 (user rulings 2026-10-23): TWO-NODE UCIe ENERGY ROWS.
+		  /* PIMID 1.12.18: TWO-NODE UCIe ENERGY ROWS.
 		   * The link is priced per bit as ANALOG PHY + DIGITAL INTERFACE, from
-		   * published measurements, for exactly two process nodes: 22 and 3 nm
-		   * (user: "just provide 2 techs ... 22 and 3"). Sources:
+		   * published measurements, for exactly two process nodes: 22 and 3 nm. Sources:
 		   *  [CDN26] D. T. Melek et al. (Cadence), "A 0.29 pJ/b 5.27 Tb/s/mm
 		   *          UCIe Advanced Package Link With 2.5-D CoWoS Interposer and a
 		   *          0.52 pJ/b 0.448 Tb/s/mm UCIe Standard Package Link With
@@ -861,11 +860,11 @@ void PCIeController::set_pcie_param()
 		   * Rows (pJ/bit):
 		   *   3 nm  advanced  analog 0.29 [CDN26]            digital 0.10 [MS26]
 		   *   3 nm  standard  analog 0.52 [CDN26]            digital 0.10 [MS26]
-		   *   22 nm standard  analog 1.2  [INT26]            digital DERIVED
-		   *   22 nm advanced  analog DERIVED 1.2 x 0.29/0.52 digital DERIVED
+		   *   22 nm standard  analog 1.2  [INT26]            digital derived
+		   *   22 nm advanced  analog derived 1.2 x 0.29/0.52 digital derived
 		   * digital, 3 nm = 0.33 - 0.23 = 0.10 [MS26]: a UCIe-LIKE digital
 		   *   interface, not the UCIe D2D adapter itself.
-		   * digital, 22 nm DERIVED (user ruling 2026-10-23: "use the most accurate
+		   * digital, 22 nm derived ("use the most accurate
 		   *   one, the other two as internal reference, calibrations, and guards")
 		   *   = 0.10 x E22/E7, the PUBLISHED DIGITAL CHAIN:
 		   *     E22/E32 = CACTI C_inv x Vdd^2, 22 nm / 32 nm tables (same device
@@ -880,7 +879,7 @@ void PCIeController::set_pcie_param()
 		   *   It is a LOWER BOUND: the published chain stops at 7 nm and 3 nm
 		   *   logic costs no more than 7 nm logic (the 7 -> 3 nm step is taken
 		   *   as 1). Two INTERNAL REFERENCES are printed beside it, never applied
-		   *   (user ruling 2026-10-24; the former TSMC-press reference was derived
+		   *   (the former TSMC-press reference was derived
 		   *   from the applied value itself, i.e. circular, and is removed):
 		   *     (a) the analog node ratio, 0.10 x 1.2 / 0.52 [INT26]/[CDN26]
 		   *         = 0.231 pJ/bit;
@@ -889,7 +888,7 @@ void PCIeController::set_pcie_param()
 		   *         step: 0.10 x 0.198 / 0.111 = 0.178 pJ/bit.
 		   *   GUARD: a WARNING (not fatal) when the applied value falls outside
 		   *   [min, max] of the two references.
-		   * analog, 22 nm advanced DERIVED: Cadence's same-node AP/SP ratio
+		   * analog, 22 nm advanced derived: Cadence's same-node AP/SP ratio
 		   *   applied to Intel's 22 nm SP (caveats printed at runtime).
 		   * NODE: link_node_nm (PIMID: power.link.process_node_nm); <= 0 = the
 		   *   node of the die the link sits on, i.e. this McPAT run's node. Any

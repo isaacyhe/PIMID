@@ -1,4 +1,4 @@
-# PIMID Benchmark Suite — Top-level Makefile
+# PIMID Benchmark Suite -- Top-level Makefile
 # Builds all 7 benchmark suites (41 benchmarks total, all self-contained).
 
 BENCHDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))

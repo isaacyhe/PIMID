@@ -1,4 +1,4 @@
-/* bfs_omp.c — Breadth-First Search on random graph (adjacency list via CSR)
+/* bfs_omp.c -- Breadth-First Search on random graph (adjacency list via CSR)
  * OpenMP parallel version. Parallel frontier expansion with atomic dist update. */
 #include <stdio.h>
 #include <stdlib.h>

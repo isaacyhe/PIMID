@@ -74,7 +74,7 @@ struct VerifiedValue {
  *
  * Stage 4: Bank-to-Peripheral Serialization
  *   - UNKNOWN! Not publicly documented.
- *   - Likely narrow (8-32 bits) to save routing area [ESTIMATED]
+ *   - Likely narrow (8-32 bits) to save routing area [estimated]
  *   - THIS IS THE CRITICAL BOTTLENECK FOR BANK-LEVEL PIM!
  *
  * Stage 5: Chip I/O Pins
@@ -119,7 +119,7 @@ struct DRAMDatapathStages {
  *
  * CONSERVATIVE: We use LOWER BOUNDS (worst case for PIM)
  */
-/* 1.11.57 (audit C003): the three STORED bandwidths are GONE from this struct.
+/* 1.11.57: the three STORED bandwidths are GONE from this struct.
  *
  * What was wrong: bank_effective_bw_GBs and bank_group_effective_bw_GBs were
  * frozen literals per technology while every other rung of the same ladder is
@@ -174,12 +174,12 @@ public:
 
         size_t subarray_size_kb;      // TYPICAL
 
-        /* 1.11.61 (ruling R1/R2): THE DENSITY FIELDS AND WHAT THEY COUNT.
+        /* 1.11.61: THE DENSITY FIELDS AND WHAT THEY COUNT.
          *
          * Both fields describe the part the Ramulator ORG PRESET the wrapper
          * names actually simulates -- not "a typical part", which is what they
          * used to say and why they described devices 4x-32x less dense than
-         * every run's own timing model (audit round 4, C005; the evidence is in
+         * every run's own timing model (the evidence is in
          * _1164audit/DENSITY_INVESTIGATION.md).
          *
          * bank_size_mb -- ONE BANK of the simulated preset, every family:
@@ -193,7 +193,7 @@ public:
          *   DDR3/DDR4/DDR5/LPDDR5/GDDR6: ONE DEVICE. Equal to the preset's
          *     device density (GDDR6 included -- GDDR6.cpp puts the channel
          *     level inside the density product, so 8 Gb is the whole two-
-         *     channel device). Ruling R1.
+         *     channel device). The density rule (1.11.61).
          *   HBM2/HBM3: ONE CORE DIE, which fronts TWO channels. NOT the
          *     preset's per-channel density (HBM2.cpp/HBM3.cpp call it "channel
          *     density") and not the stack. This is the unit the die-area path
@@ -210,13 +210,13 @@ public:
          *     the band is what a die-area claim should be quoted with) --
          *     and it is deliberately NOT the unit its
          *     partner chips_per_rank counts (that is the CHANNEL count, 8/16).
-         *     Ruling R2.
+         *     The core-die rule (1.11.61).
          * RamulatorWrapper::initialize() cross-checks both readings against the
          * preset and warns loudly on a mismatch; see the capacity cross-check
          * beside the 1.11.56 speed-bin check. */
         size_t bank_size_mb;          // VERIFIED: the named Ramulator org preset
         size_t chip_size_mb;          // VERIFIED: device (DDR family) / core die (HBM)
-        size_t rank_size_gb;          // DERIVED: chip_size_mb x chips_per_rank
+        size_t rank_size_gb;          // derived: chip_size_mb x chips_per_rank
     } organization;
 
     // Timing (JEDEC-verified)
@@ -280,14 +280,14 @@ public:
         } inner_bank;
 
         // Hierarchical (INFERRED from measurements)
-        /* 1.11.59 (audit C016): the first two are DERIVED from the JEDEC
+        /* 1.11.59: the first two are derived from the JEDEC
          * timings above -- set them with deriveHierarchicalAccessTimes(), not
          * by hand. Written as literals they had drifted 22-37% from their own
          * declared sums on HBM2 and HBM3. */
-        double subarray_access_ns;    // DERIVED: tRCD + tCAS
-        double bank_access_ns;        // DERIVED: tRP + tRCD + tCAS
-        double chip_access_ns;        // ESTIMATED
-        double rank_access_ns;        // ESTIMATED
+        double subarray_access_ns;    // derived: tRCD + tCAS
+        double bank_access_ns;        // derived: tRP + tRCD + tCAS
+        double chip_access_ns;        // estimated
+        double rank_access_ns;        // estimated
     } timing;
 
     // Energy (INFERRED from papers)
@@ -308,7 +308,7 @@ public:
     // Print verification status
     void printVerificationReport() const;
 
-    /* 1.11.59 (audit C016): the two HIERARCHICAL access times are DERIVED from
+    /* 1.11.59: the two HIERARCHICAL access times are derived from
      * the JEDEC timings above, not written down a second time beside them.
      *
      * The fields declare their own composition (subarray_access_ns = tRCD +
@@ -346,7 +346,7 @@ public:
      * authority that agreed by accident.
      *
      * chip_access_ns and rank_access_ns stay literals: they are marked
-     * ESTIMATED and no relation in this file states what they are composed of,
+     * estimated and no relation in this file states what they are composed of,
      * so there is nothing to derive them from and inventing one would be worse
      * than leaving them declared as estimates. */
     void deriveHierarchicalAccessTimes() {
@@ -355,7 +355,7 @@ public:
     }
 
     // Calculate effective bandwidths
-    /* 1.11.57 (audit C003): DERIVED, like every other rung of the ladder.
+    /* 1.11.57: derived, like every other rung of the ladder.
      * The bank tier moves the bank serialization width once per CORE clock --
      * it sits inside the array, before the DQ tiers where the data rate
      * applies. This is the same form as getSubarrayBandwidth() (GSA width x
@@ -365,7 +365,7 @@ public:
         return (datapath.bank_serialization_bits.value_bits / 8.0) *
                (timing.clock_freq_mhz / 1000.0);
     }
-    /* 1.11.57 (audit C003 + latent D020): the bank-group tier is the bank tier
+    /* 1.11.57 (+ latent D020): the bank-group tier is the bank tier
      * at the bank-group PORT width, which RamulatorWrapper::getBankGroupPortBits()
      * defines as the bank serialization width x 2 -- an UNSOURCED multiplier
      * that the accessor announces as such, since no specification fixes a
@@ -417,9 +417,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
 
     // Stage 4: Bank Serialization (CRITICAL UNKNOWN!)
     arch->datapath.bank_serialization_bits = {
-        8,  // ESTIMATED: likely 8-16 bits
+        8,  // estimated: likely 8-16 bits
         VerificationStatus::ESTIMATED,
-        "NOT DOCUMENTED! Estimated from bank performance limits",
+        "not specified by JEDEC; from the bank's performance limits",
         "CRITICAL BOTTLENECK: Banks likely serialize through narrow (8-16 bit) paths "
         "to chip peripheral to save routing area. This is why bank-level PIM is slow in DDR4!"
     };
@@ -450,7 +450,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
 
     // ===== BANDWIDTH LIMITS (INFERRED) =====
 
-    /* 1.11.57 (audit C003): the three literals here are gone; the bank and
+    /* 1.11.57: the three literals here are gone; the bank and
      * bank-group rungs are derived by getBankEffectiveBW() /
      * getBankGroupEffectiveBW() from this object's own serialization width and
      * core clock. DDR4 is the one technology whose literals AGREED with that
@@ -464,7 +464,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
 
     // ===== ORGANIZATION (VERIFIED) =====
 
-    /* 1.11.61 (ruling R1): THE DENSITY FOLLOWS THE PRESET.
+    /* 1.11.61: THE DENSITY FOLLOWS THE PRESET.
      *
      * The preset this tree simulates for DDR4 is DDR4_8Gb_x8
      * (ramulator_wrapper.cpp / main.cpp writeRamulatorConfigYaml), i.e.
@@ -491,7 +491,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
      *
      * The rate, the timings and every ladder width are untouched: density
      * reaches exactly two consumed numbers, pages_per_unit and the die area. */
-    arch->organization.subarrays_per_bank = 128;  // DERIVED: 64 MB bank / 512 KB subarray
+    arch->organization.subarrays_per_bank = 128;  // derived: 64 MB bank / 512 KB subarray
     arch->organization.banks_per_bank_group = 4;  // JEDEC
     arch->organization.bank_groups_per_chip = 4;  // JEDEC (x8/x4 configs)
     arch->organization.chips_per_rank = 8;  // x8 organization
@@ -499,13 +499,13 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
     arch->organization.subarray_size_kb = 512;  // Typical
     arch->organization.bank_size_mb = 64;   // preset DDR4_8Gb_x8: 8 Gb / 16 banks
     arch->organization.chip_size_mb = 1024; // preset DDR4_8Gb_x8: 8 Gb device
-    arch->organization.rank_size_gb = 8;    // DERIVED: 8 x 1024 MB
+    arch->organization.rank_size_gb = 8;    // derived: 8 x 1024 MB
 
     // ===== TIMING (JEDEC DDR4-2400 CL17) =====
 
     arch->timing.clock_freq_mhz = 1200;  // VERIFIED
     arch->timing.data_rate_mtps = 2400;  // VERIFIED
-    /* 1.11.63 (R6-5): THE ns TIMINGS FOLLOW THE PRESET'S BIN, and are written
+    /* 1.11.63: THE ns TIMINGS FOLLOW THE PRESET'S BIN, and are written
      * as the arithmetic that produces them so they cannot drift from it.
      *
      * DDR4_2400R is nCL/nRCD/nRP 16 and nRAS 39 at tCK = 1E6/(2400/2) = 833 ps
@@ -523,10 +523,10 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
      * DDR4's tRC rises 45.32 -> 45.815 ns (1.1%). The label "CL17" that used to
      * sit on the first line was wrong as well: DDR4_2400R is nCL 16; 2400U is
      * the CL17 bin and is not what this tree simulates. */
-    arch->timing.tRCD_ns = 16 * 0.833;  // DERIVED: DDR4_2400R nRCD 16 x tCK 833 ps
-    arch->timing.tCAS_ns = 16 * 0.833;  // DERIVED: nCL 16
-    arch->timing.tRP_ns = 16 * 0.833;   // DERIVED: nRP 16
-    arch->timing.tRAS_ns = 39 * 0.833;  // DERIVED: nRAS 39
+    arch->timing.tRCD_ns = 16 * 0.833;  // derived: DDR4_2400R nRCD 16 x tCK 833 ps
+    arch->timing.tCAS_ns = 16 * 0.833;  // derived: nCL 16
+    arch->timing.tRP_ns = 16 * 0.833;   // derived: nRP 16
+    arch->timing.tRAS_ns = 39 * 0.833;  // derived: nRAS 39
     arch->timing.tBurst_ns = 3.33;  // VERIFIED: 8 beats @ 2400 MT/s
 
     // Inner-bank datapath timing (INFERRED from CACTI and academic papers)
@@ -536,7 +536,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
     arch->timing.inner_bank.local_io_ns = 0.75;             // INFERRED from CACTI
     arch->timing.inner_bank.htree_horizontal_ns = 1.20;     // INFERRED from CACTI
     arch->timing.inner_bank.htree_vertical_ns = 1.20;       // INFERRED from CACTI
-    arch->timing.inner_bank.global_io_ns = 1.50;            // ESTIMATED
+    arch->timing.inner_bank.global_io_ns = 1.50;            // estimated
     arch->timing.inner_bank.bank_io_driver_ns = 0.60;       // INFERRED from CACTI
     arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
     arch->timing.inner_bank.source =
@@ -549,14 +549,14 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
     // Remaining for sense amp + row decoder: 13.32 - 6.65 = 6.67ns OK
     // This breakdown is consistent with tCAS = 13.32ns
 
-    /* 1.11.59 (audit C016): DERIVED -- see deriveHierarchicalAccessTimes().
+    /* 1.11.59: derived -- see deriveHierarchicalAccessTimes().
      * These were the literals 26.64 and 39.96, and DDR4 is one of the two
      * technologies whose literals still reproduced their own declared sums
      * (13.32 + 13.32, 3 x 13.32). Nothing moves here; the derivation is what
      * keeps it that way after the next timing edit. */
     arch->deriveHierarchicalAccessTimes();
-    arch->timing.chip_access_ns = 60.0;  // ESTIMATED
-    arch->timing.rank_access_ns = 80.0;  // ESTIMATED
+    arch->timing.chip_access_ns = 60.0;  // estimated
+    arch->timing.rank_access_ns = 80.0;  // estimated
 
     // ===== ENERGY (INFERRED FROM LITERATURE) =====
 
@@ -565,7 +565,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
     arch->energy.chip_energy_pJ = 5.0;  // INFERRED
     arch->energy.rank_energy_pJ = 10.0;  // INFERRED
     arch->energy.energy_source =
-        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "from the academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Approximate values, order-of-magnitude correct.";
 
     return arch;
@@ -575,7 +575,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR4_2400_Verified() {
 // DDR3-1600H (1.11.68): DDR3 gets its OWN architecture object.
 //
 // WHY THIS EXISTS. Until now RamulatorWrapper handed DDR3 the DDR4-2400
-// object from an unannounced else-branch (audit 1.11.57 B001). Every width,
+// object from an unannounced else-branch (.11.57 B001). Every width,
 // internal bandwidth and derived hierarchy figure reported for DDR3
 // described DDR4, so the 1.11.56 reconciliation check failed and, by the
 // B001/B002 rule, the per-level link ladder was NOT adopted: DDR3 ran on the
@@ -626,7 +626,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
     arch->datapath.bank_serialization_bits = {
         8,
         VerificationStatus::ESTIMATED,
-        "NOT DOCUMENTED by JEDEC for any DDR generation; carried at DDR4's estimate",
+        "not specified by JEDEC for any DDR generation; carried at DDR4's value",
         "CRITICAL BOTTLENECK and an admitted unknown: banks are assumed to "
         "serialise through a narrow path to the chip periphery. Held equal to "
         "DDR4's so the DDR3/DDR4 comparison does not turn on an invented "
@@ -664,27 +664,27 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
     // A 512-row subarray at a 1 KB page is 512 KB, so 64 MB / 512 KB = 128
     // subarrays, which is also the live count main.cpp derives as
     // bank_rows / subarray_height = 65536 / 512.
-    arch->organization.subarrays_per_bank = 128;   // DERIVED: 64 MB bank / 512 KB subarray
+    arch->organization.subarrays_per_bank = 128;   // derived: 64 MB bank / 512 KB subarray
     arch->organization.banks_per_bank_group = 8;   // JESD79-3D: 8 banks, no grouping
     arch->organization.bank_groups_per_chip = 1;   // DDR3 HAS NO BANK GROUPS
     arch->organization.chips_per_rank = 8;         // x8 organization
     arch->organization.ranks_per_channel = 2;      // Typical DIMM
-    arch->organization.subarray_size_kb = 512;     // DERIVED: 512 rows x 1 KB page (1.12.25)
-    arch->organization.bank_size_mb = 64;          // DERIVED: 4 Gb / 8 banks (1.12.25)
+    arch->organization.subarray_size_kb = 512;     // derived: 512 rows x 1 KB page (1.12.25)
+    arch->organization.bank_size_mb = 64;          // derived: 4 Gb / 8 banks (1.12.25)
     arch->organization.chip_size_mb = 512;         // preset DDR3_4Gb_x8: 4 Gb device (1.12.25)
-    arch->organization.rank_size_gb = 4;           // DERIVED: 8 x 512 MB (1.12.25)
+    arch->organization.rank_size_gb = 4;           // derived: 8 x 512 MB (1.12.25)
 
     // ===== TIMING (preset DDR3_1600K; tCK = 1E6 / (1600/2) = 1250 ps) =====
-    // 1.12.38 (user ruling 2026-10-25): the bin is CL11 (Micron MT41K -125,
+    // 1.12.38: the bin is CL11 (Micron MT41K -125,
     // JESD79-3E Table 65): nCL/nRCD/nRP 11, nRAS 28 (was DDR3_1600H, CL9).
     // Written as the arithmetic so applyPresetTimingsToArchitecture()'s stamp
     // is a check, not a change.
     arch->timing.clock_freq_mhz = 800;    // 1600 MT/s DDR -> 800 MHz CK
     arch->timing.data_rate_mtps = 1600;
-    arch->timing.tRCD_ns = 11 * 1.25;     // DERIVED: DDR3_1600K nRCD 11 x tCK 1.25 ns
-    arch->timing.tCAS_ns = 11 * 1.25;     // DERIVED: nCL 11
-    arch->timing.tRP_ns  = 11 * 1.25;     // DERIVED: nRP 11
-    arch->timing.tRAS_ns = 28 * 1.25;     // DERIVED: nRAS 28
+    arch->timing.tRCD_ns = 11 * 1.25;     // derived: DDR3_1600K nRCD 11 x tCK 1.25 ns
+    arch->timing.tCAS_ns = 11 * 1.25;     // derived: nCL 11
+    arch->timing.tRP_ns  = 11 * 1.25;     // derived: nRP 11
+    arch->timing.tRAS_ns = 28 * 1.25;     // derived: nRAS 28
     arch->timing.tBurst_ns = 5.0;         // VERIFIED: 8 beats @ 1600 MT/s
 
     // Inner-bank stage delays are process-level, not part-level: they come
@@ -708,9 +708,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
 
     arch->deriveHierarchicalAccessTimes();   // subarray = tRCD+tCAS; bank = +tRP
 
-    /* 1.11.68: THESE TWO ARE DERIVED, NOT ESTIMATED.
+    /* 1.11.68: THESE TWO ARE derived, NOT estimated.
      *
-     * DDR4's object carries 60.0 and 80.0 ns tagged ESTIMATED, and the wrapper
+     * DDR4's object carries 60.0 and 80.0 ns tagged estimated, and the wrapper
      * already ignores the first of them: getChipAccessLatency() returns
      * getBankAccessLatency() + getTBurst(). Only rank_access_ns is read raw
      * (ramulator_wrapper.cpp getRankAccessLatency, dram_model.cpp). Rather
@@ -722,8 +722,8 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
      * uniformly. If a sourced rank-traversal term ever arrives, it is added
      * here and the change is visible.
      * bank_access_ns = tRP + tRCD + tCAS = 3 x 11.25 = 33.75; + tBurst 5.0. */
-    arch->timing.chip_access_ns = 33.75 + 5.0;   // DERIVED: bank access + one burst
-    arch->timing.rank_access_ns = 33.75 + 5.0;   // DERIVED: no unsourced rank penalty
+    arch->timing.chip_access_ns = 33.75 + 5.0;   // derived: bank access + one burst
+    arch->timing.rank_access_ns = 33.75 + 5.0;   // derived: no unsourced rank penalty
 
     // ===== ENERGY (order-of-magnitude, same basis as DDR4) =====
     // NOTE: these are NOT what prices a PIMID run. Array and interface energy
@@ -735,7 +735,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR3_1600_Verified() {
     arch->energy.chip_energy_pJ = 5.0;
     arch->energy.rank_energy_pJ = 10.0;
     arch->energy.energy_source =
-        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "from the academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Order-of-magnitude only; the priced energy path uses the IDD rows.";
 
     return arch;
@@ -799,7 +799,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
     arch->datapath.bank_serialization_bits = {
         8,
         VerificationStatus::ESTIMATED,
-        "NOT DOCUMENTED by JEDEC for any LPDDR generation; carried at the DDR estimate",
+        "not specified by JEDEC for any LPDDR generation; carried at the DDR value",
         "CRITICAL BOTTLENECK and an admitted unknown. Held equal to DDR3/DDR4's "
         "so a cross-technology comparison does not turn on an invented "
         + std::string(pimid::debugChecks() ? "difference between two unsourced numbers." : "difference between two estimates.")
@@ -838,26 +838,26 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
     // 16 Gb / 16 banks = 128 MB per bank; 65536 rows x 2 KB = 128 MB confirms it.
     // A 512-row subarray at a 2 KB page is 1 MB, so 128 subarrays per bank,
     // which is also main.cpp's live count (65536 rows / 512).
-    arch->organization.subarrays_per_bank = 128;  // DERIVED: 128 MB bank / 1 MB subarray
+    arch->organization.subarrays_per_bank = 128;  // derived: 128 MB bank / 1 MB subarray
     arch->organization.banks_per_bank_group = 4;  // JESD209-5C Table 6
     arch->organization.bank_groups_per_chip = 4;  // JESD209-5C Table 6 (BG mode)
     arch->organization.chips_per_rank = 1;        // one x16 die per channel
     arch->organization.ranks_per_channel = 1;     // LPDDR5 is point-to-point
-    arch->organization.subarray_size_kb = 1024;   // DERIVED: 512 rows x 2 KB page
-    arch->organization.bank_size_mb = 128;        // DERIVED: 16 Gb / 16 banks (1.12.44)
+    arch->organization.subarray_size_kb = 1024;   // derived: 512 rows x 2 KB page
+    arch->organization.bank_size_mb = 128;        // derived: 16 Gb / 16 banks (1.12.44)
     arch->organization.chip_size_mb = 2048;       // preset LPDDR5_16Gb_x16: 16 Gb die (1.12.44)
-    arch->organization.rank_size_gb = 2;          // DERIVED: 1 die x 2048 MB (1.12.44)
+    arch->organization.rank_size_gb = 2;          // derived: 1 die x 2048 MB (1.12.44)
 
     // ===== TIMING (preset LPDDR5_6400; tCK = 8E6 / 6400 = 1250 ps) =====
     // LPDDR5 divides 8E6 rather than the DDR families' 2E6: WCK runs at 4x CK
     // and the bus is DDR on WCK. The bin is nRCD 15, nCL 17, nRP 15, nRAS 34.
     arch->timing.clock_freq_mhz = 800;    // 1000 / 1.25 ns CK
     arch->timing.data_rate_mtps = 6400;
-    arch->timing.tRCD_ns = 15 * 1.25;     // DERIVED: nRCD 15 x tCK 1.25 ns
-    arch->timing.tCAS_ns = 17 * 1.25;     // DERIVED: nCL 17
-    arch->timing.tRP_ns  = 15 * 1.25;     // DERIVED: nRP 15
-    arch->timing.tRAS_ns = 34 * 1.25;     // DERIVED: nRAS 34
-    arch->timing.tBurst_ns = 2.5;         // DERIVED: nBL 2 x tCK
+    arch->timing.tRCD_ns = 15 * 1.25;     // derived: nRCD 15 x tCK 1.25 ns
+    arch->timing.tCAS_ns = 17 * 1.25;     // derived: nCL 17
+    arch->timing.tRP_ns  = 15 * 1.25;     // derived: nRP 15
+    arch->timing.tRAS_ns = 34 * 1.25;     // derived: nRAS 34
+    arch->timing.tBurst_ns = 2.5;         // derived: nBL 2 x tCK
 
     // Process-level stage delays, held at the DDR basis for the same reason
     // given in the DDR3 block: a cross-technology difference should come from
@@ -879,7 +879,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
 
     arch->deriveHierarchicalAccessTimes();
 
-    // DERIVED, per the 1.11.68 note in the DDR3 block: bank access + one
+    // derived, per the 1.11.68 note in the DDR3 block: bank access + one
     // burst, with no unsourced rank hop added on top.
     // bank_access_ns = tRP + tRCD + tCAS = 18.75 + 18.75 + 21.25 = 58.75.
     arch->timing.chip_access_ns = 58.75 + 2.5;
@@ -891,7 +891,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
     arch->energy.chip_energy_pJ = 5.0;
     arch->energy.rank_energy_pJ = 10.0;
     arch->energy.energy_source =
-        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "from the academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Order-of-magnitude only; the priced energy path uses the IDD rows.";
 
     return arch;
@@ -900,7 +900,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
 //=============================================================================
 // GDDR6-14000 (1.11.70): GDDR6 gets its OWN architecture object.
 //
-// Last of the three that were reading DDR4's object (audit 1.11.57 B001).
+// Last of the three that were reading DDR4's object (.11.57 B001).
 //
 // PROVENANCE. JEDEC JESD250D section 4.1 Table 19 ("Addressing Scheme"), the
 // 8 Gb x16 column: 2 channels per device, 4 Gb per channel, array pre-fetch
@@ -914,7 +914,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createLPDDR5_6400_Verified() {
 //
 // TWO CHANNELS PER DEVICE is the fact that reconciles this object. GDDR6's
 // channel is 16 bits (JESD250D 2.2: "two 16 bit wide fully independent
-// channels", the basis of ruling R3), and the aggregate the rate table
+// channels", the basis of), and the aggregate the rate table
 // derives is 14000 MT/s x 16 bits / 8 x 2 channels = 56 GB/s. Reading DDR4's
 // 64-bit single-channel object gave 38.4 GB/s against that 56, which is the
 // mismatch that refused GDDR6's ladder.
@@ -953,7 +953,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
     arch->datapath.bank_serialization_bits = {
         8,
         VerificationStatus::ESTIMATED,
-        "NOT DOCUMENTED by JEDEC; carried at the DDR/LPDDR estimate",
+        "not specified by JEDEC; carried at the DDR/LPDDR value",
         "CRITICAL BOTTLENECK and an admitted unknown, held equal across the "
         "lineup so comparisons do not turn on an invented difference."
     };
@@ -973,7 +973,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
         16,
         VerificationStatus::VERIFIED,
         "JEDEC JESD250D 2.2 p.3: 'two 16 bit wide fully independent channels'; "
-        "Table 80 p.177: 'DQ[15:0] ... 16-bit data bus' (ruling R3)",
+        "Table 80 p.177: 'DQ[15:0] ... 16-bit data bus'",
         "THE field that reconciles: 16 bits x 14000 MT/s / 8 x 2 channels = 56 GB/s"
     };
 
@@ -989,25 +989,25 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
     // 4 Gb per channel / 16 banks = 32 MB per bank; 16384 rows x 2 KB = 32 MB
     // confirms it. A 512-row subarray at a 2 KB page is 1 MB -> 32 subarrays,
     // which is main.cpp's live count (16384 rows / 512).
-    arch->organization.subarrays_per_bank = 32;   // DERIVED: 32 MB bank / 1 MB subarray
+    arch->organization.subarrays_per_bank = 32;   // derived: 32 MB bank / 1 MB subarray
     arch->organization.banks_per_bank_group = 4;  // preset Ba 4; JEDEC BA[3:0] = 16 per channel
     arch->organization.bank_groups_per_chip = 4;  // preset Bg 4
     arch->organization.chips_per_rank = 1;        // point-to-point
     arch->organization.ranks_per_channel = 1;     // GDDR6 has no rank dimension
-    arch->organization.subarray_size_kb = 1024;   // DERIVED: 512 rows x 2 KB page
-    arch->organization.bank_size_mb = 32;         // DERIVED: 4 Gb channel / 16 banks
+    arch->organization.subarray_size_kb = 1024;   // derived: 512 rows x 2 KB page
+    arch->organization.bank_size_mb = 32;         // derived: 4 Gb channel / 16 banks
     arch->organization.chip_size_mb = 1024;       // the 8 Gb DEVICE, spanning 2 channels
-    arch->organization.rank_size_gb = 1;          // DERIVED: one 8 Gb device
+    arch->organization.rank_size_gb = 1;          // derived: one 8 Gb device
 
     // ===== TIMING (preset GDDR6_2000_1350mV_double; tCK = 8E6 / 14000 = 571 ps) =====
     // nRCD 27, nCL 24, nRP 27, nRAS 53, nBL 2 (1.12.43: Samsung K4Z80325BC Table 92; was 26/26).
-    arch->timing.clock_freq_mhz = 1000.0 / 0.571;  // DERIVED: 1000 / tCK_ns
+    arch->timing.clock_freq_mhz = 1000.0 / 0.571;  // derived: 1000 / tCK_ns
     arch->timing.data_rate_mtps = 14000;
-    arch->timing.tRCD_ns = 27 * 0.571;   // DERIVED: nRCD 27 x tCK 571 ps
-    arch->timing.tCAS_ns = 24 * 0.571;   // DERIVED: nCL 24
-    arch->timing.tRP_ns  = 27 * 0.571;   // DERIVED: nRP 27
-    arch->timing.tRAS_ns = 53 * 0.571;   // DERIVED: nRAS 53
-    arch->timing.tBurst_ns = 2 * 0.571;  // DERIVED: nBL 2 x tCK
+    arch->timing.tRCD_ns = 27 * 0.571;   // derived: nRCD 27 x tCK 571 ps
+    arch->timing.tCAS_ns = 24 * 0.571;   // derived: nCL 24
+    arch->timing.tRP_ns  = 27 * 0.571;   // derived: nRP 27
+    arch->timing.tRAS_ns = 53 * 0.571;   // derived: nRAS 53
+    arch->timing.tBurst_ns = 2 * 0.571;  // derived: nBL 2 x tCK
 
     // Process-level stage delays, held at the lineup's common basis.
     arch->timing.inner_bank.column_decoder_ns = 0.35;
@@ -1027,7 +1027,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
 
     arch->deriveHierarchicalAccessTimes();
 
-    // DERIVED (see the 1.11.68 note in the DDR3 block): bank access + one
+    // derived (see the 1.11.68 note in the DDR3 block): bank access + one
     // burst, no unsourced rank hop.
     // bank_access_ns = tRP + tRCD + tCAS = (26 + 26 + 24) x 0.571 = 43.396.
     arch->timing.chip_access_ns = 43.396 + 1.142;
@@ -1039,7 +1039,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createGDDR6_14000_Verified() {
     arch->energy.chip_energy_pJ = 5.0;
     arch->energy.rank_energy_pJ = 10.0;
     arch->energy.energy_source =
-        "INFERRED from academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
+        "from the academic literature: NVIDIA-HPCA17, DAS-MICRO15. "
         "Order-of-magnitude only; the priced energy path uses the IDD rows.";
 
     return arch;
@@ -1066,7 +1066,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     arch->datapath.gsa_datapath_bits = {
         512,  // Wider than DDR4
         VerificationStatus::INFERRED,
-        "Estimated from HBM2 architecture papers",
+        "from HBM2 architecture papers",
         "Wider column I/O than DDR4"
     };
 
@@ -1082,9 +1082,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     arch->datapath.bank_serialization_bits = {
         64,  // INFERRED: wider due to TSV
         VerificationStatus::INFERRED,
-        "ESTIMATED from TSV architecture: Through-Silicon Vias enable wider paths",
+        "from the TSV architecture: through-silicon vias allow wider paths",
         "TSVs provide vertical connections with less routing constraint than DDR. "
-        "ESTIMATED 64-bit based on 8x better bank-level BW vs DDR4. "
+        "64-bit, from an 8x higher bank-level bandwidth than DDR4's. "
         "THIS IS WHY HBM ENABLES BANK-LEVEL PIM!"
     };
 
@@ -1104,7 +1104,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
         "HBM uses 'channel' terminology instead of 'rank'"
     };
 
-    /* 1.11.57 (audit C007): ONE CHANNEL, like every other family's entry in
+    /* 1.11.57: ONE CHANNEL, like every other family's entry in
      * this field. This used to hold 1024 -- the whole stack, all 8 channels --
      * while DDR's entry holds one 64-bit channel, so the field meant two
      * different things depending on the technology reading it. That was
@@ -1124,7 +1124,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
 
     // ===== BANDWIDTH LIMITS (INFERRED) =====
 
-    /* 1.11.57 (audit C003): the literals here read "64 bits / 8 x 1 GHz" and
+    /* 1.11.57: the literals here read "64 bits / 8 x 1 GHz" and
      * this part's core clock is not 1 GHz -- it was 1.0 GHz when the line was
      * written and the object has been re-binned since. Derived now, from the
      * serialization width and clock the object itself carries. */
@@ -1163,13 +1163,13 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     arch->organization.chips_per_rank = 8;  // 8 channels (not traditional "chips")
     arch->organization.ranks_per_channel = 1;  // Single stack
     arch->organization.subarray_size_kb = 1024;  // Larger than DDR4
-    /* 1.11.63 (R6-2): 32 MB, THE PRESET'S BANK -- not 4 MB, which described no
+    /* 1.11.63: 32 MB, THE PRESET'S BANK -- not 4 MB, which described no
      * part in this tree.
      *
-     * Ruling R1 (1.11.61) re-based the DDR family's bank_size_mb on the preset
-     * and left HBM's 4 MB untouched, because R2 was about chip_size_mb and
+     * The density rule (1.11.61) re-based the DDR family's bank_size_mb on the preset
+     * and left HBM's 4 MB untouched, because the core-die rule was about chip_size_mb and
      * bank_size_mb rode along in the same exclusion. HBM2_4Gb spreads 4 Gb over
-     * 16 banks per channel, so one bank is 512/16 = 32 MB. R6 removes the
+     * 16 banks per channel, so one bank is 512/16 = 32 MB. The preset-authority rule (1.11.63) removes the
      * exclusion: bank_size_mb means one bank of the simulated preset for EVERY
      * family, which is what the struct field says it means.
      *
@@ -1188,7 +1188,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
      * same value at runtime from the preset, so this literal remains a check
      * on that derivation rather than a second authority. */
     arch->organization.bank_size_mb = 16;  // preset HBM2_4Gb: 4 Gb/channel / 32 banks
-    /* 1.11.61 (ruling R2): HBM KEEPS CORE-DIE SEMANTICS, and says so.
+    /* 1.11.61: HBM KEEPS CORE-DIE SEMANTICS, and says so.
      *
      * 1024 MB is ONE CORE DIE, not one channel and not the stack. The preset
      * this tree simulates is HBM2_4Gb (HBM2.cpp:27), whose 4 Gb is a
@@ -1200,7 +1200,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
      * "the chip size is 12x8mm2" -- the same paper vendorDieDensity()'s HBM2
      * row cites, which is why HBM2 reports 96.00 mm^2/die exactly.
      *
-     * So HBM is NOT re-based on the preset the way ruling R1 re-bases the DDR
+     * So HBM is NOT re-based on the preset the way re-bases the DDR
      * family: naively following the per-channel density would halve this to
      * 512 MB and break the one HBM area figure that is currently right.
      * The reading is CHECKED rather than trusted -- see the capacity
@@ -1212,7 +1212,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
      * therefore count different units on purpose; see the note at the struct
      * field.
      *
-     * 1.11.63 (R6-1): the same VALUE, now DERIVED rather than transcribed.
+     * 1.11.63: the same VALUE, now derived rather than transcribed.
      * applyPresetDensityToArchitecture() computes it as the preset's
      * per-channel density x the channels one core die fronts, and HBM2
      * reproduces this literal exactly -- which is the check that the unit is
@@ -1221,11 +1221,11 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
      * capacity_ reports. It is a dead field (no getter, no reader) and is
      * corrected only so the object does not hand a reader a fourth capacity. */
     arch->organization.chip_size_mb = 1024;  // ONE CORE DIE (2 channels x 4 Gb)
-    arch->organization.rank_size_gb = 4;     // DERIVED: 8 channels x 512 MB stack
+    arch->organization.rank_size_gb = 4;     // derived: 8 channels x 512 MB stack
 
     // ===== TIMING (JEDEC HBM2; rate = the simulated HBM2_2.4Gbps bin) =====
 
-    /* 1.11.56 (audit D002's defect, found by the B042 reconciliation check):
+    /* 1.11.56 ('s defect, found by the B042 reconciliation check):
      * NAME THE BIN THIS TREE SIMULATES. The Ramulator preset selected for
      * HBM2 is HBM2_2.4Gbps (ramulator_wrapper.cpp), so the cycle counts this
      * simulator produces are a 2.4 GT/s part -- while this object said 2.0
@@ -1252,14 +1252,14 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     arch->timing.inner_bank.bank_io_driver_ns = 0.35;       // TSV-optimized
     arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
     arch->timing.inner_bank.source =
-        "INFERRED from CACTI with TSV technology assumptions, "
+        "from CACTI with TSV technology assumptions, "
         "HBM architecture papers (shorter wires, 3D stacking, wider internal paths)";
 
     // Total inner-bank delay = 3.05ns (~2.2x faster than DDR4!)
     // Remaining for sense amp + row decoder: 12.5 - 3.05 = 9.45ns OK
     // TSVs enable much shorter H-tree paths and wider datapaths
 
-    /* 1.11.59 (audit C016): DERIVED -- see deriveHierarchicalAccessTimes().
+    /* 1.11.59: derived -- see deriveHierarchicalAccessTimes().
      * WAS 25.0 and 37.5; IS 32.0 (16.0 + 16.0) and 44.5 (12.5 + 16.0 + 16.0),
      * 22% and 16% higher. WHY they drifted: 25.0 = 12.5 + 12.5 and 37.5 = 3 x
      * 12.5 -- this object's arithmetic before release 1.1.1 raised tRCD and
@@ -1277,7 +1277,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM2_Verified() {
     arch->energy.chip_energy_pJ = 2.0;  // TSV is efficient
     arch->energy.rank_energy_pJ = 3.0;
     arch->energy.energy_source =
-        "INFERRED from HBM architecture papers. "
+        "from HBM architecture papers. "
         "TSV reduces energy vs long wire routing in DDR4.";
 
     return arch;
@@ -1304,7 +1304,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->datapath.gsa_datapath_bits = {
         256,  // Similar to DDR4
         VerificationStatus::INFERRED,
-        "Estimated similar to DDR4 architecture",
+        "taken equal to DDR4's architecture",
         "Column I/O width maintained"
     };
 
@@ -1320,7 +1320,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->datapath.bank_serialization_bits = {
         8,  // Estimated, same as DDR4
         VerificationStatus::ESTIMATED,
-        "NOT DOCUMENTED! Estimated similar to DDR4",
+        "not specified by JEDEC; taken equal to DDR4's",
         "Despite higher speed, internal paths likely remain narrow"
     };
 
@@ -1350,7 +1350,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
 
     // ===== BANDWIDTH LIMITS (INFERRED) =====
 
-    /* 1.11.57 (audit C003): the retired literal said "DDR5-4800: 8 bits x
+    /* 1.11.57: the retired literal said "DDR5-4800: 8 bits x
      * 2.4 GHz" -- a bin this tree does not simulate (1.11.56 moved this object
      * to the DDR5_3200AN preset) and a clock this object does not carry
      * (clock_freq_mhz is 1600). Derived now. */
@@ -1362,7 +1362,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
 
     // ===== ORGANIZATION (VERIFIED) =====
 
-    /* 1.11.61 (ruling R1): THE DENSITY FOLLOWS THE PRESET.
+    /* 1.11.61: THE DENSITY FOLLOWS THE PRESET.
      *
      * DDR5's preset is DDR5_8Gb_x8, {8<<10, 8, {1, 1, 8, 2, 1<<16, 1<<10}} at
      * DDR5.cpp:16 -- an 8 Gb device, 65536 rows x 1024 columns x 8 bits =
@@ -1371,7 +1371,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * is "Micron D1a, 8 Gb / 25.41 mm^2 (TechInsights)". At the preset's
      * density it lands at 25.40 mm^2, on that measured part.
      *
-     * 1.11.66 (round 5, A2/F2): THE RESIDUAL IS RESOLVED, AND THE PRESET WAS
+     * 1.11.66: THE RESIDUAL IS RESOLVED, AND THE PRESET WAS
      * RIGHT. The 1.11.61 note that stood here claimed "a JEDEC DDR5 x8 device
      * really has 32 banks" and kept this object at 8 BG x 4 Ba against the
      * preset's 8 BG x 2. JESD79-5D (published Nov 2025), Table 4
@@ -1389,7 +1389,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * 1024 MB reproduces chip_size_mb -- the two authorities agree. The
      * blast radius the old note named (CACTI area query, effectiveDramBanks)
      * is exactly what moves, and moves to the part. */
-    arch->organization.subarrays_per_bank = 128;  // DERIVED: 64 MB bank / 512 KB subarray
+    arch->organization.subarrays_per_bank = 128;  // derived: 64 MB bank / 512 KB subarray
     arch->organization.banks_per_bank_group = 2;  // JESD79-5D Tbl 4 p.7: 8 Gb x8 = BA0 -> 2 per BG
     arch->organization.bank_groups_per_chip = 8;  // JESD79-5D Tbl 4 p.7: BG0~BG2 -> 8 groups
     /* 1.11.72: the two literals above describe the 8 Gb part and are the
@@ -1404,11 +1404,11 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->organization.subarray_size_kb = 512;  // Typical
     arch->organization.bank_size_mb = 64;   // preset DDR5_8Gb_x8: 8 Gb / 16 banks
     arch->organization.chip_size_mb = 1024; // preset DDR5_8Gb_x8: 8 Gb device
-    arch->organization.rank_size_gb = 8;    // DERIVED: 8 x 1024 MB
+    arch->organization.rank_size_gb = 8;    // derived: 8 x 1024 MB
 
     // ===== TIMING (JEDEC DDR5; rate = the simulated DDR5_3200AN bin) =====
 
-    /* 1.11.56 (audit D002's defect, found by the B042 reconciliation check):
+    /* 1.11.56 ('s defect, found by the B042 reconciliation check):
      * the Ramulator preset selected for DDR5 is DDR5_3200AN, so this tree
      * simulates a 3200 MT/s part. This object said 4800 -- a 1.5x gap
      * between the bin whose cycles are counted and the bin whose bandwidth
@@ -1423,7 +1423,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * originally quoted at. The VALUE is unchanged and within JEDEC's range
      * across bins -- only the label was wrong.
      *
-     * 1.11.63 (R6-5): AND THAT WAS THE DEFECT, NOT THE LABEL. "Absolute ns" is
+     * 1.11.63: AND THAT WAS THE DEFECT, NOT THE LABEL. "Absolute ns" is
      * true of a JEDEC timing and says nothing about WHICH BIN's absolute ns
      * these are: 16.67 is the 4800 bin's, and the preset this tree counts
      * cycles against is DDR5_3200AN -- nCL/nRCD/nRP 24, nRAS 52, at
@@ -1438,10 +1438,10 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
      * (JEDEC_rounding: 52 whole cycles). tRC = tRAS + tRP falls 48.67 ->
      * 47.50 ns, so DDR5's array activate energy falls with it, and
      * bank_access_ns falls 50.01 -> 45.00. */
-    arch->timing.tRCD_ns = 24 * 0.625;  // DERIVED: DDR5_3200AN nRCD 24 x tCK 625 ps
-    arch->timing.tCAS_ns = 24 * 0.625;  // DERIVED: nCL 24
-    arch->timing.tRP_ns = 24 * 0.625;   // DERIVED: nRP 24
-    arch->timing.tRAS_ns = 52 * 0.625;  // DERIVED: nRAS 52
+    arch->timing.tRCD_ns = 24 * 0.625;  // derived: DDR5_3200AN nRCD 24 x tCK 625 ps
+    arch->timing.tCAS_ns = 24 * 0.625;  // derived: nCL 24
+    arch->timing.tRP_ns = 24 * 0.625;   // derived: nRP 24
+    arch->timing.tRAS_ns = 52 * 0.625;  // derived: nRAS 52
     arch->timing.tBurst_ns = 16.0 * 1000.0 / 3200.0;  // 16 beats @ 3200 MT/s = 5.0 ns
 
     // Inner-bank datapath timing (INFERRED - scaled from DDR4 with better process)
@@ -1455,15 +1455,15 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->timing.inner_bank.bank_io_driver_ns = 0.55;
     arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
     arch->timing.inner_bank.source =
-        "INFERRED from DDR4 CACTI model with process scaling for DDR5 (7nm-10nm node)";
+        "from the DDR4 CACTI model with process scaling for DDR5 (7nm-10nm node)";
 
-    /* 1.11.59 (audit C016): DERIVED -- see deriveHierarchicalAccessTimes().
+    /* 1.11.59: derived -- see deriveHierarchicalAccessTimes().
      * These were the literals 33.34 and 50.01, and DDR5 is the other
      * technology whose literals still reproduced their own declared sums
      * (16.67 + 16.67, 3 x 16.67). Nothing moves here. */
     arch->deriveHierarchicalAccessTimes();
-    arch->timing.chip_access_ns = 70.0;  // ESTIMATED
-    arch->timing.rank_access_ns = 90.0;  // ESTIMATED
+    arch->timing.chip_access_ns = 70.0;  // estimated
+    arch->timing.rank_access_ns = 90.0;  // estimated
 
     // ===== ENERGY (INFERRED) =====
 
@@ -1472,7 +1472,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createDDR5_4800_Verified() {
     arch->energy.chip_energy_pJ = 4.0;
     arch->energy.rank_energy_pJ = 8.0;
     arch->energy.energy_source =
-        "INFERRED from DDR4 with voltage scaling (1.1V vs 1.2V = ~15% lower energy)";
+        "from DDR4 with voltage scaling (1.1V vs 1.2V = ~15% lower energy)";
 
     return arch;
 }
@@ -1498,7 +1498,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->datapath.gsa_datapath_bits = {
         512,  // Similar to HBM2
         VerificationStatus::INFERRED,
-        "Estimated from HBM3 architecture papers",
+        "from HBM3 architecture papers",
         "Wider column I/O for high throughput"
     };
 
@@ -1514,7 +1514,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->datapath.bank_serialization_bits = {
         128,  // INFERRED: wider TSV for higher bandwidth
         VerificationStatus::INFERRED,
-        "ESTIMATED from 2x HBM2 bandwidth with improved TSV technology",
+        "twice HBM2's, with the improved TSV technology",
         "TSV improvements enable wider internal paths"
     };
 
@@ -1534,7 +1534,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
         "HBM3 uses pseudo-channels vs full channels"
     };
 
-    /* 1.11.57 (audit C007): ONE channel, not the stack -- see the HBM2 note.
+    /* 1.11.57: ONE channel, not the stack -- see the HBM2 note.
      * At 16 channels this was the 16x case: the ladder's L5 rung was 1024 bits
      * / 819.2 GB/s where the rung under it is 64 bits / 51.2 GB/s, and the
      * system root multiplied that stack figure by 16 again. */
@@ -1547,7 +1547,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
 
     // ===== BANDWIDTH LIMITS (INFERRED) =====
 
-    /* 1.11.57 (audit C003): this is the row that cost the most. "16.0 GB/s,
+    /* 1.11.57: this is the row that cost the most. "16.0 GB/s,
      * 2x HBM2" against a 128-bit bank path implies a 1.0 GHz array clock; this
      * object's core clock is 3.2 GHz, so the ladder clocked HBM3's L1 and L2
      * at a third of the object's own array speed and charged every crossing on
@@ -1562,7 +1562,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     // ===== ORGANIZATION (VERIFIED) =====
 
     arch->organization.subarrays_per_bank = 4;
-    /* 1.11.66 (round 5, B3): 8 bank groups per CHANNEL, not 4 -- the same
+    /* 1.11.66: 8 bank groups per CHANNEL, not 4 -- the same
      * per-pseudo-channel-vs-per-channel slip 1.11.64 fixed on HBM2. JESD238B
      * Table 4 gives BA[3:0] = 16 banks per pseudo-channel in 4 groups; a
      * channel is two pseudo-channels, so 32 banks in 8 groups per channel --
@@ -1576,12 +1576,12 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->organization.chips_per_rank = 16;  // 16 pseudo-channels
     arch->organization.ranks_per_channel = 1;  // Single stack
     arch->organization.subarray_size_kb = 1024;  // Same as HBM2
-    /* 1.11.63 (R6-2): 16 MB, the preset's bank -- HBM3_4Gb spreads 4 Gb per
+    /* 1.11.63: 16 MB, the preset's bank -- HBM3_4Gb spreads 4 Gb per
      * channel over 2 pseudo-channels x 4 BG x 4 banks = 32 banks, so
      * 512/32 = 16 MB. See the HBM2 factory for the full note; HBM3's
      * pages_per_unit moves 4x with this. */
     arch->organization.bank_size_mb = 16;  // 1.12.41: preset HBM3_8Gb_8H: 8 Gb/channel / 64 banks (was the HBM3_4Gb note)
-    /* 1.11.61 (ruling R2) -> 1.11.63 (R6-1): RECONCILED. The three-authority
+    /* 1.11.61 -> 1.11.63: RECONCILED. The three-authority
      * disagreement this comment used to record is resolved, and this note
      * records the resolution rather than the disagreement.
      *
@@ -1590,18 +1590,18 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
      *   this object   8 core dies x 2048 MB = 16 GiB
      *   the preset    16 channels x 4 Gb    =  8 GiB  (HBM3_4Gb, HBM3.cpp)
      *   the wrapper   capacity_             =  4 GiB  (ramulator_wrapper.cpp)
-     * Ruling R2 deliberately kept 2048 and made the capacity cross-check FIRE
+     * The core-die rule deliberately kept 2048 and made the capacity cross-check FIRE
      * on every HBM3 run so the disagreement could not be missed, leaving the
-     * choice of which authority moves to a ruling of its own. Unlike HBM2
+     * choice of which authority moves to a rule of its own. Unlike HBM2
      * there is no measured anchor here that could arbitrate:
      * vendorDieDensity()'s HBM3 row is a density (0.16 Gb/mm^2, SemiAnalysis),
      * not a die capacity.
      *
-     * THE RULING (R6, user, 2026-08-24): PIMID relies on the Ramulator models,
+     * THE PRINCIPLE: PIMID relies on the Ramulator models,
      * those models are calibrated to JEDEC and the vendor data held locally, and
      * PIMID ITSELF PROVIDES NO NUMBERS -- so a PIMID-side literal that
-     * paraphrases a preset must be DERIVED from it. The wrapper literal has no
-     * standing; the object follows the preset. On the core-die unit R2 fixed,
+     * paraphrases a preset must be derived from it. The wrapper literal has no
+     * standing; the object follows the preset. On the core-die unit of 1.11.61,
      * the preset implies 2 channels x 4 Gb = 8 Gb = 1024 MB per core die, and
      * 1024 x 8 dies = 8 GiB per stack -- the preset's stack exactly.
      *
@@ -1614,12 +1614,12 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
      *
      * The value is not written here as a literal either: applyPresetDensity-
      * ToArchitecture() derives it, and this line is the check. */
-    arch->organization.chip_size_mb = 1024;  // DERIVED: ONE CORE DIE (2 channels x 4 Gb)
-    arch->organization.rank_size_gb = 8;     // DERIVED: 16 channels x 512 MB stack
+    arch->organization.chip_size_mb = 1024;  // derived: ONE CORE DIE (2 channels x 4 Gb)
+    arch->organization.rank_size_gb = 8;     // derived: 16 channels x 512 MB stack
 
     // ===== TIMING (JEDEC HBM3; rate = the simulated HBM3_6.4Gbps bin) =====
 
-    /* 1.11.56 (audit D002's defect, found by the B042 reconciliation check):
+    /* 1.11.56 ('s defect, found by the B042 reconciliation check):
      * the Ramulator preset selected for HBM3 is HBM3_6.4Gbps and the wrapper
      * asserts bandwidth_ = 819000 MB/s (1024 b x 6.4 GT/s / 8) beside it.
      * This object said 4.0 GT/s, so its rank/channel/chip-I/O bandwidths --
@@ -1646,9 +1646,9 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->timing.inner_bank.bank_io_driver_ns = 0.30;
     arch->timing.inner_bank.verification_status = VerificationStatus::INFERRED;
     arch->timing.inner_bank.source =
-        "INFERRED from HBM2 with advanced process scaling (5nm logic die)";
+        "from HBM2 with advanced process scaling (5nm logic die)";
 
-    /* 1.11.59 (audit C016): DERIVED -- see deriveHierarchicalAccessTimes().
+    /* 1.11.59: derived -- see deriveHierarchicalAccessTimes().
      * WAS 20.0 and 30.0; IS 32.0 (16.0 + 16.0) and 42.0 (10.0 + 16.0 + 16.0),
      * 37% and 29% higher -- the largest of the four gaps. WHY they drifted:
      * 20.0 = 10.0 + 10.0 and 30.0 = 3 x 10.0 -- this object's arithmetic
@@ -1667,7 +1667,7 @@ inline std::unique_ptr<DRAMArchitectureV2> createHBM3_Verified() {
     arch->energy.chip_energy_pJ = 1.5;
     arch->energy.rank_energy_pJ = 2.5;
     arch->energy.energy_source =
-        "INFERRED from HBM2 with process/voltage scaling for advanced nodes";
+        "from HBM2 with process/voltage scaling for advanced nodes";
 
     return arch;
 }
@@ -1681,15 +1681,15 @@ inline void DRAMArchitectureV2::printVerificationReport() const {
     std::cout << "|  VERIFICATION REPORT: " << std::left << std::setw(43) << name << "|\n";
     std::cout << "+==================================================================+\n\n";
 
-    /* 1.11.56 (audit D073): ASCII TAGS. These strings carried emoji and box-
+    /* 1.11.56: ASCII TAGS. These strings carried emoji and box-
      * drawing characters, which violates the project's ASCII-only rule for
      * source and generated files and makes the log unreadable on any terminal
      * or parser that is not UTF-8. The status a line reports is unchanged;
      * only its glyph is. The rest of this file was swept the same way (times
      * signs, arrows, superscripts, degree and micro signs in comments). */
     auto printStatus = [](const VerifiedValue& v) {
-        std::string status_str;
-        switch (v.status) {
+        std::string status_str;   // the status word is printed only with PIMID_DEBUG_CHECKS=1
+        if (pimid::debugChecks()) switch (v.status) {
             case VerificationStatus::VERIFIED:  status_str = "[VERIFIED]  "; break;
             case VerificationStatus::INFERRED:  status_str = "[INFERRED]  "; break;
             case VerificationStatus::ESTIMATED: status_str = "[ESTIMATED] "; break;
@@ -1723,9 +1723,9 @@ inline void DRAMArchitectureV2::printVerificationReport() const {
     std::cout << "Rank Data Bus:\n";
     printStatus(datapath.rank_databus_bits);
 
-    std::cout << "\nBANDWIDTH LIMITS (INFERRED):\n";
-    std::cout << "----------------------------\n";
-    // 1.11.57 (audit C003): derived on read, so this line cannot print a
+    std::cout << "\nBANDWIDTH LIMITS (width x clock):\n";
+    std::cout << "---------------------------------\n";
+    // 1.11.57: derived on read, so this line cannot print a
     // bandwidth that the object's own width and clock do not produce.
     std::cout << "  Bank effective BW:       " << getBankEffectiveBW() << " GB/s\n";
     std::cout << "  Bank Group effective BW: " << getBankGroupEffectiveBW() << " GB/s\n";

@@ -33,7 +33,7 @@
 #include "g_std/g_string.h"
 #include "stats.h"
 
-/* 1.11.10 (#112): STATIC instruction-class census of this basic block,
+/* 1.11.10: STATIC instruction-class census of this basic block,
  * filled once at decode from the class the decoder already assigns to every
  * instruction (x86_decoder.h OpClass) and then thrown away. Cores add these
  * to their own dynamic accumulators at retirement, so the mix McPAT is fed
@@ -109,7 +109,7 @@ class EventRecorder;
  * recordProtocolTailStats() (co-sim MPI only; stays 0 otherwise) and read by the
  * per-PE 'protocolTail' LambdaStat in ALUCore::initStats. Never alters 'cycles'.
  *
- * 1.11.20 (user decision D14) -- THE GUARANTEE THIS BUYS, STATED HONESTLY.
+ * 1.11.20 -- THE GUARANTEE THIS BUYS, STATED HONESTLY.
  * The original comment claimed the BSS array preserved bit-identity "vs the
  * 1.6/1.8.6 baseline", i.e. ACROSS versions. It does not, and 1.11.10 proved
  * it: adding pgAct/mix members to Core for power gating changed the layout
@@ -128,7 +128,7 @@ class EventRecorder;
  * it would churn all five core types to buy nothing. The array stays because
  * it is still the right place for a receipt; the overclaim is what changed. */
 extern uint64_t g_mpiProtocolTailCyc[];
-/* 1.12.3 (ruling 1 (a)): the companion receipt -- the PE's cycle count at its
+/* 1.12.3: the companion receipt -- the PE's cycle count at its
  * closing-barrier marker, i.e. its KERNEL-WINDOW cycles (cycles - protocolTail).
  * 0 for a rank that was never marked (no closing barrier: bfs), whose window is
  * the whole run. Same fixed-array rule as the tail, for the same reason. */
@@ -163,13 +163,13 @@ class Core : public GlobAlloc {
         g_string name;
 
     public:
-        /* 1.11.8 (#84): per-core active-phase tracker for power-gating
+        /* 1.11.8: per-core active-phase tracker for power-gating
          * residency. Touched on the instruction-retirement path in each
          * core type's .cpp (which see zinfo); also marks the global
          * anyCore tracker there, from which all-idle overlap derives. */
         PhaseActivity pgAct;
 
-        /* 1.11.10 (#112): dynamic instruction-mix accumulators, added from
+        /* 1.11.10: dynamic instruction-mix accumulators, added from
          * each retired BBL's static census. Held in the base class so every
          * core type reports the same five stats and the parser needs one
          * rule. ROI-rebased alongside instrs (see markRoiBegin overrides). */
@@ -178,12 +178,12 @@ class Core : public GlobAlloc {
         /* 1.12.18: (bug 1b) pure vector moves by form, a subset of mixFp. */
         uint64_t mixVmR = 0, mixVmL = 0, mixVmS = 0;
         uint64_t roiBaseMixVmR = 0, roiBaseMixVmL = 0, roiBaseMixVmS = 0;
-        /* 1.12.18 (ruling 2026-10-23 #2): FP operations by type and
+        /* 1.12.18: FP operations by type and
          * precision (FpOpCensus, decoder_simple.h), instructions and scalar
          * lane operations, a subset of mixFp. */
         uint64_t fpcIns[FP_CENSUS_CATS] = {}, fpcLanes[FP_CENSUS_CATS] = {};
         uint64_t roiBaseFpcIns[FP_CENSUS_CATS] = {}, roiBaseFpcLanes[FP_CENSUS_CATS] = {};
-        /* PIMID 1.12.18: (ruling 2026-10-23 #3) scalar GPR integer
+        /* PIMID 1.12.18: scalar GPR integer
          * operations by class and width, a subset of mixInt / mixMul. */
         uint64_t intOps[INT_CENSUS_CATS] = {}, roiBaseIntOps[INT_CENSUS_CATS] = {};
         /* 1.11.16: injected timing charges (BblInfo::synth) counted HERE so
@@ -212,7 +212,7 @@ class Core : public GlobAlloc {
             roiBaseMixVmR = mixVmR; roiBaseMixVmL = mixVmL; roiBaseMixVmS = mixVmS;   // 1.12.18
             for (int k = 0; k < FP_CENSUS_CATS; k++) { roiBaseFpcIns[k] = fpcIns[k]; roiBaseFpcLanes[k] = fpcLanes[k]; }   // 1.12.18
             for (int k = 0; k < INT_CENSUS_CATS; k++) roiBaseIntOps[k] = intOps[k];   // PIMID 1.12.18
-            /* 1.11.18 (audit go-through): the PG residency counter rebases
+            /* 1.11.18: the PG residency counter rebases
              * WITH the rest. It was whole-run while every activity counter
              * it is weighed against is ROI-relative, so a pre-ROI warm-up
              * moved the residency without moving the work it prices. */
@@ -275,7 +275,7 @@ class Core : public GlobAlloc {
                 add(kIn[k], "FP instructions of this type/precision, of mixFp (measured, decoder)", &fpcIns[k], &roiBaseFpcIns[k]);
                 add(kLn[k], "Scalar FP operations (lanes) of those instructions (measured, decoder)", &fpcLanes[k], &roiBaseFpcLanes[k]);
             }
-            /* PIMID 1.12.18: (ruling 2026-10-23 #3) integer operations by class/width. */
+            /* PIMID 1.12.18: integer operations by class/width. */
             static const char* const kIo[INT_CENSUS_CATS] = {"intOpsAlu8", "intOpsAlu16", "intOpsAlu32", "intOpsAlu64",
                 "intOpsMul8", "intOpsMul16", "intOpsMul32", "intOpsMul64", "intOpsDiv"};
             for (int k = 0; k < INT_CENSUS_CATS; k++)
@@ -299,10 +299,10 @@ class Core : public GlobAlloc {
              * TBs as synthetic) no longer emits a stat -- ONE producer, or
              * the parser would sum both and subtract twice. */
             add("syntheticInstrs", "Of instrs, injected timing charges (not executed code)", &mixSyn, &roiBaseMixSyn);
-            /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): see lockClockDomain above. */
+            /* 1.12.18 (model the lock word): see lockClockDomain above. */
             add("lockSyncs", "Lock handoffs that moved this core's clock to the releaser's release (ROI)", &lockSyncs, &roiBaseLockSyncs);
             add("lockSyncCycles", "Cycles this core's clock jumped forward to a lock releaser's release (ROI; waiting)", &lockSyncCycles, &roiBaseLockSyncCycles);
-            /* 1.12.21 (user ruling 2026-10-24): sync to waker on the in-order /
+            /* 1.12.21: sync to waker on the in-order /
              * OOO cores (the ALU PE keeps its own wakeSyncs / wakeSyncCycles). */
             if (!wakeStampable() && lockClockDomain() == 1) {
                 add("wakeSyncs", "Futex wakes that moved this core's clock to its waker's release (ROI)", &clkWakeSyncs, &roiBaseClkWakeSyncs);
@@ -339,7 +339,7 @@ class Core : public GlobAlloc {
         virtual void leave() {}
         virtual void join() {}
 
-        /* 1.12.18 (user ruling 2026-10-23, "sync to waker"): a thread woken
+        /* 1.12.18 (sync to waker): a thread woken
          * from a futex wait resumes no earlier than its waker's release.
          * wakeStampable(): this core's clock may stamp a release and be
          * synced to one (the device PEs, ALUCore, whose clocks are their
@@ -348,7 +348,7 @@ class Core : public GlobAlloc {
          * not stampable, no-op -- the in-order/OOO host cores already
          * re-base their clock to the global phase clock on every join
          * (cRec.notifyJoin: curCycle := globPhaseCycles), so they never
-         * carry the stale own clock this ruling fixes. 1.12.21: they still
+         * carry the stale own clock this rule fixes. 1.12.21: they still
          * sync to a release later than that phase start (InOrderCore /
          * OOOCore::syncToWaker; the plugin keeps their stamps apart, and
          * wakeStampable stays the ALU PE's own-timeline flag). */
@@ -367,7 +367,7 @@ class Core : public GlobAlloc {
          * without running until the phases reach it */
         virtual bool behindPhase() const { return false; }
 
-        /* 1.12.18 (user ruling 2026-10-23, "model the lock word"): a lock
+        /* 1.12.18 (model the lock word): a lock
          * handed from one thread to another carries the releaser's clock --
          * the acquirer's clock := max(own, release time), whether the waiter
          * slept in a futex (sync to waker, above) or spun in user space (the
@@ -385,7 +385,7 @@ class Core : public GlobAlloc {
         virtual uint64_t syncToLock(uint64_t t) { (void)t; return 0; }
         uint64_t lockSyncs = 0, lockSyncCycles = 0;                 // 1.12.18 (model the lock word)
         uint64_t roiBaseLockSyncs = 0, roiBaseLockSyncCycles = 0;
-        /* 1.12.21 (user ruling 2026-10-24): an in-order / OOO core (lock clock
+        /* 1.12.21: an in-order / OOO core (lock clock
          * domain 1, the global phase axis) takes its waker's clock too:
          * syncToWaker(t) advances its clock to t like syncToLock (the
          * whole pipeline moves; a jump past the phase end takes the barrier at
@@ -436,7 +436,7 @@ class Core : public GlobAlloc {
         // wall-decoupled from a core's own curCycle at COMM-window parks). Default
         // 0 (non-ALU cores; only ALUCore overrides for the validated device path).
         virtual uint64_t getRoiBaseCycle() const { return 0; }
-        /* 1.12.18 (R2): the raw clock a memory request is stamped with
+        /* 1.12.18: the raw clock a memory request is stamped with
          * (curCycle; getCycles() is the wall-free clock, halted and phantom
          * wait cycles removed). */
         virtual uint64_t pimidRawCycle() const { return getCycles(); }

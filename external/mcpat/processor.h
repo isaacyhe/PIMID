@@ -73,19 +73,19 @@ class Processor : public Component
     Component clk_core, clk_l2, clk_l3, clk_l1dir, clk_l2dir, clk_mcs, clk_noc;
     /* PIMID 1.12.18: the UNGATED runtime clock dynamic (W) of the same
      * aggregates -- the reference beside the measured-activity-gated value
-     * the aggregates carry (user ruling 2026-10-23). */
+     * the aggregates carry. */
     double clku_core, clku_l2, clku_l3, clku_l1dir, clku_l2dir, clku_mcs, clku_noc;
-    /* PIMID 1.12.18 (ruling 2026-10-23 #4): the GLOBAL part (W) of the
+    /* PIMID 1.12.18: the GLOBAL part (W) of the
      * charged runtime clock of the same aggregates (every powered cycle);
      * the rest of the charged clock is the measured-activity-gated LOCAL part. */
     double clkg_core, clkg_l2, clkg_l3, clkg_l1dir, clkg_l2dir, clkg_mcs, clkg_noc;
-    /* PIMID 1.12.18 (user ruling, per-die process): the LOGIC die's
+    /* PIMID 1.12.18 (per-die process): the LOGIC die's
     * technology (interface_ip with XML sys pimid_logic_die_node /
     * pimid_logic_die_device_type). Components on the DRAM die keep
     * interface_ip (core_tech_node + the dram_periph_family transform). */
     InputParameter ip_logic_die;
     bool logic_die_override;
-    /* PIMID 1.12.18 (user ruling, per-die clock trunk): one die-level
+    /* PIMID 1.12.18 (per-die clock trunk): one die-level
     * H-tree trunk per die (logic.h ClockNetwork, built in the constructor).
     * clk_trunk is their sum (W: peak dynamic, runtime dynamic, leakage), NOT
     * inside any component above; trunk_dies one entry per die KIND (the

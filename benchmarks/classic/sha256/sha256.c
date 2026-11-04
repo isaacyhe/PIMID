@@ -1,5 +1,5 @@
 /*
- * SHA-256 — FIPS 180-4 hash on synthetic data
+ * SHA-256 -- FIPS 180-4 hash on synthetic data
  * Single-threaded benchmark for integer-heavy compute.
  *
  * Compile: g++ -O2 -I<path-to-zsim/misc/hooks> sha256.c -o sha256
@@ -162,7 +162,7 @@ static void sha256_final(SHA256_CTX* ctx, uint8_t hash[32]) {
 int main(int argc, char** argv) {
     int size = parse_int_arg(argc, argv, "--size", 65536);
 
-    printf("SHA-256 — size=%d bytes\n", size);
+    printf("SHA-256 -- size=%d bytes\n", size);
 
     /* Generate data from LCG */
     uint8_t* data = (uint8_t*)malloc((size_t)size);

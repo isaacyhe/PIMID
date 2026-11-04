@@ -24,7 +24,7 @@
  */
 
 #include "mem_ctrls.h"
-#include "dram_epoch_replay.h"   // 1.12.18 (ruling 17 / R0605)
+#include "dram_epoch_replay.h"   // 1.12.18
 #include "zsim.h"
 
 SimpleMemory::SimpleMemory(uint32_t requestSize, uint32_t megacyclesPerSecond, uint32_t megabytesPerSecond, uint32_t _zeroLoadLatency, g_string& _name)
@@ -72,8 +72,8 @@ void SimpleMemory::updateLatency() {
 }
 
 void SimpleMemory::flushWriteback(Address lineAddr, uint64_t cycle, uint32_t srcId) {   // 1.12.18 (bug 7)
-    const Address gLine = globalLine(lineAddr);   // (1.12.147, user ruling 2026-10-28): the line's own address under a split
-    if (hostReplay) (void)hostReplay->hostAccess(hostReplayMi, gLine, cycle, srcId, true, true);   // 1.12.18 (R2): the flush passes the wall-free clock
+    const Address gLine = globalLine(lineAddr);   // (1.12.147): the line's own address under a split
+    if (hostReplay) (void)hostReplay->hostAccess(hostReplayMi, gLine, cycle, srcId, true, true);   // 1.12.18: the flush passes the wall-free clock
     profWrites.atomicInc();
     dqStats.count(gLine, lineBits, true);
     zinfo->pgres.hostMC.touch(zinfo->numPhases); zinfo->pgres.hostUnion.touch(zinfo->numPhases);
@@ -94,13 +94,13 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
         futex_unlock(&updateLock);
     }
 
-    /* 1.12.18 (ruling 17 / R0605): the replayed controller's measured service
+    /* 1.12.18: the replayed controller's measured service
      * latency of this interface (host cycles: bank, row hit / miss / conflict,
      * queueing at the bank, refresh, turnaround, the burst) plus the host-path
      * adder replaces tRCD + tCAS + adder + the M/D/1 wait; the zero-load DRAM
      * time is not added again. A clean writeback (PUTS) is not an access. */
     uint32_t lat = curLatency;
-    /* (1.12.147, user ruling 2026-10-28): behind an address split req.lineAddr is
+    /* (1.12.147): behind an address split req.lineAddr is
      * the compacted controller-local line; the replayed controller (its own
      * address mapper over all channels) and the measured data statistics (a
      * read of the guest line) need the line's own address. Identical when the
@@ -129,7 +129,7 @@ uint64_t SimpleMemory::accessPriced(MemReq& req, bool* byReplay) {
             dqStats.count(gLine, lineBits, true);
             profTotalWrLat.atomicInc(lat);   // 1.12.18: the latency charged
             __sync_fetch_and_add(&curPhaseAccesses, 1);
-            /* 1.11.18 (audit go-through): a dirty writeback IS memory traffic
+            /* 1.11.18: a dirty writeback IS memory traffic
              * -- the controller is busy. 1.11.8 marked only GETS/GETX, so a
              * write-heavy phase could be credited as idle and power-gated.
              * (PUTS falls through below without marking: a clean writeback is

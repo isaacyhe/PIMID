@@ -38,7 +38,7 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
                          bool _staticNotTaken)
     : Core(_name), l1i(_l1i), l1d(_l1d), instrs(0), uops(0), bbls(0),
       curCycle(0), cRec(_domain, _name) {
-    /* 1.11.44 (user ruling): the legacy IPC=1 NODECODE path is DELETED. Its
+    /* 1.11.44: the legacy IPC=1 NODECODE path is DELETED. Its
      * A/B purpose ended with the 1.4.x validation; releases are the baseline
      * now, and the path bred audit findings (E25: a year of structurally
      * inert mix/FP code). One core, one timing model. */
@@ -69,7 +69,7 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
     phaseEndCycle = 0;
 
     // Branch misprediction: front-end flush/refill bubbles.
-    /* 1.11.97 (R2313 (b)): the literal 7 is gone. Two penalties, passed in
+    /* 1.11.97: the literal 7 is gone. Two penalties, passed in
      * from the zsim config (keys mispredPenalty / resteerPenalty, emitted by
      * PIMID from the core record params/core/default.yaml or the config's
      * core.in_order.* keys; derivations in the record):
@@ -96,7 +96,7 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
         if (v >= 0 && v <= 1000) resteerPenalty = (uint32_t)v;
     }
     branches = mispredBranches = mispredStallCycles = 0;
-    /* 1.12.1 (ticket #114): branchPredictor "none" -- no prediction
+    /* 1.12.1: branchPredictor "none" -- no prediction
      * structure, static not-taken (see bblAndRecord / ctrlFlow). */
     staticNotTaken = _staticNotTaken;
     takenBranches = 0;
@@ -129,7 +129,7 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     cyclesStat->init("cycles", "Simulated unhalted cycles");
     coreStat->append(cyclesStat);
 
-    /* 1.11.17 (audit go-through): ROI-rebased like the OOO core (1.11.9
+    /* 1.11.17: ROI-rebased like the OOO core (1.11.9
      * blocker 3) -- this copy still reported absolute contention cycles
      * against ROI-windowed cycles/instrs. */
     auto y = [this]() {
@@ -187,7 +187,7 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zbr)>* branchesStat = new LambdaStat<decltype(zbr)>(zbr);
     branchesStat->init("branches", "Resolved conditional branches fed to the predictor");
     coreStat->append(branchesStat);
-    /* 1.12.1 (ticket #114): taken conditional branches, both modes (ROI).
+    /* 1.12.1: taken conditional branches, both modes (ROI).
      * Under branchPredictor none every taken one is a static-not-taken
      * mispredict, so mispredBranches == takenBranches there. */
     auto ztk = [this]() -> uint64_t { return takenBranches - roiBaseTaken; };
@@ -213,7 +213,7 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     ProxyStat* rasMispredsStat = new ProxyStat();
     rasMispredsStat->init("rasMispreds", "Return-target mispredictions (RAS miss) [whole run]", &rasMispreds);
     coreStat->append(rasMispredsStat);
-    /* 1.11.98 (user ruling (a)): direct branches through the BTB. */
+    /* 1.11.98: direct branches through the BTB. */
     ProxyStat* directBranchesStat = new ProxyStat();
     directBranchesStat->init("directBranches", "Taken direct branches (jcc taken, call rel) looked up in the BTB [whole run]", &directBranches);
     coreStat->append(directBranchesStat);
@@ -234,13 +234,13 @@ void InOrderCore::initStats(AggregateStat* parentStat) {
     LambdaStat<decltype(zbm)>* roiBtbMissStat = new LambdaStat<decltype(zbm)>(zbm);
     roiBtbMissStat->init("roiBtbMisses", "Direct-branch BTB misses (ROI)");
     coreStat->append(roiBtbMissStat);
-    /* PIMID (1.12.32, user ruling 2026-10-25 (1)): the taken direct branches looked up in the BTB, ROI-windowed --
+    /* PIMID (1.12.32): the taken direct branches looked up in the BTB, ROI-windowed --
      * with roiIndirBranches, the BTB reads the power model prices for an in-order core. */
     auto zdb = [this]() -> uint64_t { return directBranches - roiBaseDirect; };
     LambdaStat<decltype(zdb)>* roiDirectStat = new LambdaStat<decltype(zdb)>(zdb);
     roiDirectStat->init("roiDirectBranches", "Taken direct branches (jcc taken, call rel) looked up in the BTB (ROI)");
     coreStat->append(roiDirectStat);
-    /* 1.11.97 (R2476) / 1.11.98 (ruling (a)): measured predictor table writes (one per update,
+    /* 1.11.97 / 1.11.98: measured predictor table writes (one per update,
      * updates, BranchPredictorPAg::predict in ooo_core.h), ROI-windowed --
      * McPAT's level-1 / level-2 local predictor write counts. */
     auto zbh = [this]() -> uint64_t { return branchPred.histWrites - roiBaseBpHist; };
@@ -280,7 +280,7 @@ void InOrderCore::join() {
 
 void InOrderCore::leave() {
     drainPipeline();  // taper must cover all outstanding completions
-    /* 1.11.97 (review C7, the weave assertion): the thread leaves no earlier
+    /* 1.11.97 (the weave assertion): the thread leaves no earlier
      * than its last memory response. memRespCycle is this core's serialization
      * cursor for the accesses threaded through the weave; when the last
      * response outran the issue cursor (a miss at a barrier), leaving at
@@ -339,7 +339,7 @@ inline void InOrderCore::simulateSyntheticBbl(BblInfo* bblInfo) {
         uint64_t resp = l1d->load(addr, startCycle);
         cRec.record(startCycle);
         memRespCycle = resp;
-        commitCycle = MAX(resp, startCycle + (uint64_t)l1d->getHitLatency());   // 1.11.97 (x05-5): the L1 hit latency on the synthetic path too
+        commitCycle = MAX(resp, startCycle + (uint64_t)l1d->getHitLatency());   // 1.11.97: the L1 hit latency on the synthetic path too
     }
     for (uint32_t i = 0; i < stores && i < 256; i++) {
         Address addr = storeAddrs[i];
@@ -405,7 +405,7 @@ inline void InOrderCore::simulateDecodedBbl(BblInfo* bblInfo) {
                 uint64_t resp = l1d->load(addr, startCycle);
                 cRec.record(startCycle);
                 memRespCycle = resp;
-                /* 1.11.97 (review x05-zsim-cores-5): a filter-cache hit returns the
+                /* 1.11.97: a filter-cache hit returns the
                  * line's availability, which for a resident line is the issue
                  * cycle itself -- zero load-use latency. The destination is
                  * ready no earlier than the L1's own access latency. */
@@ -509,7 +509,7 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
      * landed for a block whose execution had not been simulated yet. */
     mixAdd(sim);  // 1.11.10 measured instruction mix
     if (!coreHasFpu_ && coreFpEmulCycles_ &&
-        sim->nFp) {   // 1.11.11 (#113): soft-float on an FPU-less element
+        sim->nFp) {   // 1.11.11: soft-float on an FPU-less element
         curCycle += (uint64_t)sim->nFp * coreFpEmulCycles_;
     }
     bbls++;
@@ -526,7 +526,7 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
     // bubble. In-order cores resolve the branch at execute, so the redirect
     // lands after the BBL drains (curCycle is at last completion here).
     if (branchPc && staticNotTaken) {
-        /* 1.12.1 (ticket #114): branchPredictor none. Fetch continued at the
+        /* 1.12.1: branchPredictor none. Fetch continued at the
          * fall-through, so a NOT-taken jcc costs nothing; a TAKEN one is
          * known only when it executes -- the execute-depth flush/refill, the
          * same drain + mispredPenalty a PAg direction mispredict pays. No
@@ -545,7 +545,7 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
         branches++;
         if (branchTaken) takenBranches++;   // 1.12.1: diagnostic only
         const bool dirOk = branchPred.predict(branchPc, branchTaken);
-        /* 1.11.98 (user ruling (a)): a TAKEN direct branch also needs its
+        /* 1.11.98: a TAKEN direct branch also needs its
          * target from the BTB at fetch. The lookup trains the BTB either way;
          * a miss is charged the decode-depth resteer ONLY when the direction
          * was predicted right -- a direction mispredict already flushes and
@@ -573,7 +573,7 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
     // ctrlFlow for the terminator of `sim`): same flush semantics as a
     // conditional mispredict, but the DECODE-depth bubble (1.11.97, R2313
     // (b): resteerPenalty; through 1.11.96 the execute-depth mispredPenalty).
-    /* 1.11.98 (user ruling (a)): an indirect jmp/call/ret target is known only
+    /* 1.11.98: an indirect jmp/call/ret target is known only
      * when the branch EXECUTES, so its miss is the execute-depth flush/refill
      * bubble (1.11.97 charged the decode-depth resteer here). */
     if (indirMispredPend) {
@@ -660,7 +660,7 @@ void InOrderCore::branch(Address pc, bool taken, Address takenTarget) {
  * terminator's BBL is simulated. */
 void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address retAddr) {
     if (staticNotTaken) {
-        /* 1.12.1 (ticket #114): branchPredictor none -- no BTB and no RAS,
+        /* 1.12.1: branchPredictor none -- no BTB and no RAS,
          * so nothing is looked up, trained, pushed or popped. A direct call
          * or jmp has its target computed by the decoder: the DECODE-depth
          * resteer (resteerPenalty), counted in directBranches. An indirect
@@ -689,7 +689,7 @@ void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address re
     }
     switch (kind) {
         case CF_DIR_CALL:
-            /* 1.11.98 (user ruling (a)): a direct call's target is in the
+            /* 1.11.98: a direct call's target is in the
              * instruction, computed at decode -- fetch needs the BTB to follow
              * it earlier; a BTB miss resteers at decode depth. */
             directBranches++;
@@ -712,7 +712,7 @@ void InOrderCore::ctrlFlow(uint32_t kind, Address pc, Address target, Address re
         case CF_DIR_JMP:
             /* 1.12.1: fed since 1.12.1 for the predictor-less mode; under pag
              * a direct jmp stays free, as it has always been (no BTB lookup,
-             * no resteer -- adjacent finding F1 of the #114 plan). */
+             * no resteer -- adjacent finding F1 of the plan). */
             break;
         default: break;
     }

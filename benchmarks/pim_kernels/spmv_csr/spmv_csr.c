@@ -1,4 +1,4 @@
-/* spmv_csr.c — Sparse Matrix-Vector Multiply in CSR format: y = A * x
+/* spmv_csr.c -- Sparse Matrix-Vector Multiply in CSR format: y = A * x
  * Serial baseline. Generates random sparse matrix with ~1% density. */
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,5 +1,5 @@
 /*
- * Whetstone — Simplified standalone single-threaded FP benchmark
+ * Whetstone -- Simplified standalone single-threaded FP benchmark
  * 8 modules exercising different floating-point patterns.
  *
  * Compile: g++ -O2 -I<path-to-zsim/misc/hooks> whetstone.c -o whetstone -lm
@@ -55,7 +55,7 @@ static void P3(double X, double Y, double* Z) {
 int main(int argc, char** argv) {
     int loops = parse_int_arg(argc, argv, "--loops", 10000);
 
-    printf("Whetstone (simplified) — loops=%d\n", loops);
+    printf("Whetstone (simplified) -- loops=%d\n", loops);
 
     /* Working variables */
     double X1, X2, X3, X4, X, Y, Z;

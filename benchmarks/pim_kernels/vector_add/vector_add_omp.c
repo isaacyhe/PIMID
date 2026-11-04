@@ -1,4 +1,4 @@
-/* vector_add_omp.c — Vector Addition: c[i] = a[i] + b[i]
+/* vector_add_omp.c -- Vector Addition: c[i] = a[i] + b[i]
  * OpenMP parallel version. Standalone, no shared headers. */
 #include <stdio.h>
 #include <stdlib.h>

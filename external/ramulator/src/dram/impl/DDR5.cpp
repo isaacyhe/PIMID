@@ -1,6 +1,6 @@
 #include "dram/dram.h"
 #include "dram/lambdas.h"
-#include "dram/pimid_bank_open.h"   // PIMID 1.11.91 (R8-7)
+#include "dram/pimid_bank_open.h"   // PIMID 1.11.91
 
 namespace Ramulator {
 
@@ -28,7 +28,7 @@ class DDR5 : public IDRAM, public Implementation {
     };
 
     /* 1.11.63 (calibration): nRC 75/77/79 -> 76/78/80, then tagged
-     * DERIVED-FROM-IDENTITY because JESD79-5 was not held. 1.11.64: IT IS
+     * derived from the identity because JESD79-5 was not held. 1.11.64: IT IS
      * HELD (v1.41 published Nov 2025), and the fix is
      * UPGRADED TO CONFIRMED-NORMATIVE: Speed Bin Table NOTE 8, printed
      * p.407, verbatim -- "tRC(min) shall always be greater than or equal to
@@ -63,7 +63,7 @@ class DDR5 : public IDRAM, public Implementation {
       {"DDR5_3200AN",  {3200,   8,  24,  24,   24,   52,   76,   48,   12,  22,  2,    8,     8,     22+8+4,    8,     16,    22+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
       {"DDR5_3200BN",  {3200,   8,  26,  26,   26,   52,   78,   48,   12,  24,  2,    8,     8,     24+8+4,    8,     16,    24+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
       {"DDR5_3200C",   {3200,   8,  28,  28,   28,   52,   80,   48,   12,  26,  2,    8,     8,     26+8+4,    8,     16,    26+8+16,   8,   -1,   -1,  -1,   -1,   -1,    -1,     -1,    -1,   -1,   -1,     -1,     -1,    2,   625}},
-      /* 1.11.66 (round 5, F6 -- user ruling R8 #9): DDR5-4800 and DDR5-5600
+      /* 1.11.66: DDR5-4800 and DDR5-5600
        * rows, THE B BINS, because the Micron MT60B dies whose IDD currents
        * pimid_energy.h now carries at these grades are B-bin parts: Rev A is
        * marked -48B = DDR5-4800B 40-39-39 (addendum p.1 Table 1), Rev D is
@@ -231,7 +231,7 @@ class DDR5 : public IDRAM, public Implementation {
       Node(DDR5* dram, Node* parent, int level, int id) : DRAMNodeBase<DDR5>(dram, parent, level, id) {};
     };
     std::vector<Node*> m_channels;
-    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91 (R8-7): measured bank-open fraction
+    PimidBankOpenTracker<Node> m_pimid_bank_open;   // PIMID 1.11.91: measured bank-open fraction
     
     FuncMatrix<ActionFunc_t<Node>>  m_actions;
     FuncMatrix<PreqFunc_t<Node>>    m_preqs;
@@ -253,7 +253,7 @@ class DDR5 : public IDRAM, public Implementation {
   public:
     void tick() override {
       m_pimid_bank_open.tick(IDRAM::m_pimid_unit_cycles,
-                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91 (R8-7)
+                             IDRAM::m_pimid_open_unit_cycles);   // PIMID 1.11.91
       m_clk++;
 
       // Check if there is any future action at this cycle
@@ -261,7 +261,7 @@ class DDR5 : public IDRAM, public Implementation {
         auto& future_action = m_future_actions[i];
         if (future_action.clk == m_clk) {
           handle_future_action(future_action.cmd, future_action.addr_vec);
-          m_pimid_bank_open.touch(future_action.addr_vec);   // PIMID 1.11.91 (R8-7)
+          m_pimid_bank_open.touch(future_action.addr_vec);   // PIMID 1.11.91
           m_future_actions.erase(m_future_actions.begin() + i);
         }
       }
@@ -279,7 +279,7 @@ class DDR5 : public IDRAM, public Implementation {
       set_powers();
       
       create_nodes();
-      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.init(m_channels, IDRAM::m_levels, IDRAM::m_states);   // PIMID 1.11.91
       IDRAM::m_pimid_bank_open_tracked = m_pimid_bank_open.ok;
     };
 
@@ -288,7 +288,7 @@ class DDR5 : public IDRAM, public Implementation {
       m_channels[channel_id]->update_timing(command, addr_vec, m_clk);
       m_channels[channel_id]->update_powers(command, addr_vec, m_clk);
       m_channels[channel_id]->update_states(command, addr_vec, m_clk);
-      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91 (R8-7)
+      m_pimid_bank_open.touch(addr_vec);   // PIMID 1.11.91
     
       // Check if the command requires future action
       check_future_action(command, addr_vec);
@@ -501,7 +501,7 @@ class DDR5 : public IDRAM, public Implementation {
         }
       }(m_timing_vals("rate"));
 
-      /* 1.11.63 raised nRRDL 5 -> 8 as DERIVED-FROM-IDENTITY with the caveat
+      /* 1.11.63 raised nRRDL 5 -> 8 as derived from the identity with the caveat
        * "the real tRRD_L of a DDR5-3200 part is larger than this. Revisit
        * when JESD79-5 ... is held." IT IS HELD NOW (* published Nov 2025), and the revisit says: 8 is EXACT. Table 334
        * printed p.449: tRRD_L(1K) = tRRD_L(2K) = Max(8nCK, 5ns); at tCK =
@@ -570,7 +570,7 @@ class DDR5 : public IDRAM, public Implementation {
           default:    return -1;
         }
       }(m_organization.density);
-      /* PIMID 1.11.59 (audit F037-class): the lambda returns -1 for any
+      /* PIMID 1.11.59: the lambda returns -1 for any
        * density outside the three tabulated ones, and that -1 then indexed
        * tRFC_TABLE, tRFCsb_TABLE and tRRFsb_TABLE. An out-of-bounds read one
        * element BEFORE a table of plausible nanosecond figures does not crash
@@ -678,7 +678,7 @@ class DDR5 : public IDRAM, public Implementation {
           /// CAS <-> PREab
           /// a READ or WRITE with auto precharge to PRECHARGE ALL waits as the plain READ or WRITE does (JESD79-5D 4.3)
           {.level = "rank", .preceding = {"RD", "RDA"}, .following = {"PREA"}, .latency = V("nRTP")},
-          /// PRE <-> PRE. 1.12.39 (user ruling 2026-10-25): tPPD 2 nCK between any two precharge commands
+          /// PRE <-> PRE. 1.12.39: tPPD 2 nCK between any two precharge commands
           /// (PREpb/PREsb/PREab) of the rank (JESD79-5D Tables 334-336 "Precharge to Precharge command delay tPPD 2 nCK",
           /// NOTE 7). nPPD was in the row, never enforced.
           {.level = "rank", .preceding = {"PRE", "PREsb", "PREA"}, .following = {"PRE", "PREsb", "PREA"}, .latency = V("nPPD")},
@@ -775,7 +775,7 @@ class DDR5 : public IDRAM, public Implementation {
       // Bank Preqs
       m_preqs[m_levels["bank"]][m_commands["RD"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
       m_preqs[m_levels["bank"]][m_commands["WR"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
-      /* PIMID 1.12.18 (ruling 2026-10-24, row policy): RDA/WRA need the row open like RD/WR (host closed page by
+      /* PIMID 1.12.18 (row policy): RDA/WRA need the row open like RD/WR (host closed page by
        * auto-precharge); upstream defined their timings and the closing action but no prerequisite */
       m_preqs[m_levels["bank"]][m_commands["RDA"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
       m_preqs[m_levels["bank"]][m_commands["WRA"]] = Lambdas::Preq::Bank::RequireRowOpen<DDR5>;
