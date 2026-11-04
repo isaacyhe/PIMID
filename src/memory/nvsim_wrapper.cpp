@@ -420,6 +420,7 @@ namespace {
         uint64_t block_size_bits;
         std::string cell_file;   // "" = the per-type sample cell
         std::string write_opts;  // (1.12.162): RERAM/STT_MRAM write options ("" = none)
+        std::string cell_hash;   // (1.12.265): the cell file's keyed content and the calibration revision (nvsimCellHash)
         bool operator<(const NVMCacheKey& o) const {
             if (nvm_type != o.nvm_type) return nvm_type < o.nvm_type;
             if (capacity_bytes != o.capacity_bytes) return capacity_bytes < o.capacity_bytes;
@@ -434,7 +435,8 @@ namespace {
             if (page_size_bits != o.page_size_bits) return page_size_bits < o.page_size_bits;
             if (block_size_bits != o.block_size_bits) return block_size_bits < o.block_size_bits;
             if (cell_file != o.cell_file) return cell_file < o.cell_file;
-            return write_opts < o.write_opts;
+            if (write_opts != o.write_opts) return write_opts < o.write_opts;
+            return cell_hash < o.cell_hash;
         }
     };
     struct NVMCacheVal {
@@ -542,6 +544,9 @@ namespace {
         }
         /* (1.12.162): the write options join the name whenever a technology has them. */
         if (!k.write_opts.empty()) os << "_" << k.write_opts;
+        /* (1.12.265): the cell file's content joins the name, so two cell files with one name (an edited
+         * cell, another tree's cell) can never share an entry. */
+        if (!k.cell_hash.empty()) os << "_h" << k.cell_hash.substr(0, 12);
         return os.str();
     }
     static std::string nvsimCachePath(const NVMCacheKey& k) {
@@ -681,6 +686,17 @@ namespace {
                 return false;
             }
         }
+        {   /* (1.12.265): the entry must come from the same cell inputs and calibration; an entry without the
+             * field predates the check and is recharacterized. */
+            std::string ch;
+            if (!getStr("cell_hash", ch) || ch != k.cell_hash) {
+                std::cerr << "[NVSimWrapper] REFUSING cached characterization "
+                          << src << ": its cell hash is \"" << ch
+                          << "\" but this query's cell file and calibration hash to \"" << k.cell_hash
+                          << "\". Recharacterizing." << std::endl;
+                return false;
+            }
+        }
 
         /* 1.11.94 (l04-robustness-security-15): THE VALUE FORMAT IS READ.
          * nvsimDiskStore used to stream the doubles at the default ostream
@@ -811,6 +827,7 @@ namespace {
           << "  <block_size_bits>" << k.block_size_bits << "</block_size_bits>\n"
           << "  <cell_file>" << k.cell_file << "</cell_file>\n"
           << "  <write_opts>" << k.write_opts << "</write_opts>\n"
+          << "  <cell_hash>" << k.cell_hash << "</cell_hash>\n"
           << "  <read_latency_s>" << v.read_latency_s << "</read_latency_s>\n"
           << "  <write_latency_s>" << v.write_latency_s << "</write_latency_s>\n"
           << "  <read_energy_nj>" << v.read_energy_nj << "</read_energy_nj>\n"
@@ -826,6 +843,34 @@ namespace {
           << "  <design_held>" << v.design_held << "</design_held>\n"
           << "</nvsim_characterization>\n";
     }
+}
+
+/* (1.12.265): a characterization's identity includes WHAT the cell file says, not only its name. The hash runs
+ * over the file's key lines (those NVSim reads: leading '-', trailing blanks dropped), so an edited cell file,
+ * or another tree's cell file under the same name, gets its own entry; comments do not change it. The
+ * calibration revision joins it: bump kNvsimCalibrationRev whenever the NVSim characterization code changes
+ * what a cell's numbers produce. FNV-1a, 64 bit. */
+static const char* kNvsimCalibrationRev = "1";
+static std::string nvsimCellHash(const std::string& path) {
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [&h](const std::string& s) {
+        for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; }
+        h ^= static_cast<unsigned char>('\n'); h *= 1099511628211ULL;
+    };
+    mix(std::string("rev ") + kNvsimCalibrationRev);
+    std::ifstream f(path);
+    if (!f.good()) {
+        mix("no cell file");
+    } else {
+        std::string line;
+        while (std::getline(f, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+            if (!line.empty() && line[0] == '-') mix(line);
+        }
+    }
+    std::ostringstream os;
+    os << std::hex << std::setw(16) << std::setfill('0') << h;
+    return os.str();
 }
 
 void NVSimWrapper::runNVSim() {
@@ -853,7 +898,12 @@ void NVSimWrapper::runNVSim() {
                      config_.page_size_bits,
                      config_.block_size_bits,
                      config_.cell_file,
-                     writeOptionsKey() };
+                     writeOptionsKey(),
+                     nvsimCellHash(
+#ifdef NVSIM_DATA_DIR
+                         std::string(NVSIM_DATA_DIR) + "/" +
+#endif
+                         getCellFileName()) };   // (1.12.265): the cell file's content
     // Reads (both the in-memory map and the on-disk XML) are skipped unless the
     // warehouse mode permits reading -- OFF/WO must truly recompute.
     if (pimid::cache::readEnabled()) {
@@ -1241,7 +1291,8 @@ void NVSimWrapper::runNVSim() {
                         << ",\"page_size_bits\":" << key.page_size_bits
                         << ",\"block_size_bits\":" << key.block_size_bits
                         << ",\"cell_file\":\"" << key.cell_file << "\""
-                        << ",\"write_opts\":\"" << key.write_opts << "\"";
+                        << ",\"write_opts\":\"" << key.write_opts << "\""
+                        << ",\"cell_hash\":\"" << key.cell_hash << "\"";
                 valss << "\"read_latency_s\":" << v.read_latency_s
                       << ",\"write_latency_s\":" << v.write_latency_s
                       << ",\"read_energy_nj\":" << v.read_energy_nj

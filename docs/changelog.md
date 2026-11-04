@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.265 -- an NVSim cache entry is keyed on the cell file's content, so an entry characterised from other cell inputs is never reused
+
+- **The problem.** The NVSim characterisation cache identified an entry by the array's organisation, node, access
+  width, corner and temperature, the cell file's NAME and a tag per calibration, but not by what the cell file said.
+  A build whose cell files lacked the calibration keys of 1.12.243 (PCM read time) and 1.12.244 (RERAM 1T1R cell,
+  read energy, write-verify fits) characterised those arrays without them. It stored the results under the same
+  names in a cache directory other runs read. Every later run that read that directory took the uncalibrated
+  values:
+  - PCM: read 2.83 ns instead of 50.79 ns;
+  - RERAM: read 0.153 instead of 1.0 pJ/bit, and write 186.7 ns and 6.8 pJ/bit instead of 3.82 us and 404 pJ/bit.
+  A run whose cache was filled by its own build, the default per-tree cache, was correct.
+- **The fix (src/memory/nvsim_wrapper.cpp, cache/README.md).** An entry's identity now includes a 64-bit hash of the
+  cell file's key lines (the lines NVSim reads; comments do not count) and of a calibration revision, bumped when
+  the characterisation code changes what a cell produces.
+  - The hash joins the filename (`_h<hash>`) and is stored in the entry (`<cell_hash>`).
+  - On load the entry is refused, and the array recharacterised, if the hash differs or is missing.
+  - Entries written before this change are therefore recharacterised once.
+- **Data impact.** A run whose cache was filled by its own build is unchanged; cold and warm runs now give the same
+  result in every case. Runs that read a shared cache holding an entry from other cell inputs move to the
+  calibrated values. The first run after this change recharacterises each NVSim array once, about a minute each.
+
 ## 1.12.264 -- an SRAM or NVM bank's wait for the other elements is bounded by how many of them can be ahead
 
 - **The problem.** Since 1.12.242 a request to an SRAM or NVM bank also waits for the other processing elements' use
