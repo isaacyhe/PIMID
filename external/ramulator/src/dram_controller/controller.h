@@ -61,6 +61,11 @@ class IDRAMController : public Clocked<IDRAMController> {
     /* PIMID 1.12.18: activate commands this controller ISSUED (every command
      * whose meta is_opening), cumulative; refresh-forced re-opens included. */
     virtual void pimid_cmd_totals(uint64_t& /*activates*/) const {}
+    /* PIMID (1.12.273): the activation window at the ACTs this controller issued (generic_dram_controller.cpp
+     * pimid_win_count): probed, under a kept window, waited for it, the DRAM cycles it added, the largest (maxd takes the
+     * larger; the others add), breaches */
+    virtual void pimid_win_totals(uint64_t& /*probed*/, uint64_t& /*kept*/, uint64_t& /*acts*/, uint64_t& /*cycles*/,
+                                  uint64_t& /*maxd*/, uint64_t& /*brk*/) const {}
     /* PIMID 1.12.18: chip ACTs of the host lock-step requests beyond chip 0 and the
      * candidate-cycles a host command waited for the DIMM CA bus; (1.12.151): the host commands that took a CA-bus
      * slot (one per rank-wide command) and the ACTs among them */

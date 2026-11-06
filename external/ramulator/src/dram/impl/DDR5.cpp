@@ -368,6 +368,12 @@ class DDR5 : public IDRAM, public Implementation {
       return m_channels[channel_id]->ready_at(command, addr_vec);
     };
 
+    bool pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t& win, Clk_t& oth, bool& has, bool& brk) override {   // PIMID (1.12.273)
+      int channel_id = addr_vec[m_levels["channel"]];
+      m_channels[channel_id]->pimid_window_probe(command, addr_vec, m_clk, win, oth, has, brk);
+      return true;
+    };
+
     const uint64_t* pimid_chan_ver(int channel) override {   // PIMID (1.12.229)
       return (channel >= 0 && channel < (int)m_channels.size()) ? &m_channels[channel]->m_pimid_ver : nullptr;
     };

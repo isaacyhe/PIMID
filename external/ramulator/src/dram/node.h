@@ -51,6 +51,11 @@ struct DRAMNodeBase {
 
     std::vector<Clk_t> m_cmd_ready_clk;             // The next cycle that each command can be issued again at this level
     std::vector<std::deque<Clk_t>> m_cmd_history;   // Issue-history of each command at this level
+    /* PIMID (1.12.273): m_cmd_ready_clk by source -- the activation window's constraints (window > 1: the four-activate
+     * window, tFAW) and every other constraint; m_cmd_ready_clk is the larger of the two. Read by pimid_window_probe
+     * only (the activation-window report): the timing is unchanged. */
+    std::vector<Clk_t> m_pimid_win_ready;
+    std::vector<Clk_t> m_pimid_oth_ready;
 
     using RowId_t = int;
     using RowState_t = int;
@@ -61,6 +66,8 @@ struct DRAMNodeBase {
       int num_cmds = T::m_commands.size();
       m_cmd_ready_clk.resize(num_cmds, -1);
       m_cmd_history.resize(num_cmds);
+      m_pimid_win_ready.resize(num_cmds, -1);   // PIMID (1.12.273)
+      m_pimid_oth_ready.resize(num_cmds, -1);
       for (int cmd = 0; cmd < num_cmds; cmd++) {
         int window = 0;
         for (const auto& t : spec->m_timing_cons[level][cmd]) {
@@ -152,6 +159,7 @@ struct DRAMNodeBase {
           // update earliest schedulable time of every command
           Clk_t future = clk + t.val;
           m_cmd_ready_clk[t.cmd] = std::max(m_cmd_ready_clk[t.cmd], future); 
+          m_pimid_oth_ready[t.cmd] = std::max(m_pimid_oth_ready[t.cmd], future);   // PIMID (1.12.273)
         }
         // stop recursion
         return;
@@ -181,6 +189,8 @@ struct DRAMNodeBase {
         // update earliest schedulable time of every command
         Clk_t future = past + t.val;
         m_cmd_ready_clk[t.cmd] = std::max(m_cmd_ready_clk[t.cmd], future);
+        if (t.window > 1) m_pimid_win_ready[t.cmd] = std::max(m_pimid_win_ready[t.cmd], future);   // PIMID (1.12.273)
+        else              m_pimid_oth_ready[t.cmd] = std::max(m_pimid_oth_ready[t.cmd], future);
       }
 
       if (!m_child_nodes.size()) {
@@ -226,6 +236,32 @@ struct DRAMNodeBase {
         return r;
       }
       return std::max(r, m_child_nodes[child_id]->ready_at(command, addr_vec));
+    };
+
+    /* PIMID (1.12.273): the activation-window probe, on the nodes check_ready(command, addr_vec, clk) visits: the latest
+     * ready clock from the window constraints (win) and from every other constraint (oth); whether a window
+     * constraint ending at command is kept there (has); whether issuing command at clk would break a window (brk: the
+     * window's oldest entry plus its latency still ahead -- check_ready forbids it, so this stays false). Reads only. */
+    void pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t clk, Clk_t& win, Clk_t& oth, bool& has, bool& brk) {
+      win = std::max(win, m_pimid_win_ready[command]);
+      oth = std::max(oth, m_pimid_oth_ready[command]);
+      const int ncmd = (int)m_spec->m_timing_cons[m_level].size();
+      for (int p = 0; p < ncmd; p++) {
+        for (const auto& t : m_spec->m_timing_cons[m_level][p]) {
+          if (t.sibling || t.window <= 1 || t.cmd != command) continue;
+          has = true;
+          if ((int)m_cmd_history[p].size() < t.window) continue;
+          const Clk_t past = m_cmd_history[p][t.window-1];
+          if (past >= 0 && clk < past + t.val) brk = true;
+        }
+      }
+      int child_id = addr_vec[m_level+1];
+      if (m_level == m_spec->m_command_scopes[command] || !m_child_nodes.size()) return;
+      if (child_id == -1) {
+        for (auto child : m_child_nodes) child->pimid_window_probe(command, addr_vec, clk, win, oth, has, brk);
+        return;
+      }
+      m_child_nodes[child_id]->pimid_window_probe(command, addr_vec, clk, win, oth, has, brk);
     };
 
     bool check_ready(int command, const AddrVec_t& addr_vec, Clk_t clk) {

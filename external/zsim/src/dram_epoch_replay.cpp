@@ -2608,6 +2608,30 @@ void DramEpochReplay::finalize() {
                  name_.c_str(), chips_, (unsigned long)cc, (unsigned long)ca, (unsigned long)sa, (unsigned long)cw);
         }
     }
+    if (!winReported_) {   /* (1.12.273): the activation window (tFAW) at the replayed ACTs */
+        uint64_t pr = 0, kp = 0, wa = 0, wc = 0, wm = 0, br = 0;
+        bool got = false;
+        if (par()) {
+            for (Chan& K : chans_) {
+                uint64_t a = 0, b = 0, c = 0, d = 0, e = 0, f = 0;
+                if (K.sys->pimid_win_totals(a, b, c, d, e, f)) { pr += a; kp += b; wa += c; wc += d; wm = std::max(wm, e); br += f; got = true; }
+            }
+        } else got = sys_ && sys_->pimid_win_totals(pr, kp, wa, wc, wm, br);
+        if (got && pr > 0) {
+            winReported_ = true;
+            info("[mem] %s: activation window (tFAW, at most four ACTs per window, at the level the standard places it): %lu ACTs issued, "
+                 "%lu under a kept window; %lu of them waited for the window (it was their last constraint to clear and later than "
+                 "their request's arrival), %lu DRAM cycles in all, at most %lu for one ACT; ACTs issued inside a full window %lu "
+                 "(cumulative over the replay, inside and outside the ROI) [(1.12.273)]",
+                 name_.c_str(), (unsigned long)pr, (unsigned long)kp, (unsigned long)wa, (unsigned long)wc, (unsigned long)wm,
+                 (unsigned long)br);
+            if (kp < pr)
+                info("[mem] %s: %lu of the %lu ACTs had no activation window on their path: the standard places tFAW (and tRRD_S) at the "
+                     "channel level, which the bank-parallel controller removes with the channel's command bus at this placement, so "
+                     "this run does NOT enforce tFAW for them [(1.12.273)]",
+                     name_.c_str(), (unsigned long)(pr - kp), (unsigned long)pr);
+        }
+    }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);
     bankTotals();   // 1.12.18
     /* 1.12.18: the ctrl* row and activate counters are the DEVICE

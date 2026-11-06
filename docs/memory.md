@@ -143,6 +143,17 @@ mode starts when more than 32 host writes are held in a 48-entry per-channel wri
 are held while a host read waits. A PE's commands neither wait for the bus nor occupy it; the
 other standards keep their timing.
 
+**Activation window (tFAW) in the replay ((1.12.273)).** The replay holds JEDEC's four-activate window (Ramulator2's
+nFAW) where the standard places it: per rank on DDR3, DDR4, DDR5 and LPDDR5 (per chip with the chip split), per
+pseudo-channel on HBM2 and HBM3. The bank-parallel controller keeps it with the other ACT-to-ACT limits (tRRD),
+refresh and precharge-all. GDDR6 places tFAW and tRRD_S at the channel level, which the bank-parallel controller
+removes with the channel's command bus at `BANK` and `BANK_GROUP` placement, so those runs do not hold the window
+(tRRD_L, at the bank group, is kept). At the end of the run the replay's activation-window line counts the ACTs
+issued, those under a kept window, those that waited for it (the window was the last of their constraints to clear
+and cleared after the request arrived) with the DRAM cycles it held them, and the ACTs issued inside a full window
+(0 where the window is enforced); a second line counts the ACTs with no window on their path. The configuration
+warning for more than four activation streams per rank says which case a run is in.
+
 **A memory of type Ramulator is a replayed controller too (1.12.147).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,
 which is built as one controller per channel of the memory (HBM3 16, DDR5 2).

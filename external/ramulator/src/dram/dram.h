@@ -122,6 +122,9 @@ class IDRAM : public Clocked<IDRAM> {
     /* PIMID (1.12.229): the update count of a channel's nodes (DRAMNodeBase::m_pimid_ver); nullptr: the standard does not
      * provide it (it is provided with pimid_ready_at) */
     virtual const uint64_t* pimid_chan_ver(int channel) { return nullptr; }
+    /* PIMID (1.12.273): the activation-window probe (DRAMNodeBase::pimid_window_probe) at this clock: win / oth take the
+     * larger, has / brk are set when found; false: the standard does not provide it */
+    virtual bool pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t& win, Clk_t& oth, bool& has, bool& brk) { return false; }
     Clk_t pimid_dram_clk() const { return m_clk; }   // PIMID (1.12.229): the clock check_ready compares with
 
     /**

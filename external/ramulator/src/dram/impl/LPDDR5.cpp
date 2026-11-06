@@ -271,6 +271,12 @@ class LPDDR5 : public IDRAM, public Implementation {
       return m_channels[channel_id]->check_ready(command, addr_vec, m_clk);
     };
 
+    bool pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t& win, Clk_t& oth, bool& has, bool& brk) override {   // PIMID (1.12.273)
+      int channel_id = addr_vec[m_levels["channel"]];
+      m_channels[channel_id]->pimid_window_probe(command, addr_vec, m_clk, win, oth, has, brk);
+      return true;
+    };
+
     bool check_rowbuffer_hit(int command, const AddrVec_t& addr_vec) override {
       int channel_id = addr_vec[m_levels["channel"]];
       return m_channels[channel_id]->check_rowbuffer_hit(command, addr_vec, m_clk);

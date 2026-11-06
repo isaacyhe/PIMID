@@ -6,6 +6,25 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.273 -- the DRAM replay reports its activation window (tFAW), and the configuration warning says when it is enforced
+
+- **The problem.** A configuration that puts more than four independent activation streams on one rank prints a
+  warning (since 1.10.1) that PIMID does not enforce the JEDEC four-activate window (tFAW) in its timing model. That
+  predates the DRAM epoch replay (1.11.98): with the replay on, Ramulator2 holds the window (nFAW) at the level the
+  standard places it, and the bank-parallel controller keeps it with the other ACT-to-ACT limits. The warning
+  therefore told a replay run it was optimistic when it was not, and no output showed what the window cost. One case
+  is as the warning says: GDDR6 places tFAW and tRRD_S at the channel level, and at BANK and BANK_GROUP placement the
+  bank-parallel controller removes the channel's ACT constraints with its command bus, so those runs do not hold
+  the window.
+- **The fix.** The replay prints one line at the end of the run: the ACTs issued, those under a kept window, those
+  that waited for it (the window was the last of their constraints to clear and cleared after their request
+  arrived) with the DRAM cycles it held them in all and at most, and the ACTs issued inside a full window, counted
+  from each window's own activation history (0: the window is enforced). When ACTs had no window on their path (the
+  GDDR6 case), a second line says so. The configuration warning now says that the replay enforces the window and
+  points to the line, and keeps its caveat without the replay or in the GDDR6 case.
+- **Data impact.** None on results: the timing is unchanged (the probe reads the ready clocks the controller already
+  keeps). Every replay run prints the activation-window line, and the warning's text changes where it is printed.
+
 ## 1.12.272 -- a no-offload co-simulation replays its shared memory on the host clock, so a device clock other than the host's no longer stretches its run time
 
 - **The problem.** A no-offload co-simulation (`PIMID_COSIM_NO_OFFLOAD=1`) whose host memory is the device's

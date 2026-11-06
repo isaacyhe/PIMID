@@ -543,6 +543,7 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
         }
         pimid_choose_autoprecharge(req_it);   // PIMID 1.12.18
         pd_issued(req_it->addr_vec);   // PIMID 1.12.19
+        if (m_dram->m_command_meta(req_it->command).is_opening) pimid_win_count(req_it->command, req_it->addr_vec, req_it->arrive);   // PIMID (1.12.273)
         m_dram->issue_command(req_it->command, req_it->addr_vec);
         if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18: the host's share
 
@@ -1001,12 +1002,14 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
           if (!m_ls_sel[c]) continue;
           pd_issued(m_ls_a[c]);
           pl_bump(m_ls_a[c]);
+          if (opening) pimid_win_count(req_it->command, m_ls_a[c], req_it->arrive);   // PIMID (1.12.273)
           m_dram->issue_command(req_it->command, m_ls_a[c]);
           if (opening) pimid_count_act(req_it->source_id, c != c0);   // every chip's ACT (energy); chips past chip 0 also as shadow ACTs
         }
       } else {
       pd_issued(req_it->addr_vec);   // PIMID 1.12.19
       pl_bump(req_it->addr_vec);   // PIMID (1.12.127): its bank's state may change
+      if (m_dram->m_command_meta(req_it->command).is_opening) pimid_win_count(req_it->command, req_it->addr_vec, req_it->arrive);   // PIMID (1.12.273)
       m_dram->issue_command(req_it->command, req_it->addr_vec);
       if (m_dram->m_command_meta(req_it->command).is_opening) pimid_count_act(req_it->source_id, false);   // PIMID 1.12.18; 1.12.18: the host's share
       }
@@ -1186,6 +1189,27 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
     }
     uint64_t s_pimid_activates = 0;   // PIMID 1.12.18
     void pimid_cmd_totals(uint64_t& activates) const override { activates += s_pimid_activates; }
+    /* PIMID (1.12.273): the activation window (tFAW) at each ACT this controller issues, probed just before it issues: an ACT
+     * under a kept window waited for it when the window's bound was later than every other constraint's bound and than
+     * the request's arrival -- the DRAM cycles between are the window's share of its wait. A breach (issued inside a
+     * full window) cannot happen: check_ready holds the window; it is counted to show it. Counting only. */
+    uint64_t s_win_probed = 0, s_win_kept = 0, s_win_acts = 0, s_win_cycles = 0, s_win_max = 0, s_win_brk = 0;
+    void pimid_win_count(int command, const AddrVec_t& a, Clk_t arrive) {
+      Clk_t w = -1, o = -1; bool has = false, brk = false;
+      if (!m_dram->pimid_window_probe(command, a, w, o, has, brk)) return;
+      s_win_probed++;
+      if (has) s_win_kept++;
+      if (brk) s_win_brk++;
+      const Clk_t b = std::max(o, arrive);
+      if (w > b) {
+        const uint64_t d = (uint64_t)(w - b);
+        s_win_acts++; s_win_cycles += d; if (d > s_win_max) s_win_max = d;
+      }
+    }
+    void pimid_win_totals(uint64_t& probed, uint64_t& kept, uint64_t& acts, uint64_t& cycles, uint64_t& maxd, uint64_t& brk) const override {
+      probed += s_win_probed; kept += s_win_kept; acts += s_win_acts; cycles += s_win_cycles; brk += s_win_brk;
+      if (s_win_max > maxd) maxd = s_win_max;
+    }
     void pimid_pd_totals(uint64_t& pdUnitCycles, uint64_t& units, uint64_t& exits) const override {   // PIMID 1.12.19
       if (!m_pimid_pd) return;
       uint64_t c = s_pimid_pd_cycles;
