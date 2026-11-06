@@ -106,30 +106,20 @@ int main(int argc, char* argv[]) {
     int local_start = rank * base + (rank < rem ? rank : rem);
     int local_n = base + (rank < rem ? 1 : 0);
 
-    /* Generate data: advance RNG to local_start, then generate local_n values */
-    int* local_data = (int*)malloc(local_n * sizeof(int));
-    if (!local_data) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
-
-    /* Advance seed past elements before local_start */
-    for (int i = 0; i < local_start; i++)
-        bench_rand(&seed);
-
-    for (int i = 0; i < local_n; i++)
-        local_data[i] = bench_rand(&seed) % nbins;
-
-    int* local_hist = (int*)calloc(nbins, sizeof(int));
     int* global_hist = NULL;
     if (rank == 0)
         global_hist = (int*)calloc(nbins, sizeof(int));
 
-    if (!local_hist) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
-
-    /* ---- DATA PREP (before ROI, not timed): this rank's chunk + private hist
-     * -> its PE slot. Slot layout: [chunk][local hist].
+    /* ---- DATA PREP (before ROI, not timed): this rank's chunk + private hist,
+     * built in its PE slot. Slot layout: [chunk][local hist].
      * Assumes thread-MPI (the default/only supported mode): slot r maps to PE
      * r's units directly. Under the retired PIMID_MPI_PROCESS=1 legacy mode the
      * simulator's per-rank unit rotation (pe_memory_interface.h) would
-     * double-shift these prepped slots. */
+     * double-shift these prepped slots.
+     * The chunk is generated where the kernel reads it, not generated elsewhere
+     * and copied in: a PE's pages fill its memory in the order it first touches
+     * them, so a setup copy touched first would hold the PE's own unit and push
+     * the data the kernel reads into the next one. */
     int prep = pimid_devorg_needs_prep(&dev);
     size_t need = ((size_t)local_n + (size_t)nbins) * sizeof(int);
     histogram_mpi_ctx need_ctx = { nprocs, nbins };
@@ -154,12 +144,28 @@ int main(int argc, char* argv[]) {
             prep = 0;
         }
     }
+    int* local_data = NULL;
+    int* local_hist = NULL;
     if (prep) {
         dpe = (int*)pimid_devorg_pe_slot(dbuf, rank, slot_bytes);
         hpe = dpe + local_n;
-        memcpy(dpe, local_data, (size_t)local_n * sizeof(int));
-        memset(hpe, 0, (size_t)nbins * sizeof(int));
+        local_data = dpe;
+    } else {
+        local_data = (int*)malloc(local_n * sizeof(int));
+        local_hist = (int*)calloc(nbins, sizeof(int));
+        if (!local_data || !local_hist) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
     }
+
+    /* Generate data: advance RNG to local_start, then generate local_n values */
+    /* Advance seed past elements before local_start */
+    for (int i = 0; i < local_start; i++)
+        bench_rand(&seed);
+
+    for (int i = 0; i < local_n; i++)
+        local_data[i] = bench_rand(&seed) % nbins;
+
+    if (prep)
+        memset(hpe, 0, (size_t)nbins * sizeof(int));
 
     if (prep)
         fprintf(stderr, "[devorg] PREP ACTIVE: kernel=histogram level=%s pes=%d "
@@ -211,7 +217,7 @@ int main(int argc, char* argv[]) {
         free(global_hist);
     }
 
-    free(local_data); free(local_hist);
+    if (!prep) { free(local_data); free(local_hist); }   /* in the slot when prepped */
     MPI_Finalize();
     return 0;
 }

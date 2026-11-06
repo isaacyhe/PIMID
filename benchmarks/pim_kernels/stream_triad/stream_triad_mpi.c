@@ -75,22 +75,20 @@ int main(int argc, char* argv[]) {
     int rem  = N % nprocs;
     int local_n = base + (rank < rem ? 1 : 0);
 
+    /* a holds the result in host layout after the ROI; b and c are placed below */
     float* a = (float*)malloc(local_n * sizeof(float));
-    float* b = (float*)malloc(local_n * sizeof(float));
-    float* c = (float*)malloc(local_n * sizeof(float));
-    if (!a || !b || !c) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
+    if (!a) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
 
-    for (int i = 0; i < local_n; i++) {
-        b[i] = 1.0f;
-        c[i] = 2.0f;
-    }
-
-    /* ---- DATA PREP (before ROI, not timed): this rank's chunk -> its PE slot.
+    /* ---- DATA PREP (before ROI, not timed): this rank's chunk, built in its PE slot.
      * Slot layout: [a chunk][b chunk][c chunk], each local_n floats.
      * Assumes thread-MPI (the default/only supported mode): slot r maps to PE
      * r's units directly. Under the retired PIMID_MPI_PROCESS=1 legacy mode the
      * simulator's per-rank unit rotation (pe_memory_interface.h) would
-     * double-shift these prepped slots. */
+     * double-shift these prepped slots.
+     * b and c are filled where the kernel reads them, not filled elsewhere and
+     * copied in: a PE's pages fill its memory in the order it first touches
+     * them, so a setup copy touched first would hold the PE's own unit and push
+     * the data the kernel reads into the next one. */
     int prep = pimid_devorg_needs_prep(&dev);
     size_t need = 3ull * (size_t)local_n * sizeof(float);
     size_t slot_bytes = 0;
@@ -114,12 +112,27 @@ int main(int argc, char* argv[]) {
             prep = 0;
         }
     }
+    float* b = NULL;
+    float* c = NULL;
     if (prep) {
         ape = (float*)pimid_devorg_pe_slot(dbuf, rank, slot_bytes);
         bpe = ape + (size_t)local_n;
         cpe = bpe + (size_t)local_n;
-        memcpy(bpe, b, (size_t)local_n * sizeof(float));
-        memcpy(cpe, c, (size_t)local_n * sizeof(float));
+        b = bpe;
+        c = cpe;
+        /* b, then c, each in one pass: the slot fills in its layout order */
+        for (int i = 0; i < local_n; i++)
+            b[i] = 1.0f;
+        for (int i = 0; i < local_n; i++)
+            c[i] = 2.0f;
+    } else {
+        b = (float*)malloc(local_n * sizeof(float));
+        c = (float*)malloc(local_n * sizeof(float));
+        if (!b || !c) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
+        for (int i = 0; i < local_n; i++) {
+            b[i] = 1.0f;
+            c[i] = 2.0f;
+        }
     }
 
     if (prep)
@@ -170,7 +183,8 @@ int main(int argc, char* argv[]) {
         printf("BENCH_DONE\n");
     }
 
-    free(a); free(b); free(c);
+    free(a);
+    if (!prep) { free(b); free(c); }   /* in the slot when prepped */
     MPI_Finalize();
     return 0;
 }

@@ -6,6 +6,37 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.271 -- a message-passing kernel builds its data in its processing element's slot, so no setup copy holds the element's own memory
+
+- **The problem.** Placement is first touch, and a processing element's pages fill its memory in the order the
+  element first touches them, 4096 pages (one 16 MB HBM3 bank) to a unit. The message-passing bfs, gemv, histogram,
+  stencil and STREAM triad kernels built their input in heap arrays, copied it into the element's slot, and freed
+  the heap arrays only after the region of interest. In a device run each rank runs on its element from its first
+  instruction, so the element touched the setup copy first: the copy, dead in the region of interest, held the
+  element's own unit, and the data the kernel reads landed in the next one. Stencil's copy loop read each untouched
+  heap page just before it wrote the slot page, so its heap and slot pages alternated. On HBM3 with 16 elements at
+  the bank, bfs sent 617 M packets through the in-memory network (2.3 M at 32 elements, where copy and data fit one
+  bank, and 0.2 M in a co-simulation, whose setup runs on the host); gemv, histogram and triad sent about 8.4 M at 2
+  to 16 elements and at most 0.12 M at 32.
+- **The fix.** Each kernel maps its slot before it builds its data and builds the data there: bfs generates its row
+  offsets and edges in the slot and places its distances, frontiers, buckets and counts after them; gemv builds its
+  rows and its copy of x; histogram its chunk; triad b and then c; stencil zeroes both grids and writes the hot row.
+  The slot's need is checked as before (bfs maps the slot once the part before its receive buffer fits, and checks
+  the whole need when the receive buffer's size is known). The host-layout path (no slot: one element, or the
+  channel and logic-die placements) keeps the old code. Checksums are unchanged: the old and new binaries print the
+  same checksum (and the same refusal) at 2, 4 and 16 ranks, in host layout and with bank and subarray slots, at
+  the tiny, medium and full sizes (native thread-MPI runs).
+- **Data impact.** Device runs of these five kernels with a slot per element (2 to 64 elements below the
+  channel) change. Measured on HBM3 with 16 elements at the bank (the previous release's simulator with the new
+  kernels): bfs on the compute-unit element falls from 617 M to 1.8 M packets, its run time by 41.0 % and its energy
+  by 36.0 %, and its run time now lies within 0.1 % of the device side of its one-core co-simulation (69 % above
+  it before); bfs on the in-order element, whose cache had hidden most of the remote traffic, falls from 33.5 M to
+  14.0 M packets and 2.9 % in run time; gemv, histogram and triad fall from 5.4 to 8.4 M packets to at most 0.09 M
+  and by 0.8 %, 1.5 % and 1.9 % in run time; stencil with 4 elements falls from 22.5 M to 1.1 M packets and 2.0 %.
+  Every result check passes. A co-simulation of these kernels sets up the same slots from the host, and its device
+  still claims its pages in the region of interest. The shared-memory kernels and every other benchmark are
+  unchanged.
+
 ## 1.12.270 -- a single-process co-simulation's device side prices and reconciles its DRAM accesses from the replay, as a device run does
 
 - **The problem.** In a co-simulation whose device side runs in one process (an OpenMP or serial kernel), the host

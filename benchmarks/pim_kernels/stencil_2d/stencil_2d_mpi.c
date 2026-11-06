@@ -96,34 +96,30 @@ int main(int argc, char* argv[]) {
     int local_start = rank * base + (rank < rem ? rank : rem);
     int local_rows  = base + (rank < rem ? 1 : 0);
 
-    /* Allocate grid with ghost rows: row 0 = top ghost, rows 1..local_rows = data,
-     * row local_rows+1 = bottom ghost. grid_host/tmp_host own the allocations
-     * (freed at the end); grid/tmp are the compute pointers (repointed into the
-     * PE slot when prepped). */
+    /* Grid with ghost rows: row 0 = top ghost, rows 1..local_rows = data,
+     * row local_rows+1 = bottom ghost. grid/tmp are the compute pointers: into
+     * the PE slot when prepped, else into grid_host/tmp_host (host layout,
+     * freed at the end). */
     int alloc_rows = local_rows + 2;
-    float* grid_host = (float*)calloc((size_t)alloc_rows * N, sizeof(float));
-    float* tmp_host  = (float*)calloc((size_t)alloc_rows * N, sizeof(float));
-    if (!grid_host || !tmp_host) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
-    float* grid = grid_host;
-    float* tmp  = tmp_host;
-
-    /* Initialize: hot boundary on global top row (row 0).
-     * If this rank owns global row 0, set it in local row 1. */
-    if (local_start == 0) {
-        for (int j = 0; j < N; j++)
-            grid[1 * N + j] = 100.0f;
-    }
+    float* grid_host = NULL;
+    float* tmp_host  = NULL;
+    float* grid = NULL;
+    float* tmp  = NULL;
 
     int up_rank   = (rank > 0) ? rank - 1 : MPI_PROC_NULL;
     int down_rank = (rank < nprocs - 1) ? rank + 1 : MPI_PROC_NULL;
 
     /* ---- DATA PREP (before ROI, not timed): grid + tmp (each alloc_rows*N,
-     * including the +2 ghost rows -- D3) -> this rank's PE slot.
+     * including the +2 ghost rows -- D3), built in this rank's PE slot.
      * Slot layout: [grid alloc_rows][tmp alloc_rows].
      * Assumes thread-MPI (the default/only supported mode): slot r maps to PE
      * r's units directly. Under the retired PIMID_MPI_PROCESS=1 legacy mode the
      * simulator's per-rank unit rotation (pe_memory_interface.h) would
-     * double-shift these prepped slots. */
+     * double-shift these prepped slots.
+     * The grids are set up where the kernel reads them, not set up elsewhere
+     * and copied in: a PE's pages fill its memory in the order it first touches
+     * them, so a setup copy touched first would hold the PE's own unit and push
+     * the data the kernel reads into the next one. */
     int prep = pimid_devorg_needs_prep(&dev);
     size_t need = 2ull * (size_t)alloc_rows * N * sizeof(float);
     size_t slot_bytes = 0;
@@ -149,10 +145,23 @@ int main(int argc, char* argv[]) {
     if (prep) {
         float* gslot = (float*)pimid_devorg_pe_slot(dbuf, rank, slot_bytes);
         float* tslot = gslot + (size_t)alloc_rows * N;
-        memcpy(gslot, grid_host, (size_t)alloc_rows * N * sizeof(float));
-        memcpy(tslot, tmp_host,  (size_t)alloc_rows * N * sizeof(float));
+        memset(gslot, 0, (size_t)alloc_rows * N * sizeof(float));
+        memset(tslot, 0, (size_t)alloc_rows * N * sizeof(float));
         grid = gslot;
         tmp  = tslot;
+    } else {
+        grid_host = (float*)calloc((size_t)alloc_rows * N, sizeof(float));
+        tmp_host  = (float*)calloc((size_t)alloc_rows * N, sizeof(float));
+        if (!grid_host || !tmp_host) { fprintf(stderr, "rank %d: malloc failed\n", rank); MPI_Abort(MPI_COMM_WORLD, 1); }
+        grid = grid_host;
+        tmp  = tmp_host;
+    }
+
+    /* Initialize: hot boundary on global top row (row 0).
+     * If this rank owns global row 0, set it in local row 1. */
+    if (local_start == 0) {
+        for (int j = 0; j < N; j++)
+            grid[1 * N + j] = 100.0f;
     }
 
     if (prep)

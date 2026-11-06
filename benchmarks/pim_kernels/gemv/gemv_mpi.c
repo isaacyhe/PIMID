@@ -83,35 +83,23 @@ int main(int argc, char* argv[]) {
     int local_rows = base + (rank < rem ? 1 : 0);
     int local_start = rank * base + (rank < rem ? rank : rem);
 
-    /* Each rank allocates its local rows of A, full x, and local y */
-    float* A_local = (float*)malloc((size_t)local_rows * N * sizeof(float));
-    float* x = (float*)malloc(N * sizeof(float));
+    /* Each rank's local y; its rows of A and its copy of x are placed below */
     float* y_local = (float*)calloc(local_rows, sizeof(float));
-    if (!A_local || !x || !y_local) {
+    if (!y_local) {
         fprintf(stderr, "rank %d: malloc failed\n", rank);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    /* Initialize: same pattern as serial (rank builds its rows) */
-    for (int i = 0; i < local_rows; i++) {
-        int gi = local_start + i;
-        for (int j = 0; j < N; j++)
-            A_local[i * N + j] = (float)((gi + j) % 7);
-    }
-
-    /* x initialized on all ranks (same values) */
-    for (int i = 0; i < N; i++)
-        x[i] = 1.0f;
-
-    /* Broadcast x to all ranks (in case future versions init only on rank 0) */
-    MPI_Bcast(x, N, MPI_FLOAT, 0, MPI_COMM_WORLD);
-
     /* ---- DATA PREP (before ROI, not timed): this rank's A rows + a private
-     * copy of x -> its PE slot. Slot layout: [A rows][x].
+     * copy of x, built in its PE slot. Slot layout: [A rows][x].
      * Assumes thread-MPI (the default/only supported mode): slot r maps to PE
      * r's units directly. Under the retired PIMID_MPI_PROCESS=1 legacy mode the
      * simulator's per-rank unit rotation (pe_memory_interface.h) would
-     * double-shift these prepped slots. */
+     * double-shift these prepped slots.
+     * The rows and x are built where the kernel reads them, not built elsewhere
+     * and copied in: a PE's pages fill its memory in the order it first touches
+     * them, so a setup copy touched first would hold the PE's own unit and push
+     * the data the kernel reads into the next one. */
     int prep = pimid_devorg_needs_prep(&dev);
     size_t need = ((size_t)local_rows * N + (size_t)N) * sizeof(float);
     size_t slot_bytes = 0;
@@ -135,12 +123,35 @@ int main(int argc, char* argv[]) {
             prep = 0;
         }
     }
+    float* A_local = NULL;
+    float* x = NULL;
     if (prep) {
         Ape = (float*)pimid_devorg_pe_slot(Adev, rank, slot_bytes);
         xpe = Ape + (size_t)local_rows * N;   /* x copy after A rows */
-        memcpy(Ape, A_local, (size_t)local_rows * N * sizeof(float));
-        memcpy(xpe, x, (size_t)N * sizeof(float));
+        A_local = Ape;
+        x = xpe;
+    } else {
+        A_local = (float*)malloc((size_t)local_rows * N * sizeof(float));
+        x = (float*)malloc(N * sizeof(float));
+        if (!A_local || !x) {
+            fprintf(stderr, "rank %d: malloc failed\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
     }
+
+    /* Initialize: same pattern as serial (rank builds its rows) */
+    for (int i = 0; i < local_rows; i++) {
+        int gi = local_start + i;
+        for (int j = 0; j < N; j++)
+            A_local[i * N + j] = (float)((gi + j) % 7);
+    }
+
+    /* x initialized on all ranks (same values) */
+    for (int i = 0; i < N; i++)
+        x[i] = 1.0f;
+
+    /* Broadcast x to all ranks (in case future versions init only on rank 0) */
+    MPI_Bcast(x, N, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
     if (prep)
         fprintf(stderr, "[devorg] PREP ACTIVE: kernel=gemv level=%s pes=%d "
@@ -195,7 +206,8 @@ int main(int argc, char* argv[]) {
         printf("BENCH_DONE\n");
     }
 
-    free(A_local); free(x); free(y_local);
+    if (!prep) { free(A_local); free(x); }   /* in the slot when prepped */
+    free(y_local);
     MPI_Finalize();
     return 0;
 }

@@ -275,12 +275,15 @@ PE's memory (first-touch placement, [memory.md](memory.md#pe-placement-levels)).
 
 Since 1.12.18 placement is first touch, so a slot belongs to a PE only if that
 PE writes it first. The shared-memory kernels therefore fill each slot from its
-own thread (thread p fills PE p's slot), and on the host-layout path each
-thread initialises the share of every array it later computes on, with the
-same split as the compute loop. Data built by one sequential random stream
-(bfs, histogram, spmv) is first zeroed by its owners, then filled. Unmodified
-programs that set data up serially (Rodinia, NPB) place it with the master's
-PE, as they would on a real non-uniform machine.
+own thread (thread p fills PE p's slot), and on the host-layout path each thread
+initialises the share of every array it later computes on, with the same split
+as the compute loop. Data built by one sequential random stream (bfs, histogram,
+spmv) is first zeroed by its owners, then filled. A PE's pages also fill its
+memory in the order it first touches them, so the message-passing kernels build
+their data in the slot itself: a setup copy built elsewhere and copied in would
+be touched first, hold the PE's own unit, and push the data the kernel reads
+into the next one. Unmodified programs that set data up serially (Rodinia, NPB)
+place it with the master's PE, as they would on a real non-uniform machine.
 
 ## The PE scratchpad
 

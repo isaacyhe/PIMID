@@ -179,8 +179,35 @@ int main(int argc, char* argv[]) {
     const int nloc = (int)(hi - lo);
     const size_t nedge = (size_t)nloc * (size_t)deg;
 
-    int* row_ptr = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
-    int* col_idx = (int*)malloc((nedge + 1) * sizeof(int));
+    /* ---- DATA PREP (before ROI, not timed): this rank's block and buffers, built in its PE slot. Slot layout:
+     * [row_ptr nloc+1][col_idx nloc*deg][dist nloc][frontier nloc][next nloc][sendbuf nloc*deg][recvbuf in_edges]
+     * [sc n][rc n][so n][ro n][outtot n]. Assumes thread-MPI: slot r maps to PE r's units directly.
+     * The block is generated where the kernel reads it, not generated elsewhere and copied in: a PE's pages fill
+     * its memory in the order it first touches them, so a setup copy touched first would hold the PE's own unit and
+     * push the data the kernel reads into the next one. Only the receive buffer's size (in_edges) waits for the
+     * generated block; the head before it does not, so the slot is mapped first whenever the head fits, and the
+     * whole need is checked once in_edges is known. */
+    int prep = pimid_devorg_needs_prep(&dev);
+    size_t slot_bytes = 0;
+    int* dbuf = NULL;
+    int* slot = NULL;
+    const size_t head = ((size_t)(nloc + 1) + nedge + 3 * (size_t)nloc + nedge) * sizeof(int);
+    if (prep) {
+        slot_bytes = pimid_devorg_slot_bytes(&dev);
+        if (head <= slot_bytes) {   /* else the need check below refuses: the need is at least the head */
+            dbuf = (int*)pimid_devorg_alloc(&dev, &slot_bytes);
+            if (!dbuf) {
+                fprintf(stderr, "rank %d: devorg: alloc of the device buffer failed; "
+                        "running host-layout (no prep)\n", rank);
+                prep = 0;
+            } else {
+                slot = (int*)pimid_devorg_pe_slot(dbuf, rank, slot_bytes);
+            }
+        }
+    }
+
+    int* row_ptr = slot ? slot : (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+    int* col_idx = slot ? slot + (nloc + 1) : (int*)malloc((nedge + 1) * sizeof(int));
     int* outtot = (int*)malloc((size_t)nprocs * sizeof(int));
     int* intot = (int*)malloc((size_t)nprocs * sizeof(int));
     if (!row_ptr || !col_idx || !outtot || !intot) {
@@ -200,15 +227,37 @@ int main(int argc, char* argv[]) {
     long in_edges = 0;
     for (int p = 0; p < nprocs; p++) in_edges += intot[p];
 
-    int* dist = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
-    int* frontier = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
-    int* next = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
-    int* sendbuf = (int*)malloc((nedge + 1) * sizeof(int));
-    int* recvbuf = (int*)malloc(((size_t)in_edges + 1) * sizeof(int));
-    int* counts = (int*)malloc(5 * (size_t)nprocs * sizeof(int));
-    if (!dist || !frontier || !next || !sendbuf || !recvbuf || !counts) {
-        fprintf(stderr, "rank %d: malloc failed\n", rank);
+    bfs_mpi_geom_t geom = { deg, nprocs, in_edges };
+    size_t need = bfs_mpi_need(V, &geom);
+    if (prep && need > slot_bytes) {
+        /* A need larger than the slot is refused. */
+        char who[32];
+        bfs_mpi_geom_t mean = { deg, nprocs, -1 };
+        snprintf(who, sizeof who, "rank %d: ", rank);
+        pimid_devorg_report_slot_refusal(who, "bfs", &dev, need, slot_bytes, "--vertices",
+            pimid_devorg_largest_fit(bfs_mpi_need, &mean, V, slot_bytes));
         MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    int *dist, *frontier, *next, *sendbuf, *recvbuf, *counts;
+    if (slot) {
+        dist = col_idx + nedge;
+        frontier = dist + nloc;
+        next = frontier + nloc;
+        sendbuf = next + nloc;
+        recvbuf = sendbuf + nedge;
+        counts = recvbuf + in_edges;
+    } else {
+        dist = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+        frontier = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+        next = (int*)malloc((size_t)(nloc + 1) * sizeof(int));
+        sendbuf = (int*)malloc((nedge + 1) * sizeof(int));
+        recvbuf = (int*)malloc(((size_t)in_edges + 1) * sizeof(int));
+        counts = (int*)malloc(5 * (size_t)nprocs * sizeof(int));
+        if (!dist || !frontier || !next || !sendbuf || !recvbuf || !counts) {
+            fprintf(stderr, "rank %d: malloc failed\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
     }
     for (int i = 0; i < nloc; i++) dist[i] = -1;
     int fsize = 0;
@@ -218,56 +267,10 @@ int main(int argc, char* argv[]) {
         fsize = 1;
     }
 
-    /* ---- DATA PREP (before ROI, not timed): this rank's block and buffers -> its PE slot. Slot layout:
-     * [row_ptr nloc+1][col_idx nloc*deg][dist nloc][frontier nloc][next nloc][sendbuf nloc*deg][recvbuf in_edges]
-     * [sc n][rc n][so n][ro n][outtot n]. Assumes thread-MPI: slot r maps to PE r's units directly. */
-    int prep = pimid_devorg_needs_prep(&dev);
-    bfs_mpi_geom_t geom = { deg, nprocs, in_edges };
-    size_t need = bfs_mpi_need(V, &geom);
-    size_t slot_bytes = 0;
-    int* dbuf = NULL;
     int *rp = row_ptr, *ci = col_idx, *ds = dist, *fr = frontier, *nx = next, *sb = sendbuf, *rb = recvbuf;
     int *sc = counts, *rc = counts + nprocs, *so = counts + 2 * nprocs, *ro = counts + 3 * nprocs,
         *ot = counts + 4 * nprocs;
     memcpy(ot, outtot, (size_t)nprocs * sizeof(int));
-    if (prep) {
-        /* A need larger than the slot is refused. */
-        slot_bytes = pimid_devorg_slot_bytes(&dev);
-        if (need > slot_bytes) {
-            char who[32];
-            bfs_mpi_geom_t mean = { deg, nprocs, -1 };
-            snprintf(who, sizeof who, "rank %d: ", rank);
-            pimid_devorg_report_slot_refusal(who, "bfs", &dev, need, slot_bytes, "--vertices",
-                pimid_devorg_largest_fit(bfs_mpi_need, &mean, V, slot_bytes));
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-        dbuf = (int*)pimid_devorg_alloc(&dev, &slot_bytes);
-        if (!dbuf) {
-            fprintf(stderr, "rank %d: devorg: alloc of the device buffer failed; "
-                    "running host-layout (no prep)\n", rank);
-            prep = 0;
-        }
-    }
-    if (prep) {
-        int* slot = (int*)pimid_devorg_pe_slot(dbuf, rank, slot_bytes);
-        rp = slot;
-        ci = rp + (nloc + 1);
-        ds = ci + nedge;
-        fr = ds + nloc;
-        nx = fr + nloc;
-        sb = nx + nloc;
-        rb = sb + nedge;
-        sc = rb + in_edges;
-        rc = sc + nprocs;
-        so = rc + nprocs;
-        ro = so + nprocs;
-        ot = ro + nprocs;
-        memcpy(rp, row_ptr, (size_t)(nloc + 1) * sizeof(int));
-        memcpy(ci, col_idx, nedge * sizeof(int));
-        memcpy(ds, dist, (size_t)nloc * sizeof(int));
-        memcpy(ot, outtot, (size_t)nprocs * sizeof(int));
-        if (fsize) fr[0] = frontier[0];
-    }
     so[0] = 0;
     for (int p = 1; p < nprocs; p++) so[p] = so[p - 1] + ot[p - 1];
 
@@ -353,8 +356,11 @@ int main(int argc, char* argv[]) {
         printf("BENCH_DONE\n");
     }
 
-    free(row_ptr); free(col_idx); free(outtot); free(intot);
-    free(dist); free(frontier); free(next); free(sendbuf); free(recvbuf); free(counts);
+    free(outtot); free(intot);
+    if (!slot) {   /* in the slot when prepped */
+        free(row_ptr); free(col_idx);
+        free(dist); free(frontier); free(next); free(sendbuf); free(recvbuf); free(counts);
+    }
     MPI_Finalize();
     return 0;
 }
