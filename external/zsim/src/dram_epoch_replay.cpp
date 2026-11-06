@@ -326,6 +326,11 @@ uint32_t DramEpochReplay::addHostInterface(uint64_t hostFreqHz) {
     info("[mem] %s: host memory interface %u joined the replay (%s): host clock %.1f MHz = %.4f DRAM cycles per host cycle; its requests carry source_id 1 and the controller splits their row hits/misses/conflicts and activates [1.12.18]",
          name_.c_str(), mi, hostOnly_ ? "host-only instance" : "the device's instance: the shared array, interfaces after the device's",
          (double)hostFreqHz / 1e6, tpc);
+    if (!hostOnly_ && hostFreqHz != coreFreqHz_)   // (1.12.272): see init.cpp (a no-offload run is replayed on the host clock)
+        info("[mem] %s: the host clock (%.1f MHz) differs from this replay's clock (%.1f MHz, the device elements'): a host record is stamped on the host clock and placed "
+             "on the replay's, so the host's requests reach the shared array %.3f times as far apart in DRAM time as on the host's own clock (their latencies are still "
+             "returned in host cycles); the device's requests are timed on their own clock [(1.12.272)]",
+             name_.c_str(), (double)hostFreqHz / 1e6, (double)coreFreqHz_ / 1e6, (double)hostFreqHz / (double)coreFreqHz_);
     return mi;
 }
 

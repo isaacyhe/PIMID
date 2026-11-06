@@ -1365,7 +1365,25 @@ static void InitSystem(Config& config) {
             if (replayCfg.empty()) panic("sys.hierarchy.dramEpochReplay = 1 needs sys.hierarchy.dramReplayConfigFile (the device's Ramulator2 YAML)");
             uint32_t bursts = config.get<uint32_t>("sys.hierarchy.dramReplayBurstsPerLine", config.get<uint32_t>("sys.mem.burstsPerLine", 1));
             uint32_t lineBits = 0; while ((1u << lineBits) < zinfo->lineSize) lineBits++;
-            zinfo->dramReplay = new DramEpochReplay(replayCfg, (uint64_t)peMiFreqMHz * 1000000ull, mcCount, bursts, lineBits, "dramReplay");
+            /* (1.12.272): a no-offload co-simulation (PIMID_COSIM_NO_OFFLOAD) whose host memory joins this instance
+             * (sys.mem.hostReplayShared) runs nothing on the device: its only requesters are the host cores, which
+             * stamp their records on the host clock, and its run time is a host core's ROI end on that clock. The
+             * replay then runs on the host clock. On the device element clock it placed a host record, and moved its
+             * own clock along the phase grid, f_host / f_dev times too far per host cycle: the ROI end, read on the host
+             * clock, became known long after the replay had passed it, and the run time was raised to the completion of
+             * the stretched records (by f_host / f_dev). An offload run keeps the device clock (its device elements
+             * stamp on it); DramEpochReplay::addHostInterface notes a host clock that differs from it. */
+            uint64_t replayHz = (uint64_t)peMiFreqMHz * 1000000ull;
+            if (cosimMode && getenv("PIMID_COSIM_NO_OFFLOAD") != nullptr && config.get<uint32_t>("sys.mem.hostDramReplay", 0) != 0
+                && config.get<uint32_t>("sys.mem.hostReplayShared", 0) != 0) {
+                const uint64_t hostHz = 1000000ull * config.get<uint32_t>("sys.mem.hostFreqMHz", zinfo->freqMHz);
+                if (hostHz != replayHz) {
+                    info("[ZSim] no-offload co-simulation: the shared memory's replay runs on the host clock (%.1f MHz), not the device element clock (%u MHz): the host cores are its only requesters [(1.12.272)]",
+                         (double)hostHz / 1e6, peMiFreqMHz);
+                    replayHz = hostHz;
+                }
+            }
+            zinfo->dramReplay = new DramEpochReplay(replayCfg, replayHz, mcCount, bursts, lineBits, "dramReplay");
             for (uint32_t i = 0; i < mcCount; i++)   // 1.12.18: requests outside the ROI leave the interfaces' rd/wr
                 zinfo->dramReplay->bindCounters(rawMIs[i]->replayMi(), rawMIs[i]->rdCounter(), rawMIs[i]->wrCounter(),
                                                 rawMIs[i]->replayPricedCounter(), rawMIs[i]->replayLatCounter());   // (1.12.153): and the charged view

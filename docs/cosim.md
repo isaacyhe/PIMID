@@ -455,6 +455,15 @@ which stays priced because the host uses it. The report says so in one line
 (`[power] NO_OFFLOAD baseline: device node ... NOT priced`). The mode is read
 from the environment at power time, so a recomputation of a baseline's power
 must run with the variable set too.
+When the host memory is the device's (the shared array), the baseline's memory
+replay runs on the host clock: the host cores are its only requesters and stamp
+their records on that clock. It used to run on the device elements' clock,
+which spread the host's requests over a DRAM timeline f_host / f_dev times too
+long and raised the run time by that factor; a baseline whose host and device
+clocks are equal was not affected (changelog, 1.12.272). An offload
+run keeps the device clock, and its log notes a host clock that differs from
+it: the host's requests then reach the shared array f_host / f_dev times as far
+apart as on the host's own clock.
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.

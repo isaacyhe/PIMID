@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.272 -- a no-offload co-simulation replays its shared memory on the host clock, so a device clock other than the host's no longer stretches its run time
+
+- **The problem.** A no-offload co-simulation (`PIMID_COSIM_NO_OFFLOAD=1`) whose host memory is the device's
+  replays the shared array in the device's DRAM replay instance, which ran on the device elements' clock. Its only
+  requesters are the host cores, which stamp their records on the host clock, and its run time is the latest host
+  core's ROI end on that clock. Placed on the device clock, a host record, and the replay's own clock, moved
+  f_host / f_dev times too far per host cycle: the ROI end, read on the host clock, became known long after the
+  replay had passed it, and the run time was raised to the completion of the stretched records. With a 350 MHz
+  device and a 2,000 MHz host the run time came out 5.71 times too long (2.00 times with 2,000 and 4,000 MHz), the
+  replay window as many times too long, and the host's requests reached the array that much farther apart.
+  Baselines whose host and device clocks are equal were not affected.
+- **The fix.** In a no-offload co-simulation with a shared host memory the replay runs on the host clock. An
+  offload run keeps the device clock, on which its device elements stamp; when a host clock differs from it, the
+  log now notes it: the host's requests (the flush and launch before the doorbell, and any host thread's
+  accesses) then reach the shared array f_host / f_dev times as far apart as on the host's own clock, while their
+  latencies are returned in host cycles and the device's requests keep their timing.
+- **Data impact.** No-offload co-simulations with a shared host memory and a device clock other than the host's
+  change: their run time, replay window and DRAM energy were too large, by up to f_host / f_dev. Every other run,
+  including every no-offload baseline whose two clocks are equal and every offload run, is unchanged; an offload
+  run whose host clock differs from its device clock prints one more log line.
+
 ## 1.12.271 -- a message-passing kernel builds its data in its processing element's slot, so no setup copy holds the element's own memory
 
 - **The problem.** Placement is first touch, and a processing element's pages fill its memory in the order the
