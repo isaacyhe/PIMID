@@ -75,7 +75,9 @@ class DramEpochReplay {
     /* 1.12.18: the bank a host access lands on in a coupled system -- the
      * device's own placement of that line (unit, bank slot, row), so the host
      * and the device see one array. Not used by a hostOnly instance. */
-    void setHostTarget(std::function<void(uint64_t lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row)> f) { hostTarget_ = f; }
+    /* (1.12.282): colLine -- the line address the column is taken from (the line itself, or its place in the unit's own
+     * address space when memory.controller.host_interleave_bytes spreads a page over the units) */
+    void setHostTarget(std::function<void(uint64_t lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row, uint64_t& colLine)> f) { hostTarget_ = f; }
     /* 1.12.18: record one host access (host-clock cycle `cycle`, core srcId)
      * on interface `mi` and return its service latency in host cycles: the
      * previous epoch's measured mean of that interface; 0 = not yet measured
@@ -387,7 +389,7 @@ class DramEpochReplay {
     bool devRequesters_ = false;   // (1.12.147): see setDeviceRequesters
     uint32_t hostMi0_ = ~0u, hostMis_ = 0;     // host interfaces [hostMi0_, hostMi0_ + hostMis_)
     std::vector<double> miTicksPerCycle_;     // DRAM ticks per cycle of each interface's own clock
-    std::function<void(uint64_t, uint32_t&, uint32_t&, uint64_t&)> hostTarget_;
+    std::function<void(uint64_t, uint32_t&, uint32_t&, uint64_t&, uint64_t&)> hostTarget_;
     bool hostRoBaRaCoCh_ = false;             // hostOnly: the YAML maps RoBaRaCoCh (channel = low bits above the column access)
 
     void replayEpoch(uint64_t epoch);

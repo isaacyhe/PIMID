@@ -24,6 +24,7 @@ channel_width_bits: 16   # 1.11.101 (step 2): JESD250D 4.1: two independent 16-b
 bank_parallel:
   channel_is_device: true    # JESD250D 4.1: no rank level; each 16-bit channel is independent, with its own banks and command interface, and its activation (tRRD_S, tFAW), precharge-all and refresh timing are the channel's: the bank-parallel controller keeps them at BANK/BANK_GROUP placement and lifts only the column-to-column constraints there
 activation_window: enforce   # JESD250D tFAW: at most four ACTs in one tFAW window, per channel (Ramulator2 nFAW); off lifts the window (a design that widens it)
+host_interleave_bytes: 4096   # (1.12.282): a host page no element placed stays on one unit, page by page (1.12.146); a power of two from 64 to 2048 spreads it over the bank groups, then the banks; memory.controller.host_interleave_bytes overrides
 refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
 

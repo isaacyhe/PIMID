@@ -321,6 +321,7 @@ struct GlobSimInfo {
          * instantiates). The PE row count folds a row number onto them as the replay does. 0 = not sent: the
          * row count keeps the whole row number. */
         uint32_t dramRowsPerBank = 0;
+        uint32_t hostInterleaveBytes = 4096;   // (1.12.282): memory.controller.host_interleave_bytes (pe_memory_interface.h hostTarget)
         /* (1.12.276): the memory technology's timing rules (src/main.cpp resolves them from the part record or the run's
          * YAML, pim.mc.*): the channel level is the device, so the bank-parallel controller keeps its timing there; the
          * four-activate window (tFAW) is held. *FromYaml: the run's YAML set it (else the part record). */

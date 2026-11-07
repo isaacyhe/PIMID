@@ -3271,6 +3271,7 @@ static const char* kSchemaPaths[] = {
     "memory.power_down_threshold_ns", "memory.channels_per_die", "memory.ranks_per_channel", "memory.subarray_height", "memory.subarrays_per_bank", "memory.subbanks_per_bank", "memory.technology", "memory.topology",
     "memory.controller.bandwidth", "memory.controller.bound_latency", "memory.controller.ramulator_config", "memory.controller.type",
     "memory.controller.write_high_watermark", "memory.controller.write_low_watermark",   // 1.12.18 (write drain)
+    "memory.controller.host_interleave_bytes",   // (1.12.282)
     "memory.dram.ddr5_speed_grade", "memory.dram.device_width", "memory.dram.ddr3_variant", "memory.dram.trfc_basis", "memory.row_policy.host_idle_timeout_clocks", "memory.row_policy.host_closed_mode", "memory.energy.read_energy_nj", "memory.energy.write_energy_nj",
     "memory.organization.bank_groups", "memory.organization.banks_per_group", "memory.local_path", "memory.write_buffer_entries", "memory.power.static_power_mw",
     "memory.timing.read_latency_ns", "memory.timing.subarray_read_ns", "memory.timing.subarray_write_ns", "memory.timing.write_latency_ns",
@@ -3559,6 +3560,11 @@ struct UnifiedConfig {
      * published 32/16 of 48 (Chatterjee et al., HPCA 2012, Table 1 p.2, p.6) */
     double write_high_watermark = pimid::RamulatorWrapper::kWriteHighWatermark;
     double write_low_watermark  = pimid::RamulatorWrapper::kWriteLowWatermark;
+    /* (1.12.282): memory.controller.host_interleave_bytes -- how a host page no element has placed is laid over the shared
+     * array's units (the device is the host's memory): 4096 = page by page, as since 1.12.146; a power of two from 64
+     * to 2048 = chunks of that size over the bank groups first, then the banks, then the ranks and channels.
+     * -1 = auto: the technology's part record (params/dram/<tech>.yaml host_interleave_bytes; hostInterleaveOf) */
+    int host_interleave_bytes = -1;
     std::string row_policy_host_closed_mode = "auto_precharge";
     int mem_bank_kb = 0;           // 1.11.107: memory.bank_kb as given (0 = not given: 64 KB); the run's bank unit is g_bank_unit_bytes
     int sram_cell_type = 0;        // (1.12.253): memory.sram_cell_type (0 hp, 1 lstp, 2 lop); the run's is g_sram_cell_type
@@ -7575,6 +7581,20 @@ static MemTechRules memTechRules(const UnifiedConfig& config) {
     m.windowOn = m.windowFromYaml ? (config.mc_activation_window == "enforce") : (rec.activation_window == "enforce");
     return m;
 }
+/* (1.12.282): how a host page no element has placed is laid over the shared array (pe_memory_interface.h hostTarget): the
+ * run's memory.controller.host_interleave_bytes, else the technology's part record (host_interleave_bytes); a memory
+ * without a DRAM part record keeps the page-by-page layout (4096). src names where the value came from. */
+static int hostInterleaveOf(const UnifiedConfig& config, std::string& src) {
+    if (config.host_interleave_bytes > 0) { src = "the run's YAML"; return config.host_interleave_bytes; }
+    const std::string& t = config.memory_tech;
+    const bool dram = (t == "DDR3" || t == "DDR4" || t == "DDR5" || t == "LPDDR5" || t == "GDDR6" || t == "HBM2" || t == "HBM3");
+    if (!dram) { src = "no DRAM part record: page by page"; return 4096; }
+    const auto& rec = pimid::params::dramPartRecord(t);
+    std::string lt = rec.technology;
+    for (auto& c : lt) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    src = "the " + t + " part record, params/dram/" + lt + ".yaml";
+    return rec.host_interleave_bytes;
+}
 static void computeHierarchyLatencies(UnifiedConfig& config) {
     // Map placement_level string to integer
     /* 1.11.106: lowercase is accepted (case-folded); an unknown word is refused below. */
@@ -9934,6 +9954,16 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
         out << "        dramRowBytes = " << row_bytes << ";\n";
         out << "        dramRowStrideBytes = " << row_stride << ";\n";   // 1.11.91
         out << "        dramRowsPerBank = " << row_rows << ";\n";   // (1.12.268): the PE row count folds onto the replay's rows
+        {   // (1.12.282): the host layout on the shared array, from the run's YAML or the part record (hostInterleaveOf)
+            std::string hsrc;
+            const int hib = hostInterleaveOf(config, hsrc);
+            out << "        hostInterleaveBytes = " << hib << ";\n";
+            std::cout << "  [config] memory.controller.host_interleave_bytes: " << hib << " (" << hsrc << "): "
+                      << (hib >= 4096 ? "a host page no element placed stays on one unit, page by page"
+                                      : "a host page no element placed is spread in chunks of that size over the bank "
+                                        "groups, then the banks, ranks and channels")
+                      << " [(1.12.282)]" << std::endl;
+        }
         {   // 1.12.20: precharge power-down in the replayed controller
             double pd_ns = 0.0; int pd_nck = 0; std::string pd_src;
             const bool pd = is_dram && config.mem_power_down && dramPdTxp(config, mt, pd_ns, pd_nck, pd_src);
@@ -23720,6 +23750,19 @@ static int parseDeviceMemoryBlocks(YAML::Node root, UnifiedConfig& config, const
             config.write_high_watermark = yamlDouble(ctrl["write_high_watermark"], config.write_high_watermark, sc.pfx + "memory.controller.write_high_watermark");
         if (ctrl["write_low_watermark"])
             config.write_low_watermark = yamlDouble(ctrl["write_low_watermark"], config.write_low_watermark, sc.pfx + "memory.controller.write_low_watermark");
+        if (ctrl["host_interleave_bytes"]) {   // (1.12.282): auto (the part record) or a power of two from 64 to 4096
+            const auto& hn = ctrl["host_interleave_bytes"];
+            if (hn.IsScalar() && hn.Scalar() == "auto") config.host_interleave_bytes = -1;
+            else {
+                config.host_interleave_bytes = yamlInt(hn, config.host_interleave_bytes, sc.pfx + "memory.controller.host_interleave_bytes");
+                const int g = config.host_interleave_bytes;
+                if (g < 64 || g > 4096 || (g & (g - 1)) != 0) {
+                    std::cerr << "[config] FATAL: " << sc.pfx << "memory.controller.host_interleave_bytes = " << g
+                              << ": auto (the technology's part record) or a power of two from 64 (one line) to 4096 (one page)." << std::endl;
+                    std::exit(2);
+                }
+            }
+        }
         if (!(config.write_low_watermark > 0.0 && config.write_low_watermark < config.write_high_watermark && config.write_high_watermark <= 1.0)) {
             std::cerr << "[config] FATAL: " << sc.pfx << "memory.controller.write_low_watermark (" << config.write_low_watermark
                       << ") and write_high_watermark (" << config.write_high_watermark
@@ -24338,6 +24381,11 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.md1_bandwidth_user_set = d.md1_bandwidth_user_set;
         config.weave_bound_latency = d.weave_bound_latency;
         config.ramulator_config_file = d.ramulator_config_file;
+        config.host_interleave_bytes = d.host_interleave_bytes;   // (1.12.282): the device memory's controller key
+        /* (1.12.282): the device memory's write watermarks were parsed under system.devices[].memory.controller but not
+         * adopted, so the replayed controller kept the defaults; equal to them unless the device sets them */
+        config.write_high_watermark = d.write_high_watermark;
+        config.write_low_watermark = d.write_low_watermark;
         if (d.mem_bank_kb != config.mem_bank_kb) {
             config.mem_bank_kb = d.mem_bank_kb;
             g_bank_unit_bytes = static_cast<uint64_t>(d.mem_bank_kb > 0 ? d.mem_bank_kb : 64) * 1024ULL;

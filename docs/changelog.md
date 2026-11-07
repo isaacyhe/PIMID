@@ -6,6 +6,29 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.282 -- a host page on a DDR5 device memory is spread over the bank groups, as a host controller does
+
+- **The problem.** When the device is the host's memory, a host page that no element has placed went to one unit,
+  page by page over the units (1.12.146): all 64 lines of a page sat in one bank. A host stream's consecutive column
+  commands therefore went to one bank group, so on DDR5 they were spaced by tCCD_L, its writes by tCCD_L_WR (12 and 24
+  nCK at DDR5-4800 x8, against tCCD_S 8 nCK across bank groups, JESD79-5B), and every host write drain was one bank
+  group's. A host memory controller spreads consecutive lines over the bank groups to avoid exactly this. A one-core
+  16 MB copy read at 317 ns at 7.7 GB/s on a 38.4 GB/s DIMM, and DDR5 host baselines streaming from memory ran about
+  20% slow.
+- **The fix.** The layout is a property of the technology's part record, `host_interleave_bytes`: DDR5 256 (256-byte
+  chunks over the bank groups first, then the banks, ranks and channels; each bank keeps its chunks in order on its
+  rows), every other technology 4096 (page by page, as before). `memory.controller.host_interleave_bytes` (under the
+  device's memory; `auto` = the record) overrides it, and the run logs the value and its source. On HBM the chunks go
+  over the channels right after the bank groups. A device's write watermarks written under
+  `system.devices[].memory.controller` are now adopted by the run (they were parsed and dropped; unchanged at the
+  defaults).
+- **Data impact.** DDR5 runs whose host memory is the device's (no-offload host baselines,
+  co-simulations) change: a host page no element placed is now spread at 256 B. A one-core 16 MB copy went from
+  13.70 M to 7.60 M cycles (read latency 317 to 136 ns); a DDR5 triad host baseline (4 M elements) -20% at 1 core and
+  -23% at 4 cores; GEMV and stencil about -1% and -3%. At smoke size the DDR5 co-simulations moved -20% (MPI GEMV) and
+  -48% (OpenMP GEMV), where the host's coherence flush before the doorbell is most of the run. DDR5 device-only runs
+  (no host traffic) and every other technology are unchanged, bit for bit.
+
 ## 1.12.281 -- a message-passing rank reads its own copy of the program's data
 
 - **The problem.** The ranks of a message-passing run are threads of one process (thread-MPI), so the program's own

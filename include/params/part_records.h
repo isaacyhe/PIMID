@@ -172,6 +172,10 @@ struct DramPartRecord {
      * activation_window: "enforce" holds the four-activate window (nFAW), "off" lifts it. */
     bool bank_parallel_channel_is_device = false;
     std::string activation_window = "enforce";
+    /* (1.12.282): how a host page no element has placed is laid over the shared array when the device is the host's
+     * memory (required; memory.controller.host_interleave_bytes overrides): 4096 = page by page on one unit; a power of
+     * two from 64 to 2048 = chunks of that size over the bank groups first, then the banks, ranks and channels. */
+    int host_interleave_bytes = 4096;
     double die_capacity_gb = 0.0;  // HBM core die capacity (0 for non-stacked)
     std::vector<RefreshRung> refresh_ladder;
     IddBlock idd;                        // 1.11.104

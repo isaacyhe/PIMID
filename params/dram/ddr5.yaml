@@ -39,6 +39,7 @@ channel_width_bits: 32   # 1.11.101 (step 2): JESD79-5B 2.1: each of the two ind
 bank_parallel:
   channel_is_device: false   # JESD79-5B: the device timing (tRRD, tFAW, precharge-all, refresh) is held per rank of a sub-channel; the channel level holds the bus the ranks share, which the bank-parallel controller (BANK/BANK_GROUP placement) lifts
 activation_window: enforce   # JESD79-5B tFAW: at most four ACTs in one tFAW window, per rank of a sub-channel (Ramulator2 nFAW); off lifts the window (a design that widens it)
+host_interleave_bytes: 256   # (1.12.282): how a host page no element placed is laid over the banks when the device is the host's memory: 256 B chunks over the bank groups first, then the banks -- a DDR5 host controller spreads consecutive lines over the bank groups so back-to-back column commands pay tCCD_S, not tCCD_L (JESD79-5B: tCCD_L 12 / tCCD_L_WR 24 nCK against tCCD_S 8 nCK at 4800 MT/s x8); 4096 keeps the page-by-page layout; memory.controller.host_interleave_bytes overrides
 refresh_ladder:                    # JEDEC JESD79-5: 2x refresh above 85 C (the model applies one step)
   - { above_c: 85.0, factor: 0.5 }
 

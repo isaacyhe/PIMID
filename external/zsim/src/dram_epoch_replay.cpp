@@ -715,8 +715,8 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
             if (hostRoBaRaCoCh_ && !counts_.empty()) ch = (uint32_t)((addr >> txBits_) % (uint64_t)std::max(1, counts_[0]));
         } else {
             if (!hostTarget_) panic("DramEpochReplay %s: a host interface on the shared array needs the device placement (setHostTarget)", name_.c_str());
-            uint32_t unit = 0, slot = 0; uint64_t row = 0;
-            hostTarget_(lineAddr, unit, slot, row);
+            uint32_t unit = 0, slot = 0; uint64_t row = 0, colLine = lineAddr;
+            hostTarget_(lineAddr, unit, slot, row, colLine);
             if (chipSplit_) {
                 /* 1.12.18: a host access drives every chip of the rank in lock step:
                  * its row is chips_ x the per-chip row (the PE row model's stripe is one chip's page), the same
@@ -727,10 +727,10 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
                 const uint64_t s = hostRowSlots_ ? hostRowSlots_ : 1;
                 const uint64_t stripe = (row * s + slot) / chips_;
                 slot = (uint32_t)(stripe % s); row = stripe / s;
-                addr = composeAddr(unit, slot, row, lineAddr, &ch, 0);
+                addr = composeAddr(unit, slot, row, colLine, &ch, 0);
                 recordAddr(epoch, stamp, addr, ch, isWrite, mi);
             } else {
-                addr = composeAddr(unit, slot, row, lineAddr, &ch);
+                addr = composeAddr(unit, slot, row, colLine, &ch);
                 recordAddr(epoch, stamp, addr, ch, isWrite, mi);
             }
         }

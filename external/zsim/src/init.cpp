@@ -745,6 +745,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.dramRowBytes = config.get<uint32_t>("sys.hierarchy.dramRowBytes", 0);  // 1.11.52 (D003)
         zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91
         zinfo->hierarchy.dramRowsPerBank = config.get<uint32_t>("sys.hierarchy.dramRowsPerBank", 0);  // (1.12.268)
+        zinfo->hierarchy.hostInterleaveBytes = config.get<uint32_t>("sys.hierarchy.hostInterleaveBytes", 4096);  // (1.12.282)
         zinfo->hierarchy.dramChannelIsDevice = config.get<bool>("sys.hierarchy.dramChannelIsDevice", false);   // (1.12.276)
         zinfo->hierarchy.dramChannelIsDeviceFromYaml = config.get<bool>("sys.hierarchy.dramChannelIsDeviceFromYaml", false);
         zinfo->hierarchy.dramActivationWindow = config.get<bool>("sys.hierarchy.dramActivationWindow", true);
@@ -1520,7 +1521,7 @@ static void InitSystem(Config& config) {
                         panic("sys.mem.hostReplayShared = 1 but the device memory is not replayed (no dramReplay instance): the shared array would have two controllers");
                     hRep = zinfo->dramReplay;
                     PEMemoryInterface* m0 = rawMIs[0];
-                    hRep->setHostTarget([m0](uint64_t la, uint32_t& u, uint32_t& s, uint64_t& r) { m0->hostTarget(la, u, s, r); });
+                    hRep->setHostTarget([m0](uint64_t la, uint32_t& u, uint32_t& s, uint64_t& r, uint64_t& c) { m0->hostTarget(la, u, s, r, c); });
                 } else {
                     const string hCfg = config.get<const char*>("sys.mem.hostReplayConfigFile", "");
                     if (hCfg.empty()) panic("sys.mem.hostDramReplay = 1 (decoupled) needs sys.mem.hostReplayConfigFile (the host memory's Ramulator2 YAML)");

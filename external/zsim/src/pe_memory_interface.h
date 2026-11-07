@@ -2534,7 +2534,9 @@ protected:
         (void)firstTouchUnit(byteAddr >> 12, ppu, &u);
     }
 
-    void hostTarget(Address lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row) const {
+    void hostTarget(Address lineAddr, uint32_t& unit, uint32_t& slot, uint64_t& row, uint64_t& colLine) const {
+        colLine = lineAddr;   // (1.12.282): the column's line address (moved below when a host page is interleaved)
+        uint64_t rowAddr = (uint64_t)lineAddr << 6;   // (1.12.282): the byte address the row rule reads
         const uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0) ? zinfo->hierarchy.pagesPerUnit : 1;
         const uint32_t page = (uint32_t)(lineAddr >> 6);
         unit = (totalUnits_ > 0) ? blockUnitOf(page, ppu, totalUnits_) : 0;
@@ -2577,13 +2579,49 @@ protected:
          * pages per unit), which put a host baseline's whole working set on one channel and a few banks
          * (ctrlMaxChannelPermille 1000 on every DDR5 and HBM3 host baseline): a 16-core pointer chase on
          * DDR5 measured 12 705 host cycles per request in the replayed controller, 160 with the pages spread. */
-        if (!placed && totalUnits_ > 0) unit = page % totalUnits_;
+        if (!placed && totalUnits_ > 0) {
+            const auto& hh = zinfo->hierarchy;
+            const uint64_t g = hh.hostInterleaveBytes;
+            if (g >= 64 && g < 4096 && hh.placementLevel <= 2) {
+                /* (1.12.282): memory.controller.host_interleave_bytes -- a host controller spreads consecutive lines over the
+                 * bank groups (consecutive column commands then pay tCCD_S, not tCCD_L, and a write drain is not one bank
+                 * group's), then the banks, then the ranks and channels. Chunk c of g bytes goes to bank group c mod BG,
+                 * bank (c / BG) mod B, then rank and channel; on a DDR rank chip 0 (a host access drives every chip of
+                 * a lock-step rank, so the chips name no banks of their own), on HBM every chip (a channel) right after
+                 * the bank groups; at SUBARRAY placement subarray 0 of that bank. The
+                 * unit keeps the chunks it receives in order (chunk k of the unit at byte k x g), so a row of a bank
+                 * holds consecutive chunks of that bank and the row-buffer locality of a stream is kept. */
+                const uint64_t nsa = std::max<uint32_t>(1, hh.subarraysPerBank), nb = std::max<uint32_t>(1, hh.banksPerBG),
+                               nbg = std::max<uint32_t>(1, hh.bgPerChip), nchip = std::max<uint32_t>(1, hh.chipsPerRank),
+                               nrk = std::max<uint32_t>(1, hh.ranksPerChannel);
+                const uint64_t lv = hh.placementLevel;   // 0 subarray, 1 bank, 2 bank group
+                const uint64_t perChip = (lv == 0) ? nsa * nb * nbg : (lv == 1) ? nb * nbg : nbg;
+                const uint64_t perCh = perChip * nchip * nrk;
+                const uint64_t nch = std::max<uint64_t>(1, (uint64_t)totalUnits_ / perCh);
+                /* HBM folds its channels into the chips (the chip IS the channel, no lock step): the chips are spread over
+                 * too, right after the bank groups; the chips of a DDR rank work in lock step: chip 0 */
+                const bool folded = hh.dramChannels > 1 && hh.chipsPerRank == hh.dramChannels;
+                const uint64_t nc = folded ? nchip : 1;
+                const uint64_t spread = ((lv == 2) ? nbg : nbg * nb) * nc * nrk * nch;   // the host-visible banks
+                const uint64_t c = byteAddr / g;
+                uint64_t x = c % spread;
+                const uint64_t bg = x % nbg; x /= nbg;
+                const uint64_t chip = x % nc; x /= nc;
+                const uint64_t b = (lv == 2) ? 0 : x % nb; if (lv != 2) x /= nb;
+                const uint64_t rk = x % nrk; x /= nrk;
+                const uint64_t chn = x % nch;
+                const uint64_t inChip = (lv == 0) ? (bg * nb + b) * nsa : (lv == 1) ? bg * nb + b : bg;
+                unit = (uint32_t)((((chn * nrk + rk) * nchip + chip) * perChip + inChip) % (uint64_t)totalUnits_);
+                rowAddr = (c / spread) * g + (byteAddr % g);
+                colLine = rowAddr >> 6;
+            } else unit = page % totalUnits_;
+        }
         slot = 0;
         if (rowStrideBytes_ > 0) {
             uint64_t whole;
-            rowOf(byteAddr, slot, row, whole);   // (1.12.268): the one row rule
+            rowOf(placed ? byteAddr : rowAddr, slot, row, whole);   // (1.12.268): the one row rule; (1.12.282): an interleaved page's place in its unit
         } else {
-            row = byteAddr / 1024;   // no row model armed: 1 KB rows, as localAccessLatency states
+            row = (placed ? byteAddr : rowAddr) / 1024;   // no row model armed: 1 KB rows, as localAccessLatency states
         }
     }
   protected:

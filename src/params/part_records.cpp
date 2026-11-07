@@ -140,6 +140,14 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     if (r.activation_window != "enforce" && r.activation_window != "off") {
         error = "part record " + path + ": activation_window '" + r.activation_window + "' is not enforce or off"; return false;
     }
+    /* (1.12.282): the host layout on the shared array (required; memory.controller.host_interleave_bytes overrides) */
+    if (!need(n, "host_interleave_bytes", r.host_interleave_bytes, error)) { error = "part record " + path + ": " + error; return false; }
+    {
+        const int g = r.host_interleave_bytes;
+        if (g < 64 || g > 4096 || (g & (g - 1)) != 0) {
+            error = "part record " + path + ": host_interleave_bytes " + std::to_string(g) + " is not a power of two from 64 to 4096"; return false;
+        }
+    }
     if (!n["refresh_ladder"] || !n["refresh_ladder"].IsSequence() || n["refresh_ladder"].size() == 0) {
         error = "part record " + path + ": required sequence 'refresh_ladder' is missing or empty"; return false;
     }

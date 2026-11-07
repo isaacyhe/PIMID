@@ -265,7 +265,7 @@ initialises lives with that thread's PE, and data one thread initialises for
 all (a serial setup loop) lives with that one PE. Until 1.12.17 pages were
 placed by address, in blocks of `pages_per_unit` pages across all units,
 whoever used them; placement-dependent results of 1.12.17 and earlier are not
-comparable. A page no PE has touched is the host's own and is spread over all units page by page, as a host memory controller interleaves its pages (1.12.146). Capacity is not enforced: a PE that touches more pages than its
+comparable. A page no PE has touched is the host's own and is spread over all units (1.12.146): page by page, or ((1.12.282)) in chunks of `host_interleave_bytes` over the bank groups first, then the banks, ranks and channels, as a host memory controller interleaves consecutive lines. The technology's part record sets it (DDR5 256 B, the others page by page); `memory.controller.host_interleave_bytes` overrides. Page by page, a host stream's lines sit in one bank group: on DDR5 consecutive column commands then pay tCCD_L (tCCD_L_WR for writes) and a host write drain is one bank group's. Capacity is not enforced: a PE that touches more pages than its
 units hold wraps around within them, as the address map did. Each PE
 interface reports `ftPages`, the pages it first touched inside the ROI (pages
 claimed during setup are not counted there).
