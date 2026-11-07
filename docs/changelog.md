@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.276 -- the memory technology's timing rules come from configuration: the part record states them and the run's YAML can override them
+
+- **The problem.** Two rules of the DRAM replay were fixed in the code: whether a technology's channel level is the
+  device, so that at bank and bank-group placement the bank-parallel controller keeps its ACT-to-ACT, precharge-all and
+  refresh timing there (1.12.274 inferred it from the standard's level names: no rank or pseudo-channel level), and
+  whether the four-activate window (tFAW) is held (always). A design that widens the window, or a part organised
+  otherwise, could not be stated.
+- **The fix.** Each DRAM part record (`params/dram/<tech>.yaml`) states `bank_parallel.channel_is_device` (`true` for
+  GDDR6, `false` for DDR3, DDR4, DDR5, LPDDR5, HBM2 and HBM3, each with its standard's source) and `activation_window`
+  (`enforce` in every shipped record); a record without them is refused. The run's YAML overrides either:
+  `pim.mc.bank_parallel.channel_is_device` (`auto`, `true`, `false`) and `pim.mc.activation_window` (`auto`, `enforce`,
+  `off`); `auto` takes the record, and an unknown value is refused. The log names each value and its source. With the
+  window off, the replay removes every window constraint of the device's DRAM, and the configuration warning and the
+  activation-window line say the run does not hold it. A decoupled host memory keeps its standard's window.
+- **Data impact.** None at the defaults: the records state what the code did, and every result is unchanged. The log
+  carries one more line per run, and the configuration warning's last line names the new key.
+
 ## 1.12.275 -- the guest reads simulated time, so a program that reads the clock no longer runs differently from run to run and from node to node
 
 - **The problem.** QEMU passed the guest's clock calls (`clock_gettime`, `gettimeofday`, `time`) to the host, so a

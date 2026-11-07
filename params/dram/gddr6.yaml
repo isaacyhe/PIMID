@@ -19,6 +19,11 @@ timing_preset: "GDDR6_2000_1350mV_double"         # Ramulator timing preset (def
 channels: 2                   # channels the preset instantiates
 channels_per_die: 2   # (1.12.52) (GDDR6 die count): one device = one die carries both channels (JESD250D 4.1 "devices having 2 channels/device"; Samsung K4Z80325BC Table 17: 8 Gb = 2 x 4 Gb channels); the preset's 1024 MB device capacity spans both
 channel_width_bits: 16   # 1.11.101 (step 2): JESD250D 4.1: two independent 16-bit channels per device
+# (1.12.276): the timing rules the DRAM replay applies to this part; the run's YAML overrides each
+# (pim.mc.bank_parallel.channel_is_device, pim.mc.activation_window).
+bank_parallel:
+  channel_is_device: true    # JESD250D 4.1: no rank level; each 16-bit channel is independent, with its own banks and command interface, and its activation (tRRD_S, tFAW), precharge-all and refresh timing are the channel's: the bank-parallel controller keeps them at BANK/BANK_GROUP placement and lifts only the column-to-column constraints there
+activation_window: enforce   # JESD250D tFAW: at most four ACTs in one tFAW window, per channel (Ramulator2 nFAW); off lifts the window (a design that widens it)
 refresh_ladder:                    # JEDEC JESD250: 2x refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
 

@@ -3221,7 +3221,7 @@ static const char* kSchemaPaths[] = {
     "noc.levels.<level>.frequency_ghz", "noc.levels.<level>.input_buffer_depth", "noc.levels.<level>.latency_cycles", "noc.levels.<level>.link_width_bits", "noc.levels.<level>.model",
     "noc.levels.<level>.output_buffer_depth", "noc.levels.<level>.router_bypass", "noc.levels.<level>.router_latency", "noc.levels.<level>.router_pipeline", "noc.levels.<level>.topology",
     "noc.levels.<level>.virtual_channels_per_vn", "noc.levels.<level>.virtual_networks",
-    "pim.mapping.map", "pim.mapping.mem_orgs_per_pe", "pim.mapping.mode", "pim.mapping.pes_per_mem_org", "pim.mc.bandwidth_mbs", "pim.mc.clock_gear", "pim.mc.epoch_replay",
+    "pim.mapping.map", "pim.mapping.mem_orgs_per_pe", "pim.mapping.mode", "pim.mapping.pes_per_mem_org", "pim.mc.activation_window", "pim.mc.bandwidth_mbs", "pim.mc.bank_parallel.channel_is_device", "pim.mc.clock_gear", "pim.mc.epoch_replay",
     "pim.mc.groups", "pim.mc.local_latency", "pim.mc.pes_per_mc", "pim.mc.pg", "pim.mc.placement", "pim.mc.type",
     "pim.pe.access_factor", "pim.pe.arch_fp_regs", "pim.pe.arch_int_regs", "pim.pe.bit_serial", "pim.pe.branch_predictor", "pim.pe.compute_factor", "pim.pe.core_type", "pim.pe.count", "pim.pe.element_bits",
     "pim.pe.energy_factor", "pim.pe.floating_point", "pim.pe.fp_emulation_cycles", "pim.pe.frequency_mhz", "pim.pe.imem_bytes", "pim.pe.issue_width", "pim.pe.lanes",
@@ -3953,6 +3953,12 @@ struct UnifiedConfig {
     std::string pe_mc_type = "simple";     // always "simple" (M/D/1 always active)
     int mc_clock_gear = 1;                 // 1.11.96: pim.mc.clock_gear, MC clock = preset CK x gear (1 = on-die, 2 = gear-2 controller)
     bool mc_epoch_replay = true;           // 1.11.98: device DRAM requests replayed through Ramulator2 per epoch; pim.mc.epoch_replay false = analytical service only
+    /* (1.12.276): the memory technology's timing rules the DRAM replay applies, from the technology's part record
+     * (params/dram/<tech>.yaml: bank_parallel.channel_is_device, activation_window) unless the run's YAML sets them:
+     * pim.mc.bank_parallel.channel_is_device auto|true|false, pim.mc.activation_window auto|enforce|off (auto = the
+     * record) */
+    std::string mc_channel_is_device = "auto";
+    std::string mc_activation_window = "auto";
     int pes_per_mc = 1;                     // PEs sharing each MI (0 = host MC mode)
     bool pes_per_mc_user_set = false;       // true when user explicitly set pes_per_mc
     int pe_mc_local_latency = -1;           // -1 = auto from technology
@@ -7476,6 +7482,28 @@ static int writeBufferEntriesInEffect(const UnifiedConfig& c) {
 }
 
 static bool deviceDramReplayOn(const UnifiedConfig& config);   // (1.12.273): defined with the hierarchy block
+/* (1.12.276): the memory technology's timing rules the DRAM replay applies (dram_epoch_replay.cpp), each from the
+ * technology's part record unless the run's YAML sets it (pim.mc.*; auto = the record): whether the channel level is
+ * the device (bank_parallel.channel_is_device: at BANK and BANK_GROUP placement its ACT-to-ACT, precharge-all and
+ * refresh timing then stays there) and whether the four-activate window, tFAW, is held (activation_window). For a
+ * DRAM technology only (it reads the part record). */
+struct MemTechRules {
+    bool channelIsDevice = false, windowOn = true;
+    bool channelFromYaml = false, windowFromYaml = false;
+    std::string record;   // the part record file, as params/dram/<tech>.yaml
+};
+static MemTechRules memTechRules(const UnifiedConfig& config) {
+    MemTechRules m;
+    const auto& rec = pimid::params::dramPartRecord(config.memory_tech);
+    std::string t = rec.technology;
+    for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    m.record = "params/dram/" + t + ".yaml";
+    m.channelFromYaml = (config.mc_channel_is_device != "auto");
+    m.channelIsDevice = m.channelFromYaml ? (config.mc_channel_is_device == "true") : rec.bank_parallel_channel_is_device;
+    m.windowFromYaml = (config.mc_activation_window != "auto");
+    m.windowOn = m.windowFromYaml ? (config.mc_activation_window == "enforce") : (rec.activation_window == "enforce");
+    return m;
+}
 static void computeHierarchyLatencies(UnifiedConfig& config) {
     // Map placement_level string to integer
     /* 1.11.106: lowercase is accepted (case-folded); an unknown word is refused below. */
@@ -7828,25 +7856,31 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         int pes_per_rank = (config.num_pes + ranks - 1) / ranks;
         if (pes_per_rank > kActivateWindow) {
             /* (1.12.273): enforced by the replay wherever the standard places the window ((1.12.274): GDDR6's at the
-             * channel level too, dram_epoch_replay.cpp) */
+             * channel level too, dram_epoch_replay.cpp); (1.12.276): unless the technology's activation_window, or the
+             * run's pim.mc.activation_window, is off */
             const bool replay_on = deviceDramReplayOn(config);
+            const bool window_on = !replay_on || memTechRules(config).windowOn;
             std::cerr << "[config] WARNING: " << config.num_pes << " elements at "
                       << config.placement_level << " placement put " << pes_per_rank
                       << " independent activation streams on one " << tech
                       << " rank, above the JEDEC four-activate (tFAW) window.\n";
-            if (replay_on)
+            if (replay_on && window_on)
                 std::cerr << "  The window is a charge limit. The DRAM replay enforces it "
                              "(Ramulator2's nFAW, at the level the standard places it): an "
                              "activation past the window waits for it, and the run time "
                              "carries the wait. The replay's activation-window line at the "
                              "end of the run counts the ACTs that waited and the DRAM cycles "
                              "they waited.\n"
-                          << "  A design that widens the window (more charge pumps) is not "
-                             "modelled: the run keeps the standard's window.\n";
+                          << "  A design that widens the window (more charge pumps) can lift "
+                             "it: pim.mc.activation_window: off.\n";
             else
-                std::cerr << "  The window is a charge limit. Without the DRAM replay PIMID "
-                             "does not enforce it in the timing model, so this configuration "
-                             "is optimistic by whatever tFAW would "
+                std::cerr << "  The window is a charge limit. "
+                          << (replay_on ? "The DRAM replay does not enforce it: the activation window is "
+                                          "off by configuration (pim.mc.activation_window, or the "
+                                          "technology's part record)"
+                                        : "Without the DRAM replay PIMID does not enforce it in the "
+                                          "timing model")
+                          << ", so this configuration is optimistic by whatever tFAW would "
                              "have serialised, and the power model carries no term for the "
                              "extra activation charge.\n"
                           << "  Keep it if the design intends to widen the window "
@@ -9672,6 +9706,17 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
              * in system scope sys.mem describes the HOST's memory */
             out << "        dramReplayConfigFile = \"" << config.ramulator_config_file << "\";\n";
             out << "        dramReplayBurstsPerLine = " << dramBurstsPerLine(config.memory_tech, config) << ";\n";
+            /* (1.12.276): the technology's timing rules, from its part record or the run's YAML (memTechRules) */
+            const MemTechRules mr = memTechRules(config);
+            out << "        dramChannelIsDevice = " << (mr.channelIsDevice ? "true" : "false") << ";\n";
+            out << "        dramChannelIsDeviceFromYaml = " << (mr.channelFromYaml ? "true" : "false") << ";\n";
+            out << "        dramActivationWindow = " << (mr.windowOn ? "true" : "false") << ";\n";
+            out << "        dramActivationWindowFromYaml = " << (mr.windowFromYaml ? "true" : "false") << ";\n";
+            std::cout << "  [config] pim.mc.bank_parallel.channel_is_device: " << (mr.channelIsDevice ? "true" : "false")
+                      << (mr.channelFromYaml ? " (the run's YAML)" : " (the " + config.memory_tech + " part record, " + mr.record + ")")
+                      << "; pim.mc.activation_window: " << (mr.windowOn ? "enforce" : "off")
+                      << (mr.windowFromYaml ? " (the run's YAML)" : " (the " + config.memory_tech + " part record, " + mr.record + ")")
+                      << " [(1.12.276)]" << std::endl;
         }
         std::cout << "  [mem] device DRAM controller: " << (replay_on ? (mpi_workload
                                                                             ? "Ramulator2 EPOCH REPLAY, message passing (1.12.17): every interface's requests replayed per epoch on each rank's ROI-relative clock, epochs final at the consistent cut, the measured service latency two epochs back priced"
@@ -22634,6 +22679,25 @@ static int parseDevicePimBlock(YAML::Node root, UnifiedConfig& config, const Dev
             auto mc = root["pim"]["mc"];
             config.mc_clock_gear = yamlInt(mc["clock_gear"], config.mc_clock_gear, sc.pfx + "pim.mc.clock_gear");   // 1.11.96 (14c)
             config.mc_epoch_replay = yamlBool(mc["epoch_replay"], config.mc_epoch_replay, sc.pfx + "pim.mc.epoch_replay");   // 1.11.98 (4c)
+            /* (1.12.276): the technology's timing rules (auto = the part record) */
+            const YAML::Node mcbp = mc["bank_parallel"];
+            if (mcbp && mcbp.IsMap())
+                config.mc_channel_is_device = yamlString(mcbp["channel_is_device"], config.mc_channel_is_device,
+                                                         sc.pfx + "pim.mc.bank_parallel.channel_is_device");
+            config.mc_activation_window = yamlString(mc["activation_window"], config.mc_activation_window, sc.pfx + "pim.mc.activation_window");
+            if (config.mc_channel_is_device != "auto" && config.mc_channel_is_device != "true" && config.mc_channel_is_device != "false") {
+                std::cerr << "Error: " << sc.pfx << "pim.mc.bank_parallel.channel_is_device = '" << config.mc_channel_is_device
+                          << "'; one of auto (the technology's part record), true (the channel is the device: at BANK and"
+                             " BANK_GROUP placement its activation, precharge-all and refresh timing stays at the channel level)"
+                             " or false (the channel level holds only the shared command bus)." << std::endl;
+                return 1;
+            }
+            if (config.mc_activation_window != "auto" && config.mc_activation_window != "enforce" && config.mc_activation_window != "off") {
+                std::cerr << "Error: " << sc.pfx << "pim.mc.activation_window = '" << config.mc_activation_window
+                          << "'; one of auto (the technology's part record), enforce (the DRAM replay holds the four-activate"
+                             " window, tFAW) or off (it lifts the window)." << std::endl;
+                return 1;
+            }
             if (config.mc_clock_gear != 1 && config.mc_clock_gear != 2) {
                 std::cerr << "Error: " << sc.pfx << "pim.mc.clock_gear = " << config.mc_clock_gear << "; the controller clock is the DRAM preset's CK x 1 (on-die) or x 2 (a gear-2 controller)." << std::endl;
                 return 1;
@@ -24137,6 +24201,8 @@ static void adoptSystemDeviceNodes(UnifiedConfig& config, const YAML::Node& yaml
         config.pe_mem_map = d.pe_mem_map;
         config.mc_clock_gear = d.mc_clock_gear;
         config.mc_epoch_replay = d.mc_epoch_replay;
+        config.mc_channel_is_device = d.mc_channel_is_device;   // (1.12.276)
+        config.mc_activation_window = d.mc_activation_window;
         config.pes_per_mc_user_set = d.pes_per_mc_user_set;
         config.pe_mc_local_latency = d.pe_mc_local_latency;
         config.pe_mc_bandwidth_mbs = d.pe_mc_bandwidth_mbs;

@@ -155,6 +155,11 @@ issued, those under a kept window, those that waited for it (the window was the 
 and cleared after the request arrived) with the DRAM cycles it held them, and the ACTs issued inside a full window
 (0 where the window is enforced); a second line counts the ACTs with no window on their path. The configuration
 warning for more than four activation streams per rank says which case a run is in.
+Both rules come from configuration ((1.12.276)): each technology's part record (`params/dram/<tech>.yaml`) states
+`bank_parallel.channel_is_device` (`true` for GDDR6 only) and `activation_window` (`enforce` in every shipped record),
+and the run's YAML overrides either (`pim.mc.bank_parallel.channel_is_device`, `pim.mc.activation_window`: `auto` takes
+the record). The log names each value and where it came from. With the window off the replay removes every window
+constraint and the warning and the activation-window line say so; a decoupled host memory keeps its standard's window.
 
 **A memory of type Ramulator is a replayed controller too (1.12.147).** With
 `pim.placement.level: HOST_MC` the elements share the host memory controller,

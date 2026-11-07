@@ -165,6 +165,13 @@ struct DramPartRecord {
      * 1 (default) for the DDR family and LPDDR5 (one x16 channel per die); GDDR6 2 (JESD250D 4.1, required in its
      * record). The die population, the per-die clock trunk and the placement capacity divide by it. */
     int channels_per_die = 1;
+    /* (1.12.276): the timing rules the DRAM replay applies to this part (required; the run's YAML overrides each, pim.mc.*).
+     * bank_parallel.channel_is_device: the channel level is the device (GDDR6: no rank level), so at BANK and
+     * BANK_GROUP placement the bank-parallel controller keeps its ACT-to-ACT, precharge-all and refresh timing there and
+     * lifts only the column-to-column constraints; false: the channel level holds only the shared command bus.
+     * activation_window: "enforce" holds the four-activate window (nFAW), "off" lifts it. */
+    bool bank_parallel_channel_is_device = false;
+    std::string activation_window = "enforce";
     double die_capacity_gb = 0.0;  // HBM core die capacity (0 for non-stacked)
     std::vector<RefreshRung> refresh_ladder;
     IddBlock idd;                        // 1.11.104

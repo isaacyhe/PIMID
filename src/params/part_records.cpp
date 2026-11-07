@@ -129,6 +129,17 @@ bool loadDramPartRecord(const std::string& tech, DramPartRecord& out, std::strin
     } else if (r.technology == "GDDR6") {
         error = "part record " + path + ": required field 'channels_per_die' is missing (a GDDR6 device carries two channels, JESD250D 4.1)"; return false;
     }
+    /* (1.12.276): the timing rules the DRAM replay applies (required; the run's YAML overrides each, pim.mc.*) */
+    if (!n["bank_parallel"] || !n["bank_parallel"].IsMap() ||
+        !need(n["bank_parallel"], "channel_is_device", r.bank_parallel_channel_is_device, error)) {
+        error = "part record " + path + ": required field 'bank_parallel.channel_is_device' (true or false) is missing or unreadable" +
+                (error.empty() ? std::string() : " (" + error + ")");
+        return false;
+    }
+    if (!need(n, "activation_window", r.activation_window, error)) { error = "part record " + path + ": " + error; return false; }
+    if (r.activation_window != "enforce" && r.activation_window != "off") {
+        error = "part record " + path + ": activation_window '" + r.activation_window + "' is not enforce or off"; return false;
+    }
     if (!n["refresh_ladder"] || !n["refresh_ladder"].IsSequence() || n["refresh_ladder"].size() == 0) {
         error = "part record " + path + ": required sequence 'refresh_ladder' is missing or empty"; return false;
     }

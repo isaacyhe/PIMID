@@ -18,6 +18,11 @@ organization_preset: "LPDDR5_16Gb_x16"   # Ramulator org preset the run instanti
 timing_preset: "LPDDR5_6400"         # Ramulator timing preset (default knobs)
 channels: 4                   # 1.12.4: the deployed package, four independent x16 channels, one die each (JESD209-5B multi-channel package; the IDD row's own sheet lists the x64 four-channel packages). 1 was the bare die: 1 GB, 12.8 GB/s, 16 banks, one bank per PE in a 16-PE BANK cell
 channel_width_bits: 16   # 1.11.101 (step 2): JESD209-5B 2.x: a 16-bit channel served by one x16 die
+# (1.12.276): the timing rules the DRAM replay applies to this part; the run's YAML overrides each
+# (pim.mc.bank_parallel.channel_is_device, pim.mc.activation_window).
+bank_parallel:
+  channel_is_device: false   # JESD209-5B: the device timing (tRRD, tFAW, precharge-all, refresh) is held per rank; the channel level holds the bus the ranks share, which the bank-parallel controller (BANK/BANK_GROUP placement) lifts
+activation_window: enforce   # JESD209-5B tFAW: at most four ACTs in one tFAW window, per rank (Ramulator2 nFAW); off lifts the window (a design that widens it)
 refresh_ladder:                    # JEDEC JESD209-5: derated refresh above 85 C (one step modelled)
   - { above_c: 85.0, factor: 0.5 }
 

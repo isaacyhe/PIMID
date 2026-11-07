@@ -201,16 +201,13 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
                 for (int l = 0; l < bankLv; l++) if (std::string(d->m_levels(l)) == "bankgroup") bg = l;
                 if (bg >= 0) keepLv = bg;
             }
-            /* (1.12.274): the channel-level rule below lifts the channel's shared command bus. It applies only where a rank or
-             * pseudo-channel level sits between the channel and the bank groups, for there the device's own timing
-             * (ACT-to-ACT, precharge-all, refresh) is held. A standard without one (GDDR6: channel, bank group, bank) holds
-             * that timing at the channel level -- its channel is the device -- so there only the column-to-column (data
-             * bus) constraints are lifted, as at every level above the PE's tier. */
-            bool chanBus = false;
-            for (int l = 1; l < bankLv; l++) {
-                const std::string n = std::string(d->m_levels(l));
-                if (n == "rank" || n == "pseudochannel") chanBus = true;
-            }
+            /* (1.12.274): the channel-level rule below lifts the channel's shared command bus. Where the channel is the
+             * device (GDDR6: channel, bank group, bank) the device's own timing (ACT-to-ACT, precharge-all, refresh) sits
+             * at the channel level, so there only the column-to-column (data bus) constraints are lifted, as at every
+             * level above the PE's tier. (1.12.276): which case a part is comes from configuration -- its part record's
+             * bank_parallel.channel_is_device, or the run's pim.mc.bank_parallel.channel_is_device (src/main.cpp) --
+             * not from the standard's level names. */
+            const bool chanBus = !zinfo->hierarchy.dramChannelIsDevice;
             auto cmdId = [d](const char* n) -> int {
                 for (int c = 0; c < (int)d->m_commands.size(); c++) if (std::string(d->m_commands(c)) == n) return c;
                 return -1;
@@ -248,9 +245,36 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
             info("[mem] %s: PE placement tier %u is below the channel: bank-parallel controller, %lu bus constraint(s) above the %s tier removed, %lu kept (activation limits, refresh, precharge-all) [1.12.17]",
                  name, plv, (unsigned long)removed, plv == 2 ? "bank-group" : "bank", (unsigned long)kept);
             if (!chanBus)
-                info("[mem] %s: no rank or pseudo-channel level: the channel is the device, so the bank-parallel controller keeps its "
-                     "ACT-to-ACT (tRRD, tFAW), precharge-all and refresh timing at the channel level and lifts only the "
-                     "column-to-column constraints there [(1.12.274)]", name);
+                info("[mem] %s: the channel is the device (bank_parallel.channel_is_device: true, %s), so the bank-parallel controller "
+                     "keeps its ACT-to-ACT (tRRD, tFAW), precharge-all and refresh timing at the channel level and lifts only the "
+                     "column-to-column constraints there [(1.12.274), (1.12.276)]", name,
+                     zinfo->hierarchy.dramChannelIsDeviceFromYaml ? "the run's YAML, pim.mc.bank_parallel.channel_is_device"
+                                                                  : "the technology's part record");
+        }
+        /* (1.12.276): the four-activate window off by configuration (the part record's activation_window, or the run's
+         * pim.mc.activation_window: off): every window constraint (window > 1: nFAW) is removed, here and in the channel
+         * instances, so activations are held by tRRD and the bank timing only. The device's replay only: a decoupled
+         * host memory's replay keeps its standard's window. */
+        if (!hostOnly_ && !zinfo->hierarchy.dramActivationWindow) {
+            auto stripWin = [](Ramulator::IDRAM* dd) -> uint64_t {
+                uint64_t n = 0;
+                for (size_t l = 0; l < dd->m_timing_cons.size(); l++)
+                    for (size_t pc = 0; pc < dd->m_timing_cons[l].size(); pc++) {
+                        auto& v = dd->m_timing_cons[l][pc];
+                        const size_t before = v.size();
+                        v.erase(std::remove_if(v.begin(), v.end(), [](const Ramulator::TimingConsEntry& t) { return t.window > 1; }), v.end());
+                        n += before - v.size();
+                    }
+                return n;
+            };
+            const uint64_t nw = stripWin(d);
+            auto prev = stripCons_;
+            stripCons_ = [prev, stripWin](Ramulator::IDRAM* dd) { if (prev) prev(dd); stripWin(dd); };
+            winOff_ = true;
+            info("[mem] %s: activation window (tFAW) OFF by configuration (activation_window: off, %s): %lu window constraint(s) removed; "
+                 "activations are held by tRRD and the bank timing only [(1.12.276)]", name,
+                 zinfo->hierarchy.dramActivationWindowFromYaml ? "the run's YAML, pim.mc.activation_window" : "the technology's part record",
+                 (unsigned long)nw);
         }
         const uint32_t cpr = zinfo->hierarchy.chipsPerRank;
         foldedChannels_ = !hostOnly_ && (nch > 1 && cpr == nch);
@@ -2640,9 +2664,10 @@ void DramEpochReplay::finalize() {
                  name_.c_str(), (unsigned long)pr, (unsigned long)kp, (unsigned long)wa, (unsigned long)wc, (unsigned long)wm,
                  (unsigned long)br);
             if (kp < pr)
-                info("[mem] %s: %lu of the %lu ACTs had no activation window on their path, so this run does NOT enforce tFAW for them "
-                     "[(1.12.273), (1.12.274)]",
-                     name_.c_str(), (unsigned long)(pr - kp), (unsigned long)pr);
+                info("[mem] %s: %lu of the %lu ACTs had no activation window on their path, so this run does NOT enforce tFAW for them%s "
+                     "[(1.12.273), (1.12.274), (1.12.276)]",
+                     name_.c_str(), (unsigned long)(pr - kp), (unsigned long)pr,
+                     winOff_ ? " (the window is off by configuration: activation_window: off)" : "");
         }
     }
     ctrlTotals(raw_.hits, raw_.misses, raw_.conflicts, raw_.refreshes);

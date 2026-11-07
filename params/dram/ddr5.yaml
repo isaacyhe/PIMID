@@ -34,6 +34,11 @@ organization_preset: "DDR5_16Gb_x8"   # Ramulator org preset the run instantiate
 timing_preset: "DDR5_4800B"         # Ramulator timing preset (default knobs); 1.12.19: 4800B per the 1.12.18: DDR5_5600B
 channels: 2                   # 1.11.97: the 64-bit DIMM channel is two independent 32-bit sub-channels (JESD79-5B 2.1); the preset instantiates both
 channel_width_bits: 32   # 1.11.101 (step 2): JESD79-5B 2.1: each of the two independent sub-channels is 32 bits wide; one sub-channel rank = 32 / device width devices (the DIMM rank spans both: 64 / width)
+# (1.12.276): the timing rules the DRAM replay applies to this part; the run's YAML overrides each
+# (pim.mc.bank_parallel.channel_is_device, pim.mc.activation_window).
+bank_parallel:
+  channel_is_device: false   # JESD79-5B: the device timing (tRRD, tFAW, precharge-all, refresh) is held per rank of a sub-channel; the channel level holds the bus the ranks share, which the bank-parallel controller (BANK/BANK_GROUP placement) lifts
+activation_window: enforce   # JESD79-5B tFAW: at most four ACTs in one tFAW window, per rank of a sub-channel (Ramulator2 nFAW); off lifts the window (a design that widens it)
 refresh_ladder:                    # JEDEC JESD79-5: 2x refresh above 85 C (the model applies one step)
   - { above_c: 85.0, factor: 0.5 }
 

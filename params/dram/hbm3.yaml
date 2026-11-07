@@ -18,6 +18,11 @@ organization_preset: "HBM3_8Gb_8H"   # 1.12.41: JESD238B.01 Table 4 "16 Gb 8High
 timing_preset: "HBM3_6.4Gbps"         # Ramulator timing preset (default knobs)
 channels: 16                   # channels the preset instantiates per stack
 channel_width_bits: 64   # 1.11.101 (step 2): JESD238B 2.x: sixteen 64-bit channels per stack, each two 32-bit pseudo-channels
+# (1.12.276): the timing rules the DRAM replay applies to this part; the run's YAML overrides each
+# (pim.mc.bank_parallel.channel_is_device, pim.mc.activation_window).
+bank_parallel:
+  channel_is_device: false   # JESD238B: the device timing (tRRD, tFAW, precharge-all, refresh) is held per pseudo-channel; the channel level holds the bus the pseudo-channels share, which the bank-parallel controller (BANK/BANK_GROUP placement) lifts
+activation_window: enforce   # JESD238B tFAW: at most four ACTs in one tFAW window, per pseudo-channel (Ramulator2 nFAW); off lifts the window (a design that widens it)
 stack_dies: 8                 # the shipped 8-high stack (SK hynix 16 GB HBM3; the 12-high 24 GB part is another record)
 die_capacity_gb: 16.0          # = preset 1024 MB/channel x 16 channels x 8 / 8 dies = 16 Gb: the density part's own capacity
 refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-95 C, 4x above 95 C (Xilinx PG276, Intel UG-20031; JESD238 refresh modes)

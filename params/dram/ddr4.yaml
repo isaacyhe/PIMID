@@ -18,6 +18,11 @@ organization_preset: "DDR4_8Gb_x8"   # Ramulator org preset the run instantiates
 timing_preset: "DDR4_2400R"         # Ramulator timing preset (default knobs)
 channels: 1                   # channels the preset instantiates
 channel_width_bits: 64   # 1.11.101 (step 2): JESD79-4C 2.x: a 64-bit data channel; one rank = 64 / device width devices
+# (1.12.276): the timing rules the DRAM replay applies to this part; the run's YAML overrides each
+# (pim.mc.bank_parallel.channel_is_device, pim.mc.activation_window).
+bank_parallel:
+  channel_is_device: false   # JESD79-4C: the device timing (tRRD, tFAW, precharge-all, refresh) is held per rank; the channel level holds the bus the ranks share, which the bank-parallel controller (BANK/BANK_GROUP placement) lifts
+activation_window: enforce   # JESD79-4C tFAW: at most four ACTs in one tFAW window, per rank (Ramulator2 nFAW); off lifts the window (a design that widens it)
 refresh_ladder:                    # JEDEC JESD79-4 extended temperature range: 2x refresh above 85 C
   - { above_c: 85.0, factor: 0.5 }
 

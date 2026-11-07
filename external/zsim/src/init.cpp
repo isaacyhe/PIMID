@@ -745,6 +745,10 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.dramRowBytes = config.get<uint32_t>("sys.hierarchy.dramRowBytes", 0);  // 1.11.52 (D003)
         zinfo->hierarchy.dramRowStrideBytes = config.get<uint32_t>("sys.hierarchy.dramRowStrideBytes", 0);  // 1.11.91
         zinfo->hierarchy.dramRowsPerBank = config.get<uint32_t>("sys.hierarchy.dramRowsPerBank", 0);  // (1.12.268)
+        zinfo->hierarchy.dramChannelIsDevice = config.get<bool>("sys.hierarchy.dramChannelIsDevice", false);   // (1.12.276)
+        zinfo->hierarchy.dramChannelIsDeviceFromYaml = config.get<bool>("sys.hierarchy.dramChannelIsDeviceFromYaml", false);
+        zinfo->hierarchy.dramActivationWindow = config.get<bool>("sys.hierarchy.dramActivationWindow", true);
+        zinfo->hierarchy.dramActivationWindowFromYaml = config.get<bool>("sys.hierarchy.dramActivationWindowFromYaml", false);
         zinfo->hierarchy.dramPowerDown = config.get<bool>("sys.hierarchy.dramPowerDown", false);   // 1.12.19
         zinfo->hierarchy.dramPdIdleClocks = config.get<uint32_t>("sys.hierarchy.dramPdIdleClocks", 64);
         zinfo->hierarchy.dramPdTxpNck = config.get<uint32_t>("sys.hierarchy.dramPdTxpNck", 0);

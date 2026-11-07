@@ -18,6 +18,11 @@ organization_preset: "HBM2_4Gb"   # Ramulator org preset the run instantiates (d
 timing_preset: "HBM2_2.4Gbps"         # Ramulator timing preset (default knobs)
 channels: 8                   # channels the preset instantiates per stack
 channel_width_bits: 128   # 1.11.101 (step 2): JESD235D 2.x: eight 128-bit channels per stack, each two 64-bit pseudo-channels
+# (1.12.276): the timing rules the DRAM replay applies to this part; the run's YAML overrides each
+# (pim.mc.bank_parallel.channel_is_device, pim.mc.activation_window).
+bank_parallel:
+  channel_is_device: false   # JESD235D: the device timing (tRRD, tFAW, precharge-all, refresh) is held per pseudo-channel; the channel level holds the bus the pseudo-channels share, which the bank-parallel controller (BANK/BANK_GROUP placement) lifts
+activation_window: enforce   # JESD235D tFAW: at most four ACTs in one tFAW window, per pseudo-channel (Ramulator2 nFAW); off lifts the window (a design that widens it)
 stack_dies: 4                 # core dies per stack = max(JEDEC floor, channels/2) today (becomes the record's fact)
 die_capacity_gb: 8.0           # = preset MB/channel x channels x 8 / dies (NOTE: the density part is a 16 Gb die; the user decides the record's part)
 refresh_ladder:                    # HBM temperature-compensated refresh: 2x 85-95 C, 4x above 95 C (Xilinx PG276, Intel UG-20031; JESD235 refresh modes)
