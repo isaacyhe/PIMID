@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.279 -- a REP string instruction is priced as a block copy, one access per line
+
+- **The problem.** QEMU runs one iteration of a REP string instruction per block execution (patch 0001), so a
+  `rep movs`, `rep stos`, `rep lods`, `rep scas` or `rep cmps` reached the core models one element (1 to 8 bytes) at
+  a time, and every element was priced as an access of its own. glibc's `memcpy` and `memmove` use a byte-wise
+  `rep movsb` above their `rep_movsb_threshold` (2112 B on a processor that reports FSRM, as the guest's does), and
+  `memset` uses `rep stosb` above `rep_stosb_threshold`. A copy above the threshold therefore paid a load and a
+  store per byte: on a processing element without a cache (`alu_core`) a priced memory access each, about 18 cycles
+  per byte against about 1 for the vector copy one byte below the threshold, and as many requests in the DRAM
+  replay; on `in_order_core` a serial pair of L1 accesses per byte.
+- **The fix.** Within one REP instruction, an access to the line its previous access of the same kind (load or
+  store) touched is not priced again; the first access to each line is. The iterations still execute and retire as
+  instructions. The run log counts the REP string accesses priced and those held within a line.
+- **Data impact.** Runs that execute a REP string instruction inside the ROI change: a copy, fill or scan of more
+  than a few bytes costs about one access per line instead of one per element. In the benchmark kernels these are
+  the message-passing payload copies of 2112 B or more (`stencil_2d` halo rows, `bfs` frontier exchanges, the
+  collectives' buffers), on every core type. The OpenMP kernels copy and clear their data before the ROI; the few
+  short REP instructions a run executes inside it (in the runtime and the C library) move an `alu_core` run by a few to
+  a few tens of cycles. Runs without a REP string instruction in the ROI are unchanged.
+
 ## 1.12.278 -- the replay's drain serves every request it was fed, so a backlog at the ROI end is no longer written off as unserved
 
 - **The problem.** At the end of the run the DRAM replay drains what it was fed, bounded so a lost request cannot hang

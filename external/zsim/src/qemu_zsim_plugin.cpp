@@ -1095,6 +1095,7 @@ static void recMarkRunEnd() {
     if (zinfo->dramReplay) zinfo->dramReplay->markRunEnd();
     if (zinfo->hostDramReplay && zinfo->hostDramReplay != zinfo->dramReplay) zinfo->hostDramReplay->markRunEnd();
 }
+static std::atomic<uint64_t> g_repLinePriced{0}, g_repLineHeld{0};   // (1.12.279): REP string accesses in the ROI (mem_cb)
 static void roiWallEnd(uint32_t tid, const char* how) {
     if (zinfo->roiWall.source != 1 || zinfo->roiWall.ended) return;
     const uint64_t e = (tid < MAX_THREADS) ? roiWallStamp(tid)
@@ -2811,6 +2812,10 @@ static void dumpTerminationStats() {
     recExtendRunTime();   // 1.12.189
     info("Dumping termination stats");
     rtPrintStats();   // 1.12.18: PIM runtime primitives, per core
+    if (g_repLinePriced.load() + g_repLineHeld.load() > 0)   // (1.12.279)
+        info("[core] REP string accesses in the ROI: %lu priced (the first to each line), %lu within a line the same "
+             "instruction had already priced, not priced again (block copy, one access per line) [(1.12.279)]",
+             (unsigned long)g_repLinePriced.load(), (unsigned long)g_repLineHeld.load());
     zinfo->trigger = 20000;
     for (StatsBackend* backend : *(zinfo->statsBackends)) {
         if (zinfo->dramReplay) zinfo->dramReplay->finalize();   // 1.11.98: replay the tail, fold the controller totals
@@ -3902,6 +3907,18 @@ static void handleRtMagicOp(uint64_t op, uint32_t tid) {
  * CMPS) between block callbacks. More than that means the patch is missing, and the run stops. */
 static int rep_string_tag;
 static uint32_t rep_mem_since_bbl[MAX_VCPUS];
+/* (1.12.279): A REP STRING INSTRUCTION IS PRICED AS A BLOCK COPY, ONE ACCESS PER LINE.
+ * Under patch 0001 every iteration is its own block execution, so a REP MOVS/STOS/LODS/SCAS/CMPS reaches the core
+ * models one element (1 to 8 bytes) at a time. Each access was priced on its own: a byte-wise REP MOVSB, which
+ * glibc's memcpy and memmove use above their rep_movsb_threshold (2112 B on a processor reporting FSRM) and memset
+ * above rep_stosb_threshold, paid a load and a store per byte -- on a processing element without a cache, a priced
+ * memory access each (about 18 cycles per byte against about 1 for the vector copy below the threshold), and as
+ * many requests in the DRAM replay. A processor runs the string operation as a block copy, a line at a time. Within
+ * one REP instruction (its iterations share the block address of the instruction), an access to the line its
+ * previous access of the same kind (load or store) touched is now not priced again: the first access to each line
+ * is. The iterations still execute and retire as instructions. Counted: g_repLinePriced / g_repLineHeld. */
+static uint64_t g_repTb[MAX_VCPUS];          // the block address whose REP lines are held below (0 = none)
+static uint64_t g_repLine[MAX_VCPUS][2];     // the line + 1 of the last priced REP load [0] / store [1], 0 = none
 static bool isRepString(const uint8_t* b, size_t n) {
     bool rep = false;
     for (size_t i = 0; i < n; i++) {
@@ -3952,6 +3969,13 @@ static void mem_cb(unsigned int vcpu_index,
     if (mpi_comm_window[tid].load(std::memory_order_acquire)) return;
     /* 1.12.18: runtime code is not executed on the PE (PIM runtime primitives) */
     if (g_rt.enabled && rtDropNow(tid)) { const uint32_t c = cids[tid]; if (c < MAX_THREADS) g_rtDropM[c]++; return; }
+    if (userdata == &rep_string_tag && vcpu_index < MAX_VCPUS) {   // (1.12.279): a REP string access, priced once per line
+        const int k = qemu_plugin_mem_is_store(info) ? 1 : 0;
+        const uint64_t ln = (vaddr >> lineBits) + 1;
+        if (g_repLine[vcpu_index][k] == ln) { g_repLineHeld.fetch_add(1, std::memory_order_relaxed); return; }
+        g_repLine[vcpu_index][k] = ln;
+        g_repLinePriced.fetch_add(1, std::memory_order_relaxed);
+    }
 
     if (vcpu_index < MAX_VCPUS) in_zsim[vcpu_index] = true;
     if (qemu_plugin_mem_is_store(info)) {
@@ -4024,6 +4048,10 @@ static void detachThreadForMigration(uint32_t tid, int domain) {
 static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     if (unlikely(!g_guest_ran.load(std::memory_order_relaxed))) g_guest_ran.store(true);   // (1.12.115)
     if (vcpu_index < MAX_VCPUS) rep_mem_since_bbl[vcpu_index] = 0;
+    if (vcpu_index < MAX_VCPUS) {   // (1.12.279): another block: the REP lines held for the previous one are released
+        const uint64_t tb = ((TbUserdata*)userdata)->tbAddr;
+        if (tb != g_repTb[vcpu_index]) { g_repTb[vcpu_index] = tb; g_repLine[vcpu_index][0] = g_repLine[vcpu_index][1] = 0; }
+    }
     if (!in_roi) return;
     if (vcpu_index < MAX_VCPUS && vcpu_is_internal[vcpu_index]) return;
 

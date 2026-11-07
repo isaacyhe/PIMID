@@ -408,7 +408,11 @@ as latencies) is the cache block `l1d_kb: 32`, `l1d_ways: 8`, `l1d_latency_ns: 0
   divide uop, and widening mul rd={rax,rdx}). rep movs/stos use a documented
   block-copy model: register-side dependency uops plus the QEMU-delivered
   accesses through a drain after the block's last uop, counted as
-  `repDrainedLoads/Stores`. The drain is serial only on `in_order_core` (each
+  `repDrainedLoads/Stores`. ((1.12.279)) Every core type receives a REP string
+  instruction's accesses once per line: within one instruction, an access to
+  the line its previous access of the same kind touched is not delivered
+  again, so a byte-wise `rep movsb` (glibc's copy above 2112 B) costs about
+  one access per line, as the vector copy below the threshold does. The drain is serial only on `in_order_core` (each
   access waits for the previous response); on `ooo_core` the drained accesses
   are issued together, cost no issue cycles and only extend the block's
   completion, which a mispredicted terminator of that block redirects from. The
