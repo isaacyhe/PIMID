@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.274 -- GDDR6 at bank and bank-group placement keeps tFAW, tRRD_S, the precharge-all timing and the refresh spacing
+
+- **The problem.** At `BANK` and `BANK_GROUP` placement the replayed controller is bank-parallel (1.12.17): it lifts the
+  column-to-column constraints above the PE's tier and, at the channel level, the constraints after ACT and column
+  commands, which there are the channel's shared command bus. That holds for every standard with a rank or
+  pseudo-channel level, where the device's own timing sits. GDDR6 has none: its channel is the device, and it places
+  tRRD_S, the four-activate window (tFAW), tRAS / tRTP / tWR before a precharge-all, and the ACT-to-refresh spacing
+  (tRC, tRRD_L) at the channel level. The channel rule removed all of them, so a GDDR6 run at those placements held
+  only tRRD_L of its activation limits; 1.12.273's activation-window line showed it (no ACT under a kept window).
+- **The fix.** The channel rule applies only where a rank or pseudo-channel level sits below the channel. On GDDR6
+  the bank-parallel controller lifts only the column-to-column constraints at the channel level and keeps the rest;
+  the log says so. The configuration warning and the activation-window line follow.
+- **Data impact.** GDDR6 runs at `BANK` and `BANK_GROUP` placement change: activations are spaced by tRRD_S and held
+  by the window, and precharge-all and refresh wait for the device's timing. Their run time and DRAM timing change
+  either way: the stricter timing also changes the order in which the controller serves the requests. Every other
+  standard and placement is unchanged.
+
 ## 1.12.273 -- the DRAM replay reports its activation window (tFAW), and the configuration warning says when it is enforced
 
 - **The problem.** A configuration that puts more than four independent activation streams on one rank prints a

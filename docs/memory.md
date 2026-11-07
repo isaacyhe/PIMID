@@ -146,9 +146,11 @@ other standards keep their timing.
 **Activation window (tFAW) in the replay ((1.12.273)).** The replay holds JEDEC's four-activate window (Ramulator2's
 nFAW) where the standard places it: per rank on DDR3, DDR4, DDR5 and LPDDR5 (per chip with the chip split), per
 pseudo-channel on HBM2 and HBM3. The bank-parallel controller keeps it with the other ACT-to-ACT limits (tRRD),
-refresh and precharge-all. GDDR6 places tFAW and tRRD_S at the channel level, which the bank-parallel controller
-removes with the channel's command bus at `BANK` and `BANK_GROUP` placement, so those runs do not hold the window
-(tRRD_L, at the bank group, is kept). At the end of the run the replay's activation-window line counts the ACTs
+refresh and precharge-all. GDDR6 has no rank level: its channel is the device, and it places tFAW, tRRD_S, the
+precharge-all timing and the refresh spacing at the channel level; there the bank-parallel controller lifts only the
+column-to-column constraints and keeps the rest ((1.12.274); before, it lifted the channel's ACT and column constraints
+with the command bus, and a GDDR6 run at `BANK` or `BANK_GROUP` placement held none of them but tRRD_L). At the end of
+the run the replay's activation-window line counts the ACTs
 issued, those under a kept window, those that waited for it (the window was the last of their constraints to clear
 and cleared after the request arrived) with the DRAM cycles it held them, and the ACTs issued inside a full window
 (0 where the window is enforced); a second line counts the ACTs with no window on their path. The configuration

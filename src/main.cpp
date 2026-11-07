@@ -7814,12 +7814,10 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
      * window where the standard places it -- per rank (per chip with the chip
      * split) or per pseudo-channel -- so the activations past it wait and the
      * run time carries the wait; its end-of-run activation-window line counts
-     * them. It does not where the window sits at the channel level (GDDR6) and
-     * the bank-parallel controller (BANK and BANK_GROUP placement) removes the
-     * channel's ACT constraints, nor without the replay: there the run is
-     * optimistic by however much the standard would have serialised, and the
-     * power model has no term for the extra charge either. Silence here would
-     * read as endorsement. */
+     * them ((1.12.274): GDDR6's window, at the channel level, too). It does not
+     * without the replay: there the run is optimistic by however much the
+     * standard would have serialised, and the power model has no term for the
+     * extra charge either. Silence here would read as endorsement. */
     const bool faw_tech = !(tech == "SRAM" || tech == "STT_MRAM" ||
                             tech == "PCM"  || tech == "RERAM");
     if (faw_tech && config.pe_hierarchy_level >= 0 &&
@@ -7829,15 +7827,14 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
         if (ranks < 1) ranks = 1;
         int pes_per_rank = (config.num_pes + ranks - 1) / ranks;
         if (pes_per_rank > kActivateWindow) {
-            /* (1.12.273): enforced by the replay unless the window sits at the channel level (GDDR6) under the
-             * bank-parallel controller (placement level <= 2, dram_epoch_replay.cpp) */
+            /* (1.12.273): enforced by the replay wherever the standard places the window ((1.12.274): GDDR6's at the
+             * channel level too, dram_epoch_replay.cpp) */
             const bool replay_on = deviceDramReplayOn(config);
-            const bool faw_removed = (tech == "GDDR6") && config.pe_hierarchy_level <= 2;
             std::cerr << "[config] WARNING: " << config.num_pes << " elements at "
                       << config.placement_level << " placement put " << pes_per_rank
                       << " independent activation streams on one " << tech
                       << " rank, above the JEDEC four-activate (tFAW) window.\n";
-            if (replay_on && !faw_removed)
+            if (replay_on)
                 std::cerr << "  The window is a charge limit. The DRAM replay enforces it "
                              "(Ramulator2's nFAW, at the level the standard places it): an "
                              "activation past the window waits for it, and the run time "
@@ -7847,13 +7844,9 @@ static void computeHierarchyLatencies(UnifiedConfig& config) {
                           << "  A design that widens the window (more charge pumps) is not "
                              "modelled: the run keeps the standard's window.\n";
             else
-                std::cerr << "  The window is a charge limit. "
-                          << (replay_on ? "The DRAM replay does not enforce it at this placement: "
-                                          "the standard places it at the channel level, which the "
-                                          "bank-parallel controller removes"
-                                        : "Without the DRAM replay PIMID does not enforce it in the "
-                                          "timing model")
-                          << ", so this configuration is optimistic by whatever tFAW would "
+                std::cerr << "  The window is a charge limit. Without the DRAM replay PIMID "
+                             "does not enforce it in the timing model, so this configuration "
+                             "is optimistic by whatever tFAW would "
                              "have serialised, and the power model carries no term for the "
                              "extra activation charge.\n"
                           << "  Keep it if the design intends to widen the window "

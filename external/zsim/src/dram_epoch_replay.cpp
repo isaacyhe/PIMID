@@ -201,6 +201,16 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
                 for (int l = 0; l < bankLv; l++) if (std::string(d->m_levels(l)) == "bankgroup") bg = l;
                 if (bg >= 0) keepLv = bg;
             }
+            /* (1.12.274): the channel-level rule below lifts the channel's shared command bus. It applies only where a rank or
+             * pseudo-channel level sits between the channel and the bank groups, for there the device's own timing
+             * (ACT-to-ACT, precharge-all, refresh) is held. A standard without one (GDDR6: channel, bank group, bank) holds
+             * that timing at the channel level -- its channel is the device -- so there only the column-to-column (data
+             * bus) constraints are lifted, as at every level above the PE's tier. */
+            bool chanBus = false;
+            for (int l = 1; l < bankLv; l++) {
+                const std::string n = std::string(d->m_levels(l));
+                if (n == "rank" || n == "pseudochannel") chanBus = true;
+            }
             auto cmdId = [d](const char* n) -> int {
                 for (int c = 0; c < (int)d->m_commands.size(); c++) if (std::string(d->m_commands(c)) == n) return c;
                 return -1;
@@ -210,14 +220,14 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
             const int act = cmdId("ACT");
             auto isCol = [&col](int c) { return std::find(col.begin(), col.end(), c) != col.end(); };
             uint64_t removed = 0, kept = 0;
-            stripCons_ = [keepLv, act, col](Ramulator::IDRAM* dd) {   // (1.12.144): the same filter for the channel instances
+            stripCons_ = [keepLv, act, col, chanBus](Ramulator::IDRAM* dd) {   // (1.12.144): the same filter for the channel instances
                 auto isC = [&col](int c) { return std::find(col.begin(), col.end(), c) != col.end(); };
                 for (int l = 0; l < keepLv; l++)
                     for (int pc = 0; pc < (int)dd->m_timing_cons[l].size(); pc++) {
                         auto& v = dd->m_timing_cons[l][pc];
                         v.erase(std::remove_if(v.begin(), v.end(), [&](const Ramulator::TimingConsEntry& t) {
                             if (isC(pc) && isC(t.cmd)) return true;
-                            if (l == 0 && (pc == act || isC(pc))) return true;
+                            if (chanBus && l == 0 && (pc == act || isC(pc))) return true;   // (1.12.274): not where the channel is the device
                             return false;
                         }), v.end());
                     }
@@ -228,7 +238,7 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
                     const size_t before = v.size();
                     v.erase(std::remove_if(v.begin(), v.end(), [&](const Ramulator::TimingConsEntry& t) {
                         if (isCol(pc) && isCol(t.cmd)) return true;                 // data bus / CCD / turnaround
-                        if (l == 0 && (pc == act || isCol(pc))) return true;       // channel command bus
+                        if (chanBus && l == 0 && (pc == act || isCol(pc))) return true;       // channel command bus ((1.12.274): not where the channel is the device)
                         return false;
                     }), v.end());
                     removed += before - v.size();
@@ -237,6 +247,10 @@ DramEpochReplay::DramEpochReplay(const std::string& configFile, uint64_t coreFre
             }
             info("[mem] %s: PE placement tier %u is below the channel: bank-parallel controller, %lu bus constraint(s) above the %s tier removed, %lu kept (activation limits, refresh, precharge-all) [1.12.17]",
                  name, plv, (unsigned long)removed, plv == 2 ? "bank-group" : "bank", (unsigned long)kept);
+            if (!chanBus)
+                info("[mem] %s: no rank or pseudo-channel level: the channel is the device, so the bank-parallel controller keeps its "
+                     "ACT-to-ACT (tRRD, tFAW), precharge-all and refresh timing at the channel level and lifts only the "
+                     "column-to-column constraints there [(1.12.274)]", name);
         }
         const uint32_t cpr = zinfo->hierarchy.chipsPerRank;
         foldedChannels_ = !hostOnly_ && (nch > 1 && cpr == nch);
@@ -2626,9 +2640,8 @@ void DramEpochReplay::finalize() {
                  name_.c_str(), (unsigned long)pr, (unsigned long)kp, (unsigned long)wa, (unsigned long)wc, (unsigned long)wm,
                  (unsigned long)br);
             if (kp < pr)
-                info("[mem] %s: %lu of the %lu ACTs had no activation window on their path: the standard places tFAW (and tRRD_S) at the "
-                     "channel level, which the bank-parallel controller removes with the channel's command bus at this placement, so "
-                     "this run does NOT enforce tFAW for them [(1.12.273)]",
+                info("[mem] %s: %lu of the %lu ACTs had no activation window on their path, so this run does NOT enforce tFAW for them "
+                     "[(1.12.273), (1.12.274)]",
                      name_.c_str(), (unsigned long)(pr - kp), (unsigned long)pr);
         }
     }
