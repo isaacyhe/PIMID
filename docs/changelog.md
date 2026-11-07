@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.280 -- the guest's name-service lookups read PIMID's pinned files, and a timer armed on simulated time keeps its distance
+
+- **The problem.** A program that looks up a user or group (CPython does while it starts) followed the host's
+  `/etc/nsswitch.conf`. On the cluster's nodes that reads the host's user file, loads the host's own `libnss_systemd`
+  and `libnss_sss` into the simulated region (they are not in the guest sysroot), reads the SSSD cache file, and asks
+  the host's `systemd-userdbd` over a socket. That client (sd-event) guards the request with a timeout armed as an
+  absolute deadline on a `timerfd`: since 1.12.275 the guest's monotonic clock is simulated (about 1000 s), the timer
+  runs on the host's (weeks), so the timeout fired at once and the call succeeded only if the daemon had already
+  answered. Under load it sometimes had not, the lookup took another path, and the run before the ROI differed: a
+  no-offload CPython co-simulation repeated 5 times in 6 (449,016 vs 449,660 accesses before the ROI, run time
+  +0.007 %), and its value depended on the node's user configuration.
+- **The fix.** The guest sysroot carries `etc/nsswitch.conf` (every database from `files`), `etc/passwd` and
+  `etc/group` (root and the guest's identity 1000:1000); QEMU opens them from the sysroot, so a lookup reaches no host
+  module, cache or daemon. `scripts/fetch_guest_sysroot.sh` writes them; a sysroot installed before writes them at
+  its first launch (atomically); copies that differ stop the run. A `timerfd` or POSIX timer armed with an absolute
+  deadline on a simulated clock (`timerfd_settime` with `TFD_TIMER_ABSTIME`, `timer_settime` with `TIMER_ABSTIME`) has
+  the deadline moved to the same distance from the host's clock for the call, as 1.12.275 does for waits; PIMID
+  records each timer's clock when it is created.
+- **Data impact.** Programs that look up a user or group (the CPython workloads) change and repeat on each node;
+  programs that do not (the benchmark kernels, the MPI and OpenMP runtimes) are unchanged.
+
 ## 1.12.279 -- a REP string instruction is priced as a block copy, one access per line
 
 - **The problem.** QEMU runs one iteration of a REP string instruction per block execution (patch 0001), so a

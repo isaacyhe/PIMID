@@ -937,6 +937,71 @@ static unsigned long long fnv1a64File(const std::string& path, long long* size) 
     return h;
 }
 
+/* (1.12.280): THE GUEST'S NAME-SERVICE LOOKUPS READ PIMID'S FILES.
+ * A program that looks up a user or group (getpwuid, getgrgid; CPython does while it starts) read the host's
+ * /etc/nsswitch.conf and followed it: on a cluster node that meant the host's /etc/passwd, the host's own
+ * libnss_systemd and libnss_sss modules (not in the sysroot, so loaded from the host into the simulated region), the
+ * SSSD cache file /var/lib/sss/mc/passwd (rewritten as the cache changes) and a request over a socket to the host's
+ * systemd-userdbd, whose reply raced a timeout. So the instructions the guest ran before its ROI followed the node,
+ * the cache and the daemon's timing (a no-offload CPython co-simulation: 449,016 vs 449,660 accesses before the ROI,
+ * one run in six under load). The sysroot now carries etc/nsswitch.conf (files only), etc/passwd and etc/group (root
+ * and the guest's identity 1000:1000, -guest-ids): QEMU opens them from the sysroot (-L), glibc's built-in files
+ * module answers, and no host module, cache or daemon is reached. scripts/fetch_guest_sysroot.sh writes them; a
+ * sysroot installed before this release gets them at its first launch; a sysroot whose copies differ is refused. */
+struct GuestEtcFile { const char* rel; const char* text; };
+static const GuestEtcFile kGuestEtcFiles[] = {
+    {"etc/nsswitch.conf",
+        "# PIMID guest: name-service lookups read the files of this directory only (no daemon, no host module)\n"
+        "passwd:         files\n"
+        "group:          files\n"
+        "shadow:         files\n"
+        "gshadow:        files\n"
+        "hosts:          files\n"
+        "networks:       files\n"
+        "protocols:      files\n"
+        "services:       files\n"
+        "ethers:         files\n"
+        "rpc:            files\n"
+        "netgroup:       files\n"},
+    {"etc/passwd",
+        "root:x:0:0:root:/root:/bin/sh\n"
+        "pimid:x:1000:1000:pimid:/home/pimid:/bin/sh\n"},
+    {"etc/group",
+        "root:x:0:\n"
+        "pimid:x:1000:\n"}};
+/* the pinned name-service files in sysroot d: written when missing (atomically: a temporary file and a rename, so
+ * concurrent launches agree), refused when different; false = refused (message printed) */
+static bool guestEtcFiles(const std::string& d) {
+    for (const auto& F : kGuestEtcFiles) {
+        const std::string p = d + "/" + F.rel;
+        std::ifstream in(p, std::ios::binary);
+        if (in) {
+            std::string have((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (have != F.text) {
+                std::cerr << "[guest] FATAL: the guest sysroot's " << F.rel << " (" << p << ") is not PIMID's pinned copy;"
+                             " reinstall the sysroot with scripts/fetch_guest_sysroot.sh" << std::endl;
+                return false;
+            }
+            continue;
+        }
+        mkdir((d + "/etc").c_str(), 0755);
+        const std::string tmp = p + ".tmp." + std::to_string((long)getpid());
+        {
+            std::ofstream out(tmp, std::ios::binary);
+            out << F.text;
+            if (!out) {
+                std::cerr << "[guest] WARNING: cannot write " << p << " (the sysroot is not writable): the guest's"
+                             " name-service lookups read this host's files" << std::endl;
+                std::remove(tmp.c_str());
+                continue;
+            }
+        }
+        if (std::rename(tmp.c_str(), p.c_str()) != 0) std::remove(tmp.c_str());
+        else std::cerr << "[guest] NOTE: wrote the pinned " << F.rel << " into the guest sysroot [(1.12.280)]" << std::endl;
+    }
+    return true;
+}
+
 /* "" = the host's libraries. Resolved once per process. */
 static std::string guestSysroot() {
     static bool done = false;
@@ -973,6 +1038,7 @@ static std::string guestSysroot() {
                      " reinstall it with scripts/fetch_guest_sysroot.sh" << std::endl;
         std::exit(2);
     }
+    if (!guestEtcFiles(d)) std::exit(2);   // (1.12.280): the pinned name-service files
     dir = d;
     return dir;
 }

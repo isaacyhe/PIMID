@@ -7054,8 +7054,11 @@ static void statCallReturn(unsigned int vcpu, int64_t ret) {
 }
 
 static void guestDeadlineRestore(unsigned int vcpu);   // (1.12.275): with the guest clock, below
+static void guestTimerCreated(unsigned int vcpu, int64_t num, int64_t ret);   // (1.12.280): with the guest clock, below
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
     guestDeadlineRestore(vcpu_index);   // (1.12.275): a deadline moved onto the host's clock for the call is the guest's again
+    if (vcpu_index < MAX_VCPUS && (num == SYS_timerfd_create || num == SYS_timer_create))   // (1.12.280): the new timer's clock
+        guestTimerCreated(vcpu_index, num, ret);
     statCallReturn(vcpu_index, ret);   // (1.12.157): fixed host-identity fields of a file status
     if (vcpu_index < MAX_VCPUS && vcpuToTid[vcpu_index] < MAX_THREADS)   // (1.12.188): the call has returned (see g_cutInWait)
         g_cutInWait[vcpuToTid[vcpu_index]].store(0, std::memory_order_release);
@@ -7287,6 +7290,15 @@ static const int64_t kGuestMonoBaseSec = 1000;
 static uint64_t g_guestClkLast[MAX_VCPUS];                    // per vCPU thread: its latest simulated nanosecond
 struct GuestDeadline { uint64_t addr = 0; uint8_t orig[16]; };
 static GuestDeadline g_guestDl[MAX_VCPUS];                    // a deadline moved for the running call, put back at its return
+/* (1.12.280): the clock of each timerfd and POSIX timer the guest created (timerfd_create / timer_create), so an absolute
+ * deadline armed on it (timerfd_settime TFD_TIMER_ABSTIME, timer_settime TIMER_ABSTIME) is moved like a wait's: the
+ * value is the guest's simulated time, the timer runs on the host's clock. Before, sd-event (systemd's client
+ * library, reached by a name-service lookup) armed its timeout at simulated ~1000 s on the host's monotonic clock,
+ * long past, so it fired at once and raced the reply it guarded. */
+static std::mutex g_tmrMu;
+static std::unordered_map<int64_t, int32_t> g_tfdClk, g_ptmClk;   // fd -> clock, timer id -> clock
+static int32_t g_tmrNewClk[MAX_VCPUS];                            // the clock of the create call in flight
+static uint64_t g_tmrNewIdAt[MAX_VCPUS];                          // timer_create: where the guest's timer id is written
 /* the calling thread's simulated time in ns: its core's raw clock at the core's own rate */
 static uint64_t guestSimNs(unsigned int vcpu) {
     uint64_t ns = 0;
@@ -7340,6 +7352,34 @@ static void guestDeadlineMove(unsigned int vcpu, uint64_t ts, int64_t clk) {
     const int64_t left = dl > nowG ? dl - nowG : 0;
     const int64_t hostDl = (int64_t)h.tv_sec * 1000000000ll + h.tv_nsec + left;
     if (guestWrite64x2(ts, hostDl / 1000000000ll, hostDl % 1000000000ll)) g_guestDl[vcpu].addr = ts;
+}
+/* (1.12.280) an absolute timer value (struct itimerspec at its) on clock clk: its it_value moved for this call; a zero
+ * it_value disarms and is left as it is */
+static void guestTimerMove(unsigned int vcpu, uint64_t its, int32_t clk) {
+    if (!its || vcpu >= MAX_VCPUS) return;
+    GByteArray* g = g_byte_array_new();
+    const bool ok = qemu_plugin_read_memory_vaddr(its + 16, g, 16) && g->len == 16;
+    int64_t v[2] = {0, 0};
+    if (ok) memcpy(v, g->data, 16);
+    g_byte_array_free(g, TRUE);
+    if (!ok || (v[0] == 0 && v[1] == 0)) return;
+    guestDeadlineMove(vcpu, its + 16, clk);
+}
+/* (1.12.280) a timerfd_create / timer_create returned: record the new timer's clock */
+static void guestTimerCreated(unsigned int vcpu, int64_t num, int64_t ret) {
+    if (vcpu >= MAX_VCPUS || ret < 0) return;
+    if (num == SYS_timerfd_create) {
+        std::lock_guard<std::mutex> lk(g_tmrMu);
+        g_tfdClk[ret] = g_tmrNewClk[vcpu];
+        return;
+    }
+    if (ret != 0 || !g_tmrNewIdAt[vcpu]) return;   // timer_create: 0, the id written to the guest's timer_t
+    GByteArray* g = g_byte_array_new();
+    const bool ok = qemu_plugin_read_memory_vaddr(g_tmrNewIdAt[vcpu], g, 4) && g->len == 4;
+    int32_t id = 0;
+    if (ok) memcpy(&id, g->data, 4);
+    g_byte_array_free(g, TRUE);
+    if (ok) { std::lock_guard<std::mutex> lk(g_tmrMu); g_ptmClk[id] = g_tmrNewClk[vcpu]; }
 }
 /* put back a deadline moved for the call that just returned */
 static void guestDeadlineRestore(unsigned int vcpu) {
@@ -7399,6 +7439,22 @@ static bool guestClockSyscall(unsigned int vcpu, int64_t num, uint64_t a1, uint6
     }
     if (num == SYS_clock_nanosleep && (a2 & TIMER_ABSTIME)) {   // (clockid, flags, request, remain)
         guestDeadlineMove(vcpu, a3, (int64_t)(int32_t)a1);
+        return false;
+    }
+    if ((num == SYS_timerfd_create || num == SYS_timer_create) && vcpu < MAX_VCPUS) {   // (1.12.280): (clockid, ...)
+        g_tmrNewClk[vcpu] = (int32_t)a1;
+        g_tmrNewIdAt[vcpu] = (num == SYS_timer_create) ? a3 : 0;
+        return false;
+    }
+    if ((num == SYS_timerfd_settime || num == SYS_timer_settime) && (a2 & 1 /* TFD_TIMER_ABSTIME = TIMER_ABSTIME */) && a3) {
+        int32_t clk = -1;   // (1.12.280): (fd or timer id, flags, new value, old value)
+        {
+            std::lock_guard<std::mutex> lk(g_tmrMu);
+            auto& m = (num == SYS_timerfd_settime) ? g_tfdClk : g_ptmClk;
+            auto it = m.find((int64_t)(int32_t)a1);
+            if (it != m.end()) clk = it->second;
+        }
+        if (clk >= 0) guestTimerMove(vcpu, a3, clk);
         return false;
     }
     return false;

@@ -185,8 +185,19 @@ host's). Before, a program that follows the clock's value (CPython reads it abou
 other instructions in every run. A wait with an absolute deadline on one of these clocks (`FUTEX_WAIT_BITSET` and the
 priority-inheritance waits, `futex_waitv`, `clock_nanosleep` with `TIMER_ABSTIME`) waits on the host's clock: for the
 call its deadline is moved to the same distance from the host's clock, and the guest's value is put back when the
-call returns. Files the guest reads from the machine it runs on (locale data, name-service configuration, a
-language's library directories) are still that machine's; the container image gives every machine the same ones.
+call returns; ((1.12.280)) so is an absolute deadline armed on a timer of one of these clocks (`timerfd_settime` with
+`TFD_TIMER_ABSTIME`, `timer_settime` with `TIMER_ABSTIME`), whose clock PIMID records when the timer is created. A
+relative timeout (`poll`, `epoll_wait`, a relative `FUTEX_WAIT`) runs for its length on the host's clock. Files the
+guest reads from the machine it runs on (locale data, a language's library directories) are still that machine's;
+the container image gives every machine the same ones.
+
+**The guest's name-service lookups read PIMID's files ((1.12.280)).** The guest sysroot carries `etc/nsswitch.conf`
+(every database from `files`), `etc/passwd` and `etc/group` (root and the guest's identity, 1000:1000), and QEMU opens
+them from the sysroot, so a user or group lookup (CPython makes one while it starts) is answered by glibc's built-in
+files module. Before, it followed the host's `/etc/nsswitch.conf`: the host's user file, the host's own
+`libnss_systemd` and `libnss_sss` modules loaded into the simulated region, the SSSD cache file and a request to the
+host's `systemd-userdbd`, whose reply raced a timeout. `scripts/fetch_guest_sysroot.sh` writes the three files; a
+sysroot installed before writes them at its first launch; copies that differ stop the run.
 
 **The program's command line and environment are part of its input (since 1.12.125, corrected in 1.12.136).**
 PIMID passes the program path exactly as it was given -- as the guest's `argv[0]` and as the file name QEMU

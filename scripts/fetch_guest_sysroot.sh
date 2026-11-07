@@ -62,6 +62,28 @@ done
 # merged /usr, as on the distribution: the guest asks for /lib/... and /lib64/...
 ln -sfn usr/lib "$TMP/root/lib"
 ln -sfn usr/lib64 "$TMP/root/lib64"
+# the guest's name-service files (PIMID checks them at launch, src/main.cpp kGuestEtcFiles): files only, root and the
+# guest's identity 1000:1000, so a lookup reaches no host module, cache or daemon
+mkdir -p "$TMP/root/etc"
+printf '%s' '# PIMID guest: name-service lookups read the files of this directory only (no daemon, no host module)
+passwd:         files
+group:          files
+shadow:         files
+gshadow:        files
+hosts:          files
+networks:       files
+protocols:      files
+services:       files
+ethers:         files
+rpc:            files
+netgroup:       files
+' > "$TMP/root/etc/nsswitch.conf"
+printf '%s' 'root:x:0:0:root:/root:/bin/sh
+pimid:x:1000:1000:pimid:/home/pimid:/bin/sh
+' > "$TMP/root/etc/passwd"
+printf '%s' 'root:x:0:
+pimid:x:1000:
+' > "$TMP/root/etc/group"
 # the record PIMID checks before each launch (md5 of the libraries a guest loads)
 ( cd "$TMP/root" && md5sum usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 usr/lib/x86_64-linux-gnu/libc.so.6 \
     usr/lib/x86_64-linux-gnu/libm.so.6 usr/lib/x86_64-linux-gnu/libmvec.so.1 usr/lib/x86_64-linux-gnu/libgcc_s.so.1 \

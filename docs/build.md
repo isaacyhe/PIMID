@@ -85,6 +85,8 @@ guest libraries in use.
   `PIMID_GUEST_DEBS=<dir>`.
 - A missing sysroot: the run continues on the host's libraries, with a warning.
 - A modified sysroot: the run stops (`[guest] FATAL: ... is not PIMID's pinned copy`).
+- The sysroot also carries the guest's name-service files (`etc/nsswitch.conf`, `etc/passwd`, `etc/group`;
+  (1.12.280)); a sysroot installed before them gets them at its first launch, and copies that differ stop the run.
 - `PIMID_GUEST_SYSROOT=<dir>` names another copy (it must pass the same check);
   `PIMID_GUEST_SYSROOT=host` runs on the host's libraries.
 
