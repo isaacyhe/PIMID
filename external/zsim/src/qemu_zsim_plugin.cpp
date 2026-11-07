@@ -6940,7 +6940,83 @@ static void stackOnUnmap(uint64_t addr, uint64_t len) {
 
 /* 1.12.18: register the main stack, then the PE running the thread claims
  * the stack under its stack pointer (spmOwnStack). */
+/* ---- (1.12.281): workload.mpi_image_data per_rank: the program's own data (GlobSimInfo::imgLo) ----
+ * Read once, at the first roi_begin, when the run asks for per_rank and runs more than one thread-MPI rank: every ELF
+ * object mapped from a file (its offset-0 mapping in /proc/self/maps gives the load address; guest and host share the
+ * address space, guest_base 0) contributes its PT_LOAD segments, file-backed part and bss alike. Objects of the
+ * simulator itself are listed too; the guest never touches them. */
+static bool g_imgLoaded = false;
+static void imageElfLoads(const char* path, uint64_t mapLo, std::vector<std::pair<uint64_t, uint64_t>>& out) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    Elf64_Ehdr eh;
+    if (fread(&eh, 1, sizeof eh, f) != sizeof eh || memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 ||
+        eh.e_ident[EI_CLASS] != ELFCLASS64 || eh.e_phentsize != sizeof(Elf64_Phdr) || eh.e_phnum == 0 ||
+        fseek(f, (long)eh.e_phoff, SEEK_SET) != 0) { fclose(f); return; }
+    std::vector<Elf64_Phdr> ph(eh.e_phnum);
+    const bool ok = fread(ph.data(), sizeof(Elf64_Phdr), ph.size(), f) == ph.size();
+    fclose(f);
+    if (!ok) return;
+    uint64_t minv = ~0ull;
+    for (auto& p : ph) if (p.p_type == PT_LOAD) minv = std::min<uint64_t>(minv, p.p_vaddr & ~0xfffull);
+    if (minv == ~0ull) return;
+    const uint64_t bias = (eh.e_type == ET_DYN) ? mapLo - minv : 0;
+    for (auto& p : ph)
+        if (p.p_type == PT_LOAD && p.p_memsz > 0) out.push_back({bias + p.p_vaddr, bias + p.p_vaddr + p.p_memsz});
+}
+static void imageRangesLoad() {
+    if (!zinfo || !zinfo->hierarchy.mpiImageDataPerRank || g_imgLoaded) return;
+    const char* n = getenv("PIMID_MPI_RANKS");
+    if (!n || atoi(n) < 2) return;
+    g_imgLoaded = true;
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) { info("[mpi] WARNING: /proc/self/maps unreadable: workload.mpi_image_data per_rank has no image ranges [(1.12.281)]"); return; }
+    std::vector<std::pair<uint64_t, uint64_t>> r;
+    char line[1024];
+    uint32_t objs = 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long lo = 0, hi = 0, off = 0; char perm[8] = {0}; int pos = 0;
+        if (sscanf(line, "%lx-%lx %7s %lx %*s %*s%n", &lo, &hi, perm, &off, &pos) < 4 || off != 0) continue;
+        const char* p = line + pos; while (*p == ' ' || *p == '\t') p++;
+        std::string path(p); while (!path.empty() && (path.back() == '\n' || path.back() == ' ')) path.pop_back();
+        if (path.empty() || path[0] != '/') continue;
+        const size_t before = r.size();
+        imageElfLoads(path.c_str(), lo, r);
+        if (r.size() > before) objs++;
+    }
+    fclose(f);
+    std::sort(r.begin(), r.end());
+    std::vector<std::pair<uint64_t, uint64_t>> m;
+    for (auto& x : r) {
+        if (!m.empty() && x.first <= m.back().second) m.back().second = std::max(m.back().second, x.second);
+        else m.push_back(x);
+    }
+    if (m.size() > GlobSimInfo::kMaxImageRanges)
+        panic("[mpi] workload.mpi_image_data per_rank: %zu image ranges, more than %u", m.size(), GlobSimInfo::kMaxImageRanges);
+    for (size_t i = 0; i < m.size(); i++) { zinfo->imgLo[i] = m[i].first; zinfo->imgHi[i] = m[i].second; }
+    if (!m.empty()) { zinfo->imgMin = m.front().first; zinfo->imgMax = m.back().second; }
+    __sync_synchronize();
+    zinfo->imgRanges = (uint32_t)m.size();
+    info("[mpi] workload.mpi_image_data per_rank: %u mapped ELF object(s), %zu image range(s): a rank's accesses to them are "
+         "placed in its own element's memory [(1.12.281)]", objs, m.size());
+}
+/* Caller holds g_stackMu: the argument area, once the main stack is registered at the main thread's roi_begin */
+static void imageArgArea(uint64_t lo, uint64_t hi, uint64_t sp) {
+    if (!g_imgLoaded || !zinfo->imgRanges || zinfo->imgArgLo) return;
+    for (uint32_t i = 0; i < zinfo->stackRanges; i++)
+        if (zinfo->stackLo[i] == lo && zinfo->stackHi[i] == hi) {
+            zinfo->imgArgStack = (int32_t)i;
+            zinfo->imgArgHi = hi;
+            __sync_synchronize();
+            zinfo->imgArgLo = sp;
+            info("[mpi] workload.mpi_image_data per_rank: argument area [0x%lx, 0x%lx) (argv, envp, auxv, start-up frames) "
+                 "placed in each rank's own element's memory but the main thread's [(1.12.281)]", (unsigned long)sp, (unsigned long)hi);
+            return;
+        }
+}
+
 static void stackAtRoiBegin(uint32_t tid) {
+    imageRangesLoad();   // (1.12.281)
     stackAtRoiBeginReg();
     uint64_t sp = 0;
     if (zinfo && tid < MAX_THREADS && cores[tid] &&
@@ -6967,6 +7043,7 @@ static void stackAtRoiBeginReg() {
         unsigned long lo = 0, hi = 0;
         if (sscanf(line, "%lx-%lx", &lo, &hi) == 2 && sp >= lo && sp < hi) {
             stackRangeAdd(lo, hi, sp, "main");
+            imageArgArea(lo, hi, sp);   // (1.12.281)
             found = true;
             break;
         }

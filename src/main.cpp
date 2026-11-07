@@ -3374,7 +3374,7 @@ static const char* kSchemaPaths[] = {
     "system.network.output_buffer_depth", "system.network.router_latency", "system.network.router_pipe_stages", "system.network.topology", "system.network.virtual_channels_per_vn",
     "system.network.links[].bandwidth_GBs", "system.network.links[].base_latency_ns", "system.network.links[].dst", "system.network.links[].lanes", "system.network.links[].src", "system.network.links[].type",
     "technology.node_nm",
-    "workload.args", "workload.binary", "workload.env", "workload.mpi_ranks", "workload.mpich_path", "workload.type",
+    "workload.args", "workload.binary", "workload.env", "workload.mpi_image_data", "workload.mpi_ranks", "workload.mpich_path", "workload.type",
 };
 static const char* kSchemaFreeMaps[] = { "workload.env", "power.mcpat_overrides", "pim.mapping.map", "pim.mc.groups",
                                          "simulation.pim_runtime.barrier_table", "simulation.pim_runtime.reduction_table",   // 1.12.18
@@ -4395,6 +4395,11 @@ struct UnifiedConfig {
     // Parallel workload configuration
     std::string workload_type;   // "serial", "openmp", "mpi"
     int mpi_ranks;               // Number of MPI ranks (0 = auto)
+    /* (1.12.281): thread-MPI ranks and the program's own data (every loaded object's segments, argv/envp/auxv):
+     * per_rank (each rank's accesses placed in its own element's memory, as each process of a multi-process program
+     * holds its own copy) or shared (one copy, where its first toucher placed it: the releases before). */
+    std::string mpi_image_data = "per_rank";
+    bool mpi_image_data_from_yaml = false;
 
     //=========================================================================
     // Multi-Host Multi-Device System Architecture (scope: "system")
@@ -9791,6 +9796,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                                                                         : (config.mc_epoch_replay ? "analytical service (no Ramulator preset for this technology)" : "analytical service (pim.mc.epoch_replay: false)")) << std::endl;
     }
     out << "        nocAggBandwidthMBs = " << config.hierarchy_agg_bandwidth_mbs << ";\n";
+    out << "        mpiImageDataPerRank = "   // (1.12.281): workload.mpi_image_data (message-passing runs only)
+        << ((config.workload_type == "mpi" && config.mpi_image_data == "per_rank") ? "true" : "false") << ";\n";
     out << "        dqTurnNsX100 = " << config.hierarchy_dq_turn_ns_x100 << ";\n";
     /* 1.11.11: the element's FP capability and the cost of not having
      * one now reach the TIMING model, which since 1.11.10 can see FP-class
@@ -24640,6 +24647,18 @@ int main(int argc, char** argv) {
                                    "serial, openmp, mpi",
                                    "run as a serial workload (no OpenMP parallelism, no MPI ranks)");
                 }
+                if (yaml_cfg["workload"]["mpi_image_data"]) {   // (1.12.281)
+                    const std::string v = yamlStringReq(yaml_cfg["workload"]["mpi_image_data"], "workload.mpi_image_data");
+                    if (v != "per_rank" && v != "shared") {
+                        std::cerr << "Error: workload.mpi_image_data '" << v << "' is not a value this build has. Valid values: "
+                                     "per_rank (each thread-MPI rank's accesses to the program's own data are placed in its own "
+                                     "element's memory; the default) or shared (one copy, where its first toucher placed it)."
+                                  << std::endl;
+                        std::exit(1);
+                    }
+                    config.mpi_image_data = v;
+                    config.mpi_image_data_from_yaml = true;
+                }
                 if (!cli_mpi_ranks_set && yaml_cfg["workload"]["mpi_ranks"]) {
                     config.mpi_ranks = yaml_cfg["workload"]["mpi_ranks"].as<int>();
                     /* 1.11.63: THE YAML KEY IMPLIES THE TYPE, EXACTLY AS
@@ -27149,6 +27168,15 @@ int main(int argc, char** argv) {
                              && (config.scope == "system");
         config.mpi_ranks = host_baseline ? config.host_num_cores : config.num_pes;
     }
+    if (config.workload_type == "mpi")   // (1.12.281): the value and its source, once per run
+        std::cout << "[config] workload.mpi_image_data: " << config.mpi_image_data << " ("
+                  << (config.mpi_image_data_from_yaml ? "the run's YAML" : "the default") << "): "
+                  << (config.mpi_image_data == "per_rank"
+                      ? "with more than one rank on the device's elements, a rank's accesses to the program's own data "
+                        "(every loaded object's segments, argv/envp/auxv) are placed in its own element's memory, as each "
+                        "process of a multi-process program holds its own copy"
+                      : "one copy of the program's own data, where its first toucher placed it")
+                  << " [(1.12.281)]" << std::endl;
 
     // Validate method
     if (config.method != "exec" && config.method != "trace-gen" &&

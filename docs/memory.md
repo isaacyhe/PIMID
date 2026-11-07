@@ -270,6 +270,16 @@ units hold wraps around within them, as the address map did. Each PE
 interface reports `ftPages`, the pages it first touched inside the ROI (pages
 claimed during setup are not counted there).
 
+**Message passing: each rank's own copy of the program's data ((1.12.281)).** The ranks of a message-passing run are
+threads of one process, so the program's own data -- its and its libraries' code, read-only data, data and bss, and
+argv / envp / auxv at the top of the main stack -- exists once, and under first touch it lives with the element that
+touched it first: every other rank's read of an argument string, a string literal or a library global crossed the
+in-memory network to that element and queued there. With `workload.mpi_image_data: per_rank` (the default) a rank's
+access to that data is placed in its own element's memory, at its offset in the object, as each process of a
+multi-process program holds its own copy; the main thread's own accesses to its stack keep the stack rule.
+`shared` keeps the single copy (the releases before). The data the kernels build (heap, their slots), the threads'
+stacks and the MPI library's transport memory are placed as before; host cores are unaffected.
+
 When multiple PEs are placed at a level and no explicit `pim.mapping` is
 given, PEs are distributed **distant/strided** across that level's units -- each
 PE local to its own evenly-spaced slice (e.g. 4 PEs over 512 banks land on banks

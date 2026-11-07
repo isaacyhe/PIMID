@@ -326,6 +326,9 @@ struct GlobSimInfo {
          * four-activate window (tFAW) is held. *FromYaml: the run's YAML set it (else the part record). */
         bool dramChannelIsDevice = false, dramChannelIsDeviceFromYaml = false;
         bool dramActivationWindow = true, dramActivationWindowFromYaml = false;
+        /* (1.12.281): workload.mpi_image_data per_rank (message-passing runs): a thread-MPI rank's accesses to the program's
+         * own data go to its own element's memory (GlobSimInfo::imgLo, PEMemoryInterface::addrToUnit) */
+        bool mpiImageDataPerRank = false;
         /* 1.12.20: DRAM precharge power-down in the replayed controller (src/main.cpp resolves the per-technology
          * default and the cited idle timer / tXP): entry after dramPdIdleClocks memory clocks idle, exit tXP =
          * max(dramPdTxpNck, dramPdTxpNs). */
@@ -777,6 +780,20 @@ struct GlobSimInfo {
     volatile int32_t stackOwner[kMaxStackRanges] = {};
     volatile uint32_t stackRanges = 0;
     volatile uint64_t stackMin = ~0ull, stackMax = 0;
+
+    /* (1.12.281): workload.mpi_image_data per_rank, with more than one thread-MPI rank. The program's own data: every loaded
+     * ELF object's PT_LOAD segments (code, read-only data, data, bss), sorted and disjoint, read from /proc/self/maps at
+     * the first roi_begin; and the argument area [imgArgLo, imgArgHi): the main stack from the main thread's stack pointer
+     * at its roi_begin to the stack's top (argv, envp, auxv, their strings, the start-up frames), whose owner (stack
+     * imgArgStack) keeps the stack rule. A PE access inside either is placed in the accessing element's own memory, at its
+     * offset in the range, as each process of a multi-process program holds its own copy. */
+    static const uint32_t kMaxImageRanges = 512;
+    uint64_t imgLo[kMaxImageRanges] = {};
+    uint64_t imgHi[kMaxImageRanges] = {};
+    volatile uint32_t imgRanges = 0;
+    volatile uint64_t imgMin = ~0ull, imgMax = 0;
+    volatile uint64_t imgArgLo = 0, imgArgHi = 0;
+    volatile int32_t imgArgStack = -1;
 };
 
 

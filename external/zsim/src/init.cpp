@@ -748,6 +748,7 @@ static void InitSystem(Config& config) {
         zinfo->hierarchy.dramChannelIsDevice = config.get<bool>("sys.hierarchy.dramChannelIsDevice", false);   // (1.12.276)
         zinfo->hierarchy.dramChannelIsDeviceFromYaml = config.get<bool>("sys.hierarchy.dramChannelIsDeviceFromYaml", false);
         zinfo->hierarchy.dramActivationWindow = config.get<bool>("sys.hierarchy.dramActivationWindow", true);
+        zinfo->hierarchy.mpiImageDataPerRank = config.get<bool>("sys.hierarchy.mpiImageDataPerRank", false);   // (1.12.281)
         zinfo->hierarchy.dramActivationWindowFromYaml = config.get<bool>("sys.hierarchy.dramActivationWindowFromYaml", false);
         zinfo->hierarchy.dramPowerDown = config.get<bool>("sys.hierarchy.dramPowerDown", false);   // 1.12.19
         zinfo->hierarchy.dramPdIdleClocks = config.get<uint32_t>("sys.hierarchy.dramPdIdleClocks", 64);

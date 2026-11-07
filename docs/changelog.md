@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.281 -- a message-passing rank reads its own copy of the program's data
+
+- **The problem.** The ranks of a message-passing run are threads of one process (thread-MPI), so the program's own
+  data -- every loaded object's code, read-only data, data and bss, and argv / envp / auxv -- exists once. Under first
+  touch it lives with the element that touched it first, and every other rank's access to an argument string, a
+  string literal or a library global crossed the in-memory network to that element and queued there. A loop that
+  re-reads its arguments each iteration grew with the rank count for that reason alone (a null loop with one barrier:
+  131 k cycles per iteration at 32 ranks on DDR5, 29.9 k with the argument parsing moved before the region of
+  interest), where each process of a multi-process program, or each PIM core with its own memory, reads its own copy.
+- **The fix.** `workload.mpi_image_data` chooses: `per_rank` (the default) places a rank's accesses to the program's
+  own data -- the PT_LOAD segments of every mapped object, read from the process's mappings at the first region of
+  interest, and the main stack's argument area above the main thread's stack pointer there -- in its own element's
+  memory, at their offset in the object; `shared` keeps the single copy, as the releases before. One line in the log
+  states the value and its source; any other value stops the run. The guest's behaviour is unchanged: only where the
+  accesses are priced moves.
+- **Data impact.** Message-passing runs with more than one rank on the device's elements change wherever their ranks
+  read the program's own data in the region of interest; `shared` reproduces the releases before bit for bit. Runs
+  with one rank, shared-memory and serial runs, and host cores (message-passing host baselines, the host side of a
+  co-simulation) are unchanged.
+
 ## 1.12.280 -- the guest's name-service lookups read PIMID's pinned files, and a timer armed on simulated time keeps its distance
 
 - **The problem.** A program that looks up a user or group (CPython does while it starts) followed the host's

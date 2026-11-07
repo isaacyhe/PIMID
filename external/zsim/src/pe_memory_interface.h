@@ -2613,6 +2613,21 @@ protected:
         uint32_t ppu = (zinfo->hierarchy.pagesPerUnit > 0)
                        ? zinfo->hierarchy.pagesPerUnit : 1;
         uint32_t unit = blockUnitOf(page, ppu, totalUnits_);
+        /* (1.12.281): workload.mpi_image_data per_rank. A thread-MPI rank's access to the program's own data (an image
+         * range, or the argument area for any element but the main stack's owner) is placed in this element's own
+         * memory, at its offset in the range: each rank reads its own copy, as each process of a multi-process
+         * program does. Set only with more than one rank (GlobSimInfo::imgRanges). */
+        if (zinfo->imgRanges) {
+            uint64_t off;
+            if (imageOffset((uint64_t)lineAddr << 6, &off)) {
+                const uint32_t covN = nonContiguous_ ? (uint32_t)coverageSet_.size()
+                                                     : (coverageEnd_ > coverageStart_ ? coverageEnd_ - coverageStart_ : 0);
+                if (covN > 0) {
+                    const uint32_t i = (zinfo->hierarchy.slotRowBytes > 0) ? rowUnitOf(off, covN) : blockUnitOf(off >> 12, ppu, covN);
+                    return nonContiguous_ ? coverageSet_[i] : coverageStart_ + i;
+                }
+            }
+        }
         // 1.12.17: a thread's stack lives in its PE's own memory. A registered
         // stack (zsim.h stackLo) maps into its owner's coverage; the owner is the
         // first PE-MI that touches it below the thread's initial stack pointer.
@@ -2672,6 +2687,26 @@ protected:
             unit = (uint32_t)((unit + (uint64_t)rr * upr) % totalUnits_);
         }
         return unit;
+    }
+
+    /* (1.12.281): the offset of byte address a in the program's own data (see addrToUnit); false: not in it, or in the
+     * argument area and this element owns the main stack (its own accesses keep the stack rule) */
+    bool imageOffset(uint64_t a, uint64_t* off) const {
+        if (zinfo->imgArgLo && a >= zinfo->imgArgLo && a < zinfo->imgArgHi) {
+            const int32_t s = zinfo->imgArgStack;
+            if (s >= 0 && zinfo->stackOwner[s] == (int32_t)mcId_ + 1) return false;
+            *off = a - zinfo->imgArgLo;
+            return true;
+        }
+        if (a < zinfo->imgMin || a >= zinfo->imgMax) return false;
+        uint32_t lo = 0, hi = zinfo->imgRanges;
+        while (lo < hi) {
+            const uint32_t m = (lo + hi) / 2;
+            if (a < zinfo->imgLo[m]) hi = m;
+            else if (a >= zinfo->imgHi[m]) lo = m + 1;
+            else { *off = a - zinfo->imgLo[m]; return true; }
+        }
+        return false;
     }
 
     static uint32_t mpiRank_() {
