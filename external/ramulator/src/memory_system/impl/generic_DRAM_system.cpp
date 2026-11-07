@@ -104,6 +104,10 @@ class GenericDRAMSystem final : public IMemorySystem, public Implementation {
       for (auto controller : m_controllers) controller->pimid_win_totals(probed, kept, acts, cycles, maxd, brk);
       return true;
     }
+    bool pimid_win_units(std::map<std::string, std::array<uint64_t, 5>>& units) override {   // PIMID (1.12.286)
+      for (auto controller : m_controllers) controller->pimid_win_units(units);
+      return true;
+    }
     bool pimid_hdb_totals(uint64_t& cmds, uint64_t& burstClocks) override {   // PIMID (1.12.169): the host data bus
       cmds = burstClocks = 0;
       for (auto controller : m_controllers) controller->pimid_hdb_totals(cmds, burstClocks);

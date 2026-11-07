@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.286 -- the activation-window (tFAW) report also comes by window unit
+
+- **The problem.** The replay's activation-window line (1.12.273) totals the whole array, so a run could not show which
+  rank or pseudo-channel the window held back, or that the waits were not all in one place.
+- **The fix.** The controller counts the ACTs under the window, those that waited for it, the DRAM cycles it added, the
+  largest, and the ACTs issued inside a full window per window unit: the node the window sits at (a rank, one chip with
+  the chip split; a pseudo-channel; a GDDR6 channel). At the end of the run one line gives the number of units, the
+  range of their ACTs, how many units had ACTs that waited and how many broke the window, and a second lists the units
+  that waited, most DRAM cycles first, at most 16 of them. A last line reports it if the units do not add up to the
+  totals. The existing line is unchanged.
+- **Data impact.** None on results: counting only. A replay run with ACTs under a window prints the new lines.
+
 ## 1.12.285 -- the guest reads no file of the node it runs on, so a Python program gives one result on every machine
 
 - **The problem.** A program that follows what it reads ran other instructions on another node, its ROI began from

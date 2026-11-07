@@ -25,6 +25,7 @@
 #include "zsim.h"
 #include "prefetcher.h"
 #include <cstdint>
+#include <array>
 #include <deque>
 #include <map>
 #include <unordered_map>
@@ -2699,6 +2700,47 @@ void DramEpochReplay::finalize() {
                  "(cumulative over the replay, inside and outside the ROI) [(1.12.273)]",
                  name_.c_str(), (unsigned long)pr, (unsigned long)kp, (unsigned long)wa, (unsigned long)wc, (unsigned long)wm,
                  (unsigned long)br);
+            /* (1.12.286): by window unit, the node the window sits at. Reporting only. */
+            std::map<std::string, std::array<uint64_t, 5>> units;   // ACTs, waited, DRAM cycles, largest, breaches
+            if (par()) {
+                for (size_t i = 0; i < chans_.size(); i++) {
+                    std::map<std::string, std::array<uint64_t, 5>> one;
+                    if (!chans_[i].sys->pimid_win_units(one)) continue;
+                    for (const auto& kv : one) {   // a channel instance is its own channel 0
+                        const std::string n = kv.first.rfind("channel0", 0) == 0 ? "channel" + std::to_string(i) + kv.first.substr(8) : kv.first;
+                        auto& e = units[n];
+                        for (int k = 0; k < 5; k++) { if (k == 3) e[k] = std::max(e[k], kv.second[k]); else e[k] += kv.second[k]; }
+                    }
+                }
+            } else if (sys_) sys_->pimid_win_units(units);
+            if (!units.empty()) {
+                uint64_t sa = 0, sw = 0, sc = 0, sm = 0, sb = 0, amin = ~0ull, amax = 0, nb = 0;
+                std::vector<std::pair<std::string, std::array<uint64_t, 5>>> waits;
+                for (const auto& kv : units) {
+                    const auto& e = kv.second;
+                    sa += e[0]; sw += e[1]; sc += e[2]; sm = std::max(sm, e[3]); sb += e[4];
+                    amin = std::min(amin, e[0]); amax = std::max(amax, e[0]);
+                    if (e[4]) nb++;
+                    if (e[1]) waits.push_back(kv);
+                }
+                std::stable_sort(waits.begin(), waits.end(), [](const std::pair<std::string, std::array<uint64_t, 5>>& a, const std::pair<std::string, std::array<uint64_t, 5>>& b) { return a.second[2] > b.second[2]; });
+                info("[mem] %s: activation window by unit (the node the window sits at; with the chip split a rank is one chip): %lu units, %lu to %lu ACTs each; "
+                     "%lu units had ACTs that waited for it; units with an ACT issued inside a full window: %lu [(1.12.286)]",
+                     name_.c_str(), (unsigned long)units.size(), (unsigned long)amin, (unsigned long)amax, (unsigned long)waits.size(), (unsigned long)nb);
+                if (!waits.empty()) {
+                    std::string t;
+                    const size_t show = std::min(waits.size(), (size_t)16);
+                    for (size_t i = 0; i < show; i++) {
+                        const auto& e = waits[i].second;
+                        t += " " + waits[i].first + ":" + std::to_string(e[1]) + "/" + std::to_string(e[0]) + "/" + std::to_string(e[2]) + "/" + std::to_string(e[3]);
+                    }
+                    if (waits.size() > show) t += " (and " + std::to_string(waits.size() - show) + " more)";
+                    info("[mem] %s: activation-window waits by unit, most DRAM cycles first (unit:waited/ACTs/DRAM cycles/largest):%s [(1.12.286)]", name_.c_str(), t.c_str());
+                }
+                if (sa != kp || sw != wa || sc != wc || sm != wm || sb != br)
+                    info("[mem] %s: the activation-window units do not add up to the totals (ACTs %lu/%lu, waited %lu/%lu, DRAM cycles %lu/%lu, largest %lu/%lu, inside a full window %lu/%lu) [(1.12.286)]",
+                         name_.c_str(), (unsigned long)sa, (unsigned long)kp, (unsigned long)sw, (unsigned long)wa, (unsigned long)sc, (unsigned long)wc, (unsigned long)sm, (unsigned long)wm, (unsigned long)sb, (unsigned long)br);
+            }
             if (kp < pr)
                 info("[mem] %s: %lu of the %lu ACTs had no activation window on their path, so this run does NOT enforce tFAW for them%s "
                      "[(1.12.273), (1.12.274), (1.12.276)]",

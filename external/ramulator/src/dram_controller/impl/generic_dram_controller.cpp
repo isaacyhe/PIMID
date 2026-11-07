@@ -1194,16 +1194,42 @@ class GenericDRAMController final : public IDRAMController, public Implementatio
      * the request's arrival -- the DRAM cycles between are the window's share of its wait. A breach (issued inside a
      * full window) cannot happen: check_ready holds the window; it is counted to show it. Counting only. */
     uint64_t s_win_probed = 0, s_win_kept = 0, s_win_acts = 0, s_win_cycles = 0, s_win_max = 0, s_win_brk = 0;
+    /* PIMID (1.12.286): the same counts by window unit: the address prefix down to the level the window sits at */
+    struct PimidWinUnit { std::vector<int> path; uint64_t acts = 0, waited = 0, cycles = 0, maxd = 0, brk = 0; };
+    std::unordered_map<uint64_t, PimidWinUnit> m_win_units;
     void pimid_win_count(int command, const AddrVec_t& a, Clk_t arrive) {
-      Clk_t w = -1, o = -1; bool has = false, brk = false;
-      if (!m_dram->pimid_window_probe(command, a, w, o, has, brk)) return;
+      Clk_t w = -1, o = -1; bool has = false, brk = false; int wlv = -1;
+      if (!m_dram->pimid_window_probe(command, a, w, o, has, brk, wlv)) return;
       s_win_probed++;
       if (has) s_win_kept++;
       if (brk) s_win_brk++;
+      PimidWinUnit* u = nullptr;
+      if (has && wlv >= 0) {
+        uint64_t key = (uint64_t)wlv;
+        for (int l = 0; l <= wlv; l++) key = (key << 12) | (uint64_t)((a[l] + 1) & 0xfff);
+        u = &m_win_units[key];
+        if (u->path.empty()) u->path.assign(a.begin(), a.begin() + wlv + 1);
+        u->acts++;
+        if (brk) u->brk++;
+      }
       const Clk_t b = std::max(o, arrive);
       if (w > b) {
         const uint64_t d = (uint64_t)(w - b);
         s_win_acts++; s_win_cycles += d; if (d > s_win_max) s_win_max = d;
+        if (u) { u->waited++; u->cycles += d; if (d > u->maxd) u->maxd = d; }
+      }
+    }
+    void pimid_win_units(std::map<std::string, std::array<uint64_t, 5>>& units) const override {
+      for (const auto& kv : m_win_units) {
+        const PimidWinUnit& u = kv.second;
+        std::string n;
+        for (size_t l = 0; l < u.path.size(); l++) {
+          if (l) n += ".";
+          n += std::string(m_dram->m_levels((int)l));
+          n += std::to_string(u.path[l]);
+        }
+        auto& e = units[n];
+        e[0] += u.acts; e[1] += u.waited; e[2] += u.cycles; if (u.maxd > e[3]) e[3] = u.maxd; e[4] += u.brk;
       }
     }
     void pimid_win_totals(uint64_t& probed, uint64_t& kept, uint64_t& acts, uint64_t& cycles, uint64_t& maxd, uint64_t& brk) const override {

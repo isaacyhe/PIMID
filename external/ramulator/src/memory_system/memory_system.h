@@ -1,6 +1,7 @@
 #ifndef     RAMULATOR_MEMORYSYSTEM_MEMORY_H
 #define     RAMULATOR_MEMORYSYSTEM_MEMORY_H
 
+#include <array>
 #include <map>
 #include <vector>
 #include <string>
@@ -88,6 +89,7 @@ class IMemorySystem : public TopLevel<IMemorySystem> {
     virtual bool pimid_hdb_totals(uint64_t& /*cmds*/, uint64_t& /*burstClocks*/) { return false; };   // PIMID (1.12.169): host data bus
     virtual bool pimid_win_totals(uint64_t& /*probed*/, uint64_t& /*kept*/, uint64_t& /*acts*/, uint64_t& /*cycles*/,
                                   uint64_t& /*maxd*/, uint64_t& /*brk*/) { return false; };   // PIMID (1.12.273): the activation window
+    virtual bool pimid_win_units(std::map<std::string, std::array<uint64_t, 5>>& /*units*/) { return false; };   // PIMID (1.12.286): by window unit
     virtual bool pimid_pd_totals(uint64_t& /*pdUnitCycles*/, uint64_t& /*units*/, uint64_t& /*exits*/) { return false; };   // PIMID 1.12.20   // PIMID 1.12.18
     /* PIMID 1.12.18: the share of the row hits / misses /
      * conflicts and activates that belongs to requests sent with source_id 1

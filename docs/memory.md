@@ -153,7 +153,10 @@ with the command bus, and a GDDR6 run at `BANK` or `BANK_GROUP` placement held n
 the run the replay's activation-window line counts the ACTs
 issued, those under a kept window, those that waited for it (the window was the last of their constraints to clear
 and cleared after the request arrived) with the DRAM cycles it held them, and the ACTs issued inside a full window
-(0 where the window is enforced); a second line counts the ACTs with no window on their path. The configuration
+(0 where the window is enforced); a second line counts the ACTs with no window on their path. The same counts come by
+window unit ((1.12.286)), the node the window sits at (a rank, one chip with the chip split; a pseudo-channel; a GDDR6
+channel): one line gives the number of units, their ACTs, how many had ACTs that waited and how many broke the window,
+and another lists the units that waited, most DRAM cycles first (at most 16). The configuration
 warning for more than four activation streams per rank says which case a run is in.
 Both rules come from configuration ((1.12.276)): each technology's part record (`params/dram/<tech>.yaml`) states
 `bank_parallel.channel_is_device` (`true` for GDDR6 only) and `activation_window` (`enforce` in every shipped record),

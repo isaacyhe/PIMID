@@ -241,8 +241,9 @@ struct DRAMNodeBase {
     /* PIMID (1.12.273): the activation-window probe, on the nodes check_ready(command, addr_vec, clk) visits: the latest
      * ready clock from the window constraints (win) and from every other constraint (oth); whether a window
      * constraint ending at command is kept there (has); whether issuing command at clk would break a window (brk: the
-     * window's oldest entry plus its latency still ahead -- check_ready forbids it, so this stays false). Reads only. */
-    void pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t clk, Clk_t& win, Clk_t& oth, bool& has, bool& brk) {
+     * window's oldest entry plus its latency still ahead -- check_ready forbids it, so this stays false). Reads only.
+     * (1.12.286): wlv takes the deepest level on the path that keeps such a constraint: the window's unit is the node there. */
+    void pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t clk, Clk_t& win, Clk_t& oth, bool& has, bool& brk, int& wlv) {
       win = std::max(win, m_pimid_win_ready[command]);
       oth = std::max(oth, m_pimid_oth_ready[command]);
       const int ncmd = (int)m_spec->m_timing_cons[m_level].size();
@@ -250,6 +251,7 @@ struct DRAMNodeBase {
         for (const auto& t : m_spec->m_timing_cons[m_level][p]) {
           if (t.sibling || t.window <= 1 || t.cmd != command) continue;
           has = true;
+          if (m_level > wlv) wlv = m_level;   // PIMID (1.12.286)
           if ((int)m_cmd_history[p].size() < t.window) continue;
           const Clk_t past = m_cmd_history[p][t.window-1];
           if (past >= 0 && clk < past + t.val) brk = true;
@@ -258,10 +260,10 @@ struct DRAMNodeBase {
       int child_id = addr_vec[m_level+1];
       if (m_level == m_spec->m_command_scopes[command] || !m_child_nodes.size()) return;
       if (child_id == -1) {
-        for (auto child : m_child_nodes) child->pimid_window_probe(command, addr_vec, clk, win, oth, has, brk);
+        for (auto child : m_child_nodes) child->pimid_window_probe(command, addr_vec, clk, win, oth, has, brk, wlv);
         return;
       }
-      m_child_nodes[child_id]->pimid_window_probe(command, addr_vec, clk, win, oth, has, brk);
+      m_child_nodes[child_id]->pimid_window_probe(command, addr_vec, clk, win, oth, has, brk, wlv);
     };
 
     bool check_ready(int command, const AddrVec_t& addr_vec, Clk_t clk) {

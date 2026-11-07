@@ -123,8 +123,9 @@ class IDRAM : public Clocked<IDRAM> {
      * provide it (it is provided with pimid_ready_at) */
     virtual const uint64_t* pimid_chan_ver(int channel) { return nullptr; }
     /* PIMID (1.12.273): the activation-window probe (DRAMNodeBase::pimid_window_probe) at this clock: win / oth take the
-     * larger, has / brk are set when found; false: the standard does not provide it */
-    virtual bool pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t& win, Clk_t& oth, bool& has, bool& brk) { return false; }
+     * larger, has / brk are set when found; (1.12.286): wlv takes the level of the window's unit (start it at -1); false: the
+     * standard does not provide it */
+    virtual bool pimid_window_probe(int command, const AddrVec_t& addr_vec, Clk_t& win, Clk_t& oth, bool& has, bool& brk, int& wlv) { return false; }
     Clk_t pimid_dram_clk() const { return m_clk; }   // PIMID (1.12.229): the clock check_ready compares with
 
     /**
