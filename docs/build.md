@@ -81,12 +81,19 @@ so the guest sees its usual paths (`/lib/x86_64-linux-gnu/libc.so.6`) and librar
 does not hold (a workload's own) still come from the host. The `[guest] launch:` line names the
 guest libraries in use.
 
-- No network on the build machine: download the four `.deb` files elsewhere and run the script with
+- No network on the build machine: download the eight `.deb` files elsewhere and run the script with
   `PIMID_GUEST_DEBS=<dir>`.
 - A missing sysroot: the run continues on the host's libraries, with a warning.
 - A modified sysroot: the run stops (`[guest] FATAL: ... is not PIMID's pinned copy`).
 - The sysroot also carries the guest's name-service files (`etc/nsswitch.conf`, `etc/passwd`, `etc/group`;
   (1.12.280)); a sysroot installed before them gets them at its first launch, and copies that differ stop the run.
+- The sysroot also carries CPython's load-time libraries (zlib, expat, libffi), the C.UTF-8 locale
+  (`usr/lib/locale/C.utf8`, from Ubuntu's `libc-bin`) and empty system Python package directories ((1.12.285)). A sysroot
+  installed before them gets the directories at its first launch and a note about the rest: run the script again.
+  Copies that differ stop the run.
+- A Python guest: name its packages with `workload.env`'s `PYTHONPATH`; the system's package directories look empty
+  to it. Its standard library is still the machine's (`/usr/lib/python3.12`): on machines with another Python build,
+  unpack that Python into the sysroot too (`usr/lib/python3.12`, with its `__pycache__`), or use the container image.
 - `PIMID_GUEST_SYSROOT=<dir>` names another copy (it must pass the same check);
   `PIMID_GUEST_SYSROOT=host` runs on the host's libraries.
 

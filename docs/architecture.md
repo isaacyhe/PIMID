@@ -215,6 +215,25 @@ files module. Before, it followed the host's `/etc/nsswitch.conf`: the host's us
 host's `systemd-userdbd`, whose reply raced a timeout. `scripts/fetch_guest_sysroot.sh` writes the three files; a
 sysroot installed before writes them at its first launch; copies that differ stop the run.
 
+**The guest reads no file of the node it runs on ((1.12.285)).** A program that follows what it reads ran other
+instructions on another node, and a CPython co-simulation gave another run time on every machine. So:
+
+- `lseek` on the standard streams answers `ESPIPE`, as for the pipes the guest is told they are. It used to answer the
+  offset in the launcher's log, which follows everything written there before.
+- `getdents64` lists a directory sorted by name, with the guest's inode numbers and offsets that are places in the
+  list, not in the host file system's order with its inode numbers and hash offsets. A file status reports a directory
+  with size 4096 and two links: its real size follows its file system's history.
+- With the pinned sysroot, `/etc/ld.so.preload`, `/etc/ld.so.cache`, `/etc/localtime`,
+  `/usr/lib/locale/locale-archive`, `/usr/share/locale/locale.alias` and `/usr/lib/locale/C.UTF-8/` are absent on every
+  machine. So a library is looked up in the guest's library path only (name another directory with `workload.env`'s
+  `LD_LIBRARY_PATH`) and the guest's time zone is UTC. The C.UTF-8 locale and CPython's load-time libraries (zlib, expat,
+  libffi) are the sysroot's; any other library the guest loads from the system directories is still the machine's.
+- The system's Python package directories (`/usr/lib/python3/dist-packages`, `/usr/local/lib/python3.12/dist-packages`)
+  look empty; a program names its packages with `PYTHONPATH`.
+
+A Python standard library on the machine's disk is still that machine's; the container image gives every machine the
+same one.
+
 **The program's command line and environment are part of its input (since 1.12.125, corrected in 1.12.136).**
 PIMID passes the program path exactly as it was given -- as the guest's `argv[0]` and as the file name QEMU
 records for it -- and the guest's startup reads it, as it reads the other arguments and the guest's environment

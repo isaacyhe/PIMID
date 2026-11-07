@@ -32,6 +32,7 @@
 #include <climits>
 #include <dlfcn.h>     // (1.12.157): dlsym of QEMU's pid_g2h (patch 0003)
 #include <sys/stat.h>   // (1.12.157): struct stat / statx answers given fixed host-identity fields
+#include <dirent.h>    // (1.12.285): DT_UNKNOWN, IFTODT
 #include <map>
 #include <atomic>
 #include <unordered_map>
@@ -7068,7 +7069,8 @@ static uint64_t g_detFutexNr[MAX_VCPUS];
  * such a call succeeds, its answer is rewritten in the guest's buffer: device 1 (statx: 0:1),
  * inode = the order in which the guest first saw that host file (1, 2, ...; so two names of one
  * file still compare equal and two files still differ), every time 0, blocks = size / 512 rounded
- * up, statx mount id 0. Type, permissions, links, owner, device number, size and the block size
+ * up, statx mount id 0; (1.12.285): a directory's size 4096 and links 2, which follow its file system's history. Type,
+ * permissions, links, owner, device number, size and the block size
  * (glibc sizes a stream's buffer by it) stay the host's, except that a status of descriptor 0, 1 or 2 (fstat, or an empty path with
  * AT_EMPTY_PATH) reports size 0: the guest's standard streams are the launcher's log files,
  * whose length follows the log. */
@@ -7114,6 +7116,7 @@ static void statCallReturn(unsigned int vcpu, int64_t ret) {
             const uint64_t ino = statGuestIno(((uint64_t)x.stx_dev_major << 32) | x.stx_dev_minor, x.stx_ino);
             x.stx_dev_major = 0; x.stx_dev_minor = 1; x.stx_ino = ino;
             if (stream) x.stx_size = 0;
+            if (S_ISDIR(x.stx_mode)) { x.stx_size = 4096; x.stx_nlink = 2; }   // (1.12.285): a directory's size and links follow its file system's history
             x.stx_blocks = (x.stx_size + 511) / 512;
             memset(&x.stx_atime, 0, sizeof(x.stx_atime)); memset(&x.stx_btime, 0, sizeof(x.stx_btime));
             memset(&x.stx_ctime, 0, sizeof(x.stx_ctime)); memset(&x.stx_mtime, 0, sizeof(x.stx_mtime));
@@ -7124,6 +7127,7 @@ static void statCallReturn(unsigned int vcpu, int64_t ret) {
             const uint64_t ino = statGuestIno((uint64_t)t.st_dev, (uint64_t)t.st_ino);
             t.st_dev = 1; t.st_ino = (ino_t)ino;
             if (stream) t.st_size = 0;
+            if (S_ISDIR(t.st_mode)) { t.st_size = 4096; t.st_nlink = 2; }   // (1.12.285): a directory's size and links follow its file system's history
             t.st_blocks = (t.st_size + 511) / 512;
             memset(&t.st_atim, 0, sizeof(t.st_atim)); memset(&t.st_mtim, 0, sizeof(t.st_mtim)); memset(&t.st_ctim, 0, sizeof(t.st_ctim));
             memcpy(b->data, &t, sizeof(t));
@@ -7824,12 +7828,141 @@ static bool guestClockSyscall(unsigned int vcpu, int64_t num, uint64_t a1, uint6
     }
     return false;
 }
+/* (1.12.285): THE GUEST READS NO FILE OF THE NODE IT HAPPENS TO RUN ON.
+ * A program that follows what it reads ran other instructions on another node, its ROI began from other cache, row-buffer
+ * and replay-controller state, and a CPython co-simulation gave another run time on every machine (0.04-0.05 %). These
+ * reached the guest (a directory's size in a file status too: statCallReturn):
+ *  - lseek on a standard stream answered the launcher's log file's offset, which follows everything written to the log
+ *    before it (CPython asks while it starts). The guest is told these streams are pipes (-stdio-notty) of size 0
+ *    (1.12.157), so lseek on descriptors 0, 1 and 2 now answers what a pipe answers: ESPIPE.
+ *  - a directory listing came in the order of the host's file system, with the host's inode numbers and hash offsets.
+ *    getdents64 now reads the whole directory once and serves it sorted by name, with the guest's inode numbers
+ *    (statGuestIno, as the status calls answer) and offsets that are the entry's place in the list; an unknown type is
+ *    filled from the file's status. A rewind reads the directory again, a seek returns to an offset it answered.
+ *  - system files the node may or may not have: with a pinned sysroot (main.cpp), the files below are absent on every
+ *    machine, as they are on a plain install, for open, access, status and readlink alike: QEMU's -L falls back to the
+ *    host for a file the sysroot lacks, so "absent" cannot be said by the sysroot itself. Without ld.so.cache a library
+ *    is looked up in the guest's library path only; without localtime the guest's zone is UTC. */
+static bool g_guestPinned = false;   // a pinned guest sysroot is in use (PIMID_GUEST_PINNED_FILES, main.cpp guestSysroot)
+static bool guestPinnedAbsent(const std::string& p) {
+    static const char* const kAbsent[] = {"/etc/ld.so.preload", "/etc/ld.so.cache", "/etc/localtime",
+                                          "/usr/lib/locale/locale-archive", "/usr/share/locale/locale.alias"};
+    for (const char* a : kAbsent) if (p == a) return true;
+    static const std::string kUnnormalised = "/usr/lib/locale/C.UTF-8/";   // glibc tries this before C.utf8 (the sysroot's)
+    return p.compare(0, kUnnormalised.size(), kUnnormalised) == 0;
+}
+struct GuestDirList { uint64_t dev = 0, ino = 0; std::vector<std::string> recs; size_t pos = 0; };
+static std::mutex g_dirMu;
+static std::map<int, GuestDirList> g_dirList;   // per open descriptor, while the guest lists it
+static int64_t guestDirRead(int fd, const struct stat& ds, GuestDirList* L) {
+    struct E { std::string name; uint64_t ino; unsigned char type; };
+    std::vector<E> es;
+    std::vector<char> tmp(1 << 16);
+    for (;;) {
+        const long n = syscall(SYS_getdents64, fd, tmp.data(), tmp.size());
+        if (n < 0) return -errno;
+        if (n == 0) break;
+        for (long off = 0; off < n;) {
+            const char* r = tmp.data() + off;
+            uint64_t ino; uint16_t reclen;
+            memcpy(&ino, r, 8); memcpy(&reclen, r + 16, 2);
+            unsigned char type = (unsigned char)r[18];
+            const char* name = r + 19;
+            if (type == DT_UNKNOWN) {
+                struct stat s;
+                if (fstatat(fd, name, &s, AT_SYMLINK_NOFOLLOW) == 0) type = (unsigned char)IFTODT(s.st_mode);
+            }
+            es.push_back(E{name, ino, type});
+            off += reclen;
+        }
+    }
+    std::sort(es.begin(), es.end(), [](const E& a, const E& b) { return a.name < b.name; });
+    L->dev = (uint64_t)ds.st_dev; L->ino = (uint64_t)ds.st_ino; L->pos = 0; L->recs.clear();
+    for (size_t i = 0; i < es.size(); i++) {
+        const size_t len = (19 + es[i].name.size() + 1 + 7) & ~(size_t)7;
+        std::string rec(len, '\0');
+        const uint64_t gi = statGuestIno((uint64_t)ds.st_dev, es[i].ino);
+        const int64_t dof = (int64_t)i + 1;
+        const uint16_t rl = (uint16_t)len;
+        memcpy(&rec[0], &gi, 8); memcpy(&rec[8], &dof, 8); memcpy(&rec[16], &rl, 2);
+        rec[18] = (char)es[i].type;
+        memcpy(&rec[19], es[i].name.data(), es[i].name.size());
+        L->recs.push_back(std::move(rec));
+    }
+    return 0;
+}
+static int64_t guestGetdents(int fd, uint64_t buf, uint64_t count) {
+    struct stat ds;
+    if (fstat(fd, &ds) != 0) return -errno;
+    if (!S_ISDIR(ds.st_mode)) return -ENOTDIR;
+    std::lock_guard<std::mutex> g(g_dirMu);
+    auto it = g_dirList.find(fd);
+    if (it == g_dirList.end() || it->second.dev != (uint64_t)ds.st_dev || it->second.ino != (uint64_t)ds.st_ino) {
+        GuestDirList L;
+        const int64_t e = guestDirRead(fd, ds, &L);
+        if (e < 0) return e;
+        it = g_dirList.insert_or_assign(fd, std::move(L)).first;
+    }
+    GuestDirList& L = it->second;
+    if (L.pos >= L.recs.size()) return 0;
+    std::string out;
+    size_t p = L.pos;
+    while (p < L.recs.size() && out.size() + L.recs[p].size() <= count) out += L.recs[p++];
+    if (out.empty()) return -EINVAL;   // as the kernel, for a buffer too small for the next entry
+    GByteArray* b = g_byte_array_new();
+    g_byte_array_append(b, (const guint8*)out.data(), (guint)out.size());
+    const bool ok = buf && qemu_plugin_write_memory_vaddr(buf, b);
+    g_byte_array_free(b, TRUE);
+    if (!ok) return -EFAULT;
+    L.pos = p;
+    return (int64_t)out.size();
+}
+/* true: answered here (*sysret); false: the host runs the call */
+static bool guestNodeFileCall(int64_t num, uint64_t a1, uint64_t a2, uint64_t a3, int64_t* sysret) {
+    uint64_t pa = 0;
+    switch (num) {
+        case SYS_lseek: {
+            const int fd = (int)a1;
+            if (fd >= 0 && fd <= 2) { *sysret = -ESPIPE; return true; }
+            std::lock_guard<std::mutex> g(g_dirMu);
+            auto it = g_dirList.find(fd);
+            if (it == g_dirList.end()) return false;
+            if (a3 == SEEK_SET && a2 != 0) {
+                it->second.pos = std::min((size_t)a2, it->second.recs.size());
+                *sysret = (int64_t)a2;
+                return true;
+            }
+            if (a3 == SEEK_CUR && a2 == 0) { *sysret = (int64_t)it->second.pos; return true; }
+            g_dirList.erase(it);   // a rewind: the host seeks and the next getdents64 reads the directory again
+            return false;
+        }
+        case SYS_getdents64: *sysret = guestGetdents((int)a1, a2, a3); return true;
+        case SYS_close: {
+            std::lock_guard<std::mutex> g(g_dirMu);
+            g_dirList.erase((int)a1);
+            return false;
+        }
+        case SYS_open: case SYS_access: case SYS_stat: case SYS_lstat: case SYS_readlink: pa = a1; break;
+        case SYS_openat: case SYS_faccessat: case SYS_newfstatat: case SYS_statx: case SYS_readlinkat: pa = a2; break;
+#ifdef SYS_faccessat2
+        case SYS_faccessat2: pa = a2; break;
+#endif
+        default: return false;
+    }
+    if (!g_guestPinned) return false;
+    std::string p;
+    if (!readGuestString(pa, &p) || p.empty() || p[0] != '/' || !guestPinnedAbsent(p)) return false;
+    *sysret = -ENOENT;
+    return true;
+}
 static bool guestCpuSyscallFilter(unsigned int vcpu_index, int64_t num, uint64_t a1, uint64_t a2,
                                   uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                                   uint64_t a8, int64_t* sysret, void* userdata) {
     (void)vcpu_index; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)userdata;
     if (vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index] && guestClockSyscall(vcpu_index, num, a1, a2, a3, a4, a5, sysret))
         return true;   // (1.12.275): the guest reads simulated time
+    if (vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index] && guestNodeFileCall(num, a1, a2, a3, sysret))
+        return true;   // (1.12.285): no file of this node
     const uint32_t n = g_guestCpus;
     if (!n) return false;
     const uint64_t need = ((uint64_t)n + 63) / 64 * 8;   // the kernel's cpumask size for n processors
@@ -8487,6 +8620,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     qemu_plugin_register_vcpu_syscall_cb(id, syscall_cb, NULL);
     qemu_plugin_register_vcpu_syscall_ret_cb(id, syscall_ret_cb, NULL);   /* 1.12.17: MAP_STACK mappings */
     g_guestCpus = zinfo->numCores;   /* (1.12.107): the guest's processor queries (guestCpuSyscallFilter) */
+    g_guestPinned = getenv("PIMID_GUEST_PINNED_FILES") != nullptr;   /* (1.12.285): a pinned sysroot is in use */
     qemu_plugin_register_vcpu_syscall_filter_cb(id, guestCpuSyscallFilter, NULL);
     /* (1.12.157): PIMID seeds the guest (-seed); QEMU answers the guest's getrandom() from that seed only with
      * external/qemu-patches/0005, which exports this flag (without it the host answered, and glibc's malloc

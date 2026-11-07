@@ -1002,6 +1002,45 @@ static bool guestEtcFiles(const std::string& d) {
     return true;
 }
 
+/* (1.12.285): THE GUEST'S LOCALE, CPYTHON'S LIBRARIES AND THE PYTHON PACKAGE DIRECTORIES ARE THE SYSROOT'S. The C.UTF-8 locale
+ * comes with the sysroot (usr/lib/locale/C.utf8, Ubuntu's libc-bin; CPython asks for it while it starts), as do the
+ * libraries CPython loads when it starts (zlib, expat, libffi), and the system's Python package directories are empty
+ * there: their contents followed what each machine had installed, and QEMU lists the sysroot's directory when it has one.
+ * A program names its packages with workload.env's PYTHONPATH. A sysroot installed before these gets a note; a copy that
+ * differs stops the run. The other system files a node may or may not have are answered as absent by the plugin
+ * (guestPinnedAbsent), which PIMID_GUEST_PINNED_FILES turns on. */
+static const char* const kGuestEmptyDirs[] = {"usr/lib/python3/dist-packages", "usr/local/lib/python3.12/dist-packages"};
+static const GuestLib kGuestSysrootExtra[] = {   // Ubuntu 24.04: libc-bin 2.39-0ubuntu8.9, zlib1g 1.3.dfsg-3.1ubuntu2.2,
+                                                // libexpat1 2.6.1-2ubuntu0.6, libffi8 3.4.6-1build1
+    {"usr/lib/locale/C.utf8/LC_CTYPE", 360460, 0xa3b5bbf244da24b6ULL},
+    {"usr/lib/x86_64-linux-gnu/libz.so.1.3", 113000, 0x04cc0428496cef05ULL},
+    {"usr/lib/x86_64-linux-gnu/libexpat.so.1.9.1", 186624, 0x42ffa495eb1f0185ULL},
+    {"usr/lib/x86_64-linux-gnu/libffi.so.8.1.4", 47672, 0x0c8ae9271e4ad301ULL}};
+static bool guestLocaleAndDirs(const std::string& d) {
+    for (const char* rel : kGuestEmptyDirs) {
+        std::string cur = d;
+        std::stringstream parts(rel);
+        std::string part;
+        while (std::getline(parts, part, '/')) { cur += "/" + part; mkdir(cur.c_str(), 0755); }
+    }
+    for (const auto& L : kGuestSysrootExtra) {
+        long long sz;
+        const std::string f = d + "/" + L.name;
+        const unsigned long long h = fnv1a64File(f, &sz);
+        if (sz < 0) {
+            std::cerr << "[guest] NOTE: this guest sysroot has no " << L.name << ": a program that asks for it reads this host's;"
+                         " run scripts/fetch_guest_sysroot.sh to reinstall the sysroot [(1.12.285)]" << std::endl;
+            continue;
+        }
+        if (sz != L.size || h != L.fnv) {
+            std::cerr << "[guest] FATAL: " << f << " is not PIMID's pinned copy;"
+                         " reinstall the sysroot with scripts/fetch_guest_sysroot.sh" << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
 /* "" = the host's libraries. Resolved once per process. */
 static std::string guestSysroot() {
     static bool done = false;
@@ -1039,6 +1078,8 @@ static std::string guestSysroot() {
         std::exit(2);
     }
     if (!guestEtcFiles(d)) std::exit(2);   // (1.12.280): the pinned name-service files
+    if (!guestLocaleAndDirs(d)) std::exit(2);   // (1.12.285): the locale and the Python package directories
+    setenv("PIMID_GUEST_PINNED_FILES", "1", 1);   // (1.12.285): for the plugin; removed from the guest's environment like every host variable
     dir = d;
     return dir;
 }

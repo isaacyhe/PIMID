@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.285 -- the guest reads no file of the node it runs on, so a Python program gives one result on every machine
+
+- **The problem.** A program that follows what it reads ran other instructions on another node, its ROI began from
+  other cache, row-buffer and replay-controller state, and a no-offload co-simulation of a CPython program gave another
+  run time on every machine (0.04-0.05 %, after 1.12.275 and 1.12.280 removed the host's clock and name services). Its
+  system calls were the same on two nodes, but `lseek` on a standard stream answered the offset in the launcher's log,
+  whose length follows what was written before; a directory listing came in the host file system's order, and the
+  system's Python package directory held what each machine had installed; a directory's size in a file status followed
+  its file system's history (20480 and 16384 bytes for one directory on two nodes, which alone moved the run time, with
+  the same instructions); the libraries CPython loads when it starts (zlib, expat, libffi) were each machine's own
+  version; and a node may or may not have `/etc/localtime`, `/etc/ld.so.cache`, `/etc/ld.so.preload` and the locale
+  files, which the guest read when they were there.
+- **The fix.** `lseek` on descriptors 0, 1 and 2 answers `ESPIPE`, as for the pipes the guest is told they are (patch
+  0007; 1.12.157 reports them with size 0). `getdents64` serves a directory sorted by name, with the guest's inode numbers
+  and offsets that are places in the list. A file status reports a directory with size 4096 and two links. With the
+  pinned sysroot: the files above are absent on every machine; zlib, expat and libffi are the sysroot's (Ubuntu's
+  packages); the C.UTF-8 locale is the sysroot's (Ubuntu's `libc-bin`, only that directory is taken); a sysroot installed
+  before gets a note (run `scripts/fetch_guest_sysroot.sh` again), and copies that differ stop the run;
+  `/usr/lib/python3/dist-packages` and
+  `/usr/local/lib/python3.12/dist-packages` look empty, so a program names its packages with `workload.env`'s
+  `PYTHONPATH`, and a library outside the guest's library path is named with its `LD_LIBRARY_PATH`.
+- **Data impact.** Programs that list directories, seek on a standard stream, ask for a locale or a time zone, or load
+  system Python packages change, and repeat across machines. The benchmark kernels do none of these, and their results
+  are identical. A Python standard library on the machine's disk is still the machine's: the container image gives
+  every machine the same one.
+
 ## 1.12.284 -- a timed wait expires on simulated time
 
 - **The problem.** The guest reads simulated time (1.12.275), but its timed waits ran on the host's clock: a relative

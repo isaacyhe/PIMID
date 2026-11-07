@@ -24,7 +24,13 @@ PKGS=(
   "libgcc-s1_14.2.0-4ubuntu2~24.04.1_amd64.deb aa7fadbe33b78bcf99885318040601c550c208929565b179891d9a3cc2aa68cd"
   "libgomp1_14.2.0-4ubuntu2~24.04.1_amd64.deb e8a95ec58125b4933597f30ff56c2ae10edf90f287262e366d4b6edea3019144"
   "libstdc++6_14.2.0-4ubuntu2~24.04.1_amd64.deb a51f8de7829211db961a31f02158058ad1a95f92ac6d0a5dff6350e2821c54c0"
+  # what CPython loads when it starts: without them the guest took each machine's own copy into the simulated region
+  "zlib1g_1.3.dfsg-3.1ubuntu2.2_amd64.deb 84b9cf5752b29c9f92c27cd4c4ba9bbcc70b5ccf9b1b515421a28ae23212e273"
+  "libexpat1_2.6.1-2ubuntu0.6_amd64.deb 494b8e672f722130c6bca6a7bc4cc31a43ca891a31d60d868bfdd699a3c20b13"
+  "libffi8_3.4.6-1build1_amd64.deb 637e6a7744de08cd331a41f4efd0d24e6ea9064843dea9d1c6ca87bdb5f038a2"
 )
+# the C.UTF-8 locale: only usr/lib/locale/C.utf8 is taken from this package (the guest's programs stay the host's)
+LOCALE_PKG="libc-bin_2.39-0ubuntu8.9_amd64.deb 066398a06ef1a218d4109461d4c636eafe83322ad19b179de9ef7af42b3fec58"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -59,6 +65,18 @@ for p in "${PKGS[@]}"; do
     fi
     unpack "$TMP/$1"
 done
+set -- $LOCALE_PKG
+fetch "$1"
+got="$(sha256sum "$TMP/$1" | cut -d' ' -f1)"
+if [ "$got" != "$2" ]; then
+    echo "fetch_guest_sysroot: $1: sha256 $got, expected $2 -- refusing" >&2; exit 1
+fi
+mv "$TMP/root" "$TMP/root.keep"; mkdir -p "$TMP/root"; unpack "$TMP/$1"
+mkdir -p "$TMP/root.keep/usr/lib/locale"; cp -a "$TMP/root/usr/lib/locale/C.utf8" "$TMP/root.keep/usr/lib/locale/"
+rm -rf "$TMP/root"; mv "$TMP/root.keep" "$TMP/root"
+# the system's Python package directories are empty for the guest (src/main.cpp kGuestEmptyDirs): what a machine has
+# installed there does not reach it; a program names its packages with workload.env's PYTHONPATH
+mkdir -p "$TMP/root/usr/lib/python3/dist-packages" "$TMP/root/usr/local/lib/python3.12/dist-packages"
 # merged /usr, as on the distribution: the guest asks for /lib/... and /lib64/...
 ln -sfn usr/lib "$TMP/root/lib"
 ln -sfn usr/lib64 "$TMP/root/lib64"
@@ -87,7 +105,9 @@ pimid:x:1000:
 # the record PIMID checks before each launch (md5 of the libraries a guest loads)
 ( cd "$TMP/root" && md5sum usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 usr/lib/x86_64-linux-gnu/libc.so.6 \
     usr/lib/x86_64-linux-gnu/libm.so.6 usr/lib/x86_64-linux-gnu/libmvec.so.1 usr/lib/x86_64-linux-gnu/libgcc_s.so.1 \
-    usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33 ) > "$TMP/root/MANIFEST.md5"
+    usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0 usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33 \
+    usr/lib/x86_64-linux-gnu/libz.so.1.3 usr/lib/x86_64-linux-gnu/libexpat.so.1.9.1 \
+    usr/lib/x86_64-linux-gnu/libffi.so.8.1.4 usr/lib/locale/C.utf8/LC_CTYPE ) > "$TMP/root/MANIFEST.md5"
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST.new"; mv "$TMP/root" "$DEST.new"; rm -rf "$DEST"; mv "$DEST.new" "$DEST"
 echo "fetch_guest_sysroot: guest libraries ready in $DEST"
