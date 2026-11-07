@@ -1127,7 +1127,17 @@ static void recMarkRunEnd() {
     if (zinfo->dramReplay) zinfo->dramReplay->markRunEnd();
     if (zinfo->hostDramReplay && zinfo->hostDramReplay != zinfo->dramReplay) zinfo->hostDramReplay->markRunEnd();
 }
-static std::atomic<uint64_t> g_repLinePriced{0}, g_repLineHeld{0};   // (1.12.279): REP string accesses in the ROI (mem_cb)
+static std::atomic<uint64_t> g_repLinePriced{0}, g_repLineHeld{0};   // (1.12.279): REP string accesses recorded (mem_cb)
+/* (1.12.289): the counts above cover every recorded access, before and after the region of interest included (an OpenMP
+ * kernel's data preparation fills its arrays with rep stosb before roi_begin). They are taken at the first roi_begin and
+ * at the close of the region (roiWallEnd, roiWallCloseMpi; a repeated region: its last close), so the report splits them.
+ * A run without roi_begin records everything as its region. */
+static uint64_t g_repAtRoi[2][2];   // [0] at the first roi_begin, [1] at the region's close: {priced, held}
+static bool g_repRoiSeen[2] = {false, false};
+static void repRoiMark(int which) {
+    if (which == 0 && g_repRoiSeen[0]) return;
+    g_repAtRoi[which][0] = g_repLinePriced.load(); g_repAtRoi[which][1] = g_repLineHeld.load(); g_repRoiSeen[which] = true;
+}
 static void roiWallEnd(uint32_t tid, const char* how) {
     if (zinfo->roiWall.source != 1 || zinfo->roiWall.ended) return;
     const uint64_t e = (tid < MAX_THREADS) ? roiWallStamp(tid)
@@ -1135,6 +1145,7 @@ static void roiWallEnd(uint32_t tid, const char* how) {
     zinfo->roiWall.endStamp = (e > zinfo->roiWall.beginStamp) ? e : zinfo->roiWall.beginStamp;
     if (!g_spCut) zinfo->roiWall.endStamp = zinfo->roiWall.beginStamp + roiWallLinkFloor(zinfo->roiWall.endStamp - zinfo->roiWall.beginStamp, how);   // (1.12.171)
     zinfo->roiWall.ended = true;
+    repRoiMark(1);   // (1.12.289)
     info("[roi] run time: ROI elapsed %lu cycles on the global phase clock (stamps %lu -> %lu, %s) [1.12.18]",
          (unsigned long)zinfo->roiWall.cycles(), (unsigned long)zinfo->roiWall.beginStamp,
          (unsigned long)zinfo->roiWall.endStamp, how);
@@ -1273,6 +1284,7 @@ static void roiWallCloseMpi(const char* how) {
         zinfo->roiWall.mpiEnd = mx;
         zinfo->roiWall.source = 2;
         zinfo->roiWall.ended = true;
+        repRoiMark(1);   // (1.12.289)
         /* (1.12.189): the ranks' ends on the grid are not kept; each rank core counts as ending at the grid end */
         for (uint32_t c = 0; c < MAX_THREADS; c++) if (g_rtEndKnown[c]) g_rtEnd[c] = mx;
         recMarkRunEnd();
@@ -1284,6 +1296,7 @@ static void roiWallCloseMpi(const char* how) {
     zinfo->roiWall.mpiEnd = mx;
     zinfo->roiWall.source = 2;
     zinfo->roiWall.ended = true;
+    repRoiMark(1);   // (1.12.289)
     recMarkRunEnd();   // (1.12.189)
     info("[roi] run time: thread-MPI ROI elapsed %lu cycles = max over %lu rank core(s) of the ROI-relative end (%s, %s) [1.12.18]",
          (unsigned long)mx, (unsigned long)n, fromMarkers ? "closing-barrier markers" : "core clocks at the cut", how);
@@ -2859,10 +2872,16 @@ static void dumpTerminationStats() {
     recExtendRunTime();   // 1.12.189
     info("Dumping termination stats");
     rtPrintStats();   // 1.12.18: PIM runtime primitives, per core
-    if (g_repLinePriced.load() + g_repLineHeld.load() > 0)   // (1.12.279)
+    if (g_repLinePriced.load() + g_repLineHeld.load() > 0) {   // (1.12.279); (1.12.289): split at the region of interest
+        const uint64_t tp = g_repLinePriced.load(), th = g_repLineHeld.load();
+        const uint64_t bp = g_repRoiSeen[0] ? g_repAtRoi[0][0] : 0, bh = g_repRoiSeen[0] ? g_repAtRoi[0][1] : 0;
+        const uint64_t ep = g_repRoiSeen[1] ? std::max(g_repAtRoi[1][0], bp) : tp, eh = g_repRoiSeen[1] ? std::max(g_repAtRoi[1][1], bh) : th;
         info("[core] REP string accesses in the ROI: %lu priced (the first to each line), %lu within a line the same "
-             "instruction had already priced, not priced again (block copy, one access per line) [(1.12.279)]",
-             (unsigned long)g_repLinePriced.load(), (unsigned long)g_repLineHeld.load());
+             "instruction had already priced, not priced again (block copy, one access per line); before the ROI: "
+             "%lu priced, %lu not priced again; after it: %lu priced, %lu not priced again [(1.12.279), (1.12.289)]",
+             (unsigned long)(ep - bp), (unsigned long)(eh - bh), (unsigned long)bp, (unsigned long)bh,
+             (unsigned long)(tp - ep), (unsigned long)(th - eh));
+    }
     zinfo->trigger = 20000;
     for (StatsBackend* backend : *(zinfo->statsBackends)) {
         if (zinfo->dramReplay) zinfo->dramReplay->finalize();   // 1.11.98: replay the tail, fold the controller totals
@@ -3965,7 +3984,9 @@ static uint32_t rep_mem_since_bbl[MAX_VCPUS];
  * many requests in the DRAM replay. A processor runs the string operation as a block copy, a line at a time. Within
  * one REP instruction (its iterations share the block address of the instruction), an access to the line its
  * previous access of the same kind (load or store) touched is now not priced again: the first access to each line
- * is. The iterations still execute and retire as instructions. Counted: g_repLinePriced / g_repLineHeld. */
+ * is. The iterations still execute and retire as instructions. Counted: g_repLinePriced / g_repLineHeld, split at the
+ * region of interest in the report ((1.12.289): repRoiMark). The pricing applies to every recorded access, before the
+ * region of interest as well. */
 static uint64_t g_repTb[MAX_VCPUS];          // the block address whose REP lines are held below (0 = none)
 static uint64_t g_repLine[MAX_VCPUS][2];     // the line + 1 of the last priced REP load [0] / store [1], 0 = none
 static bool isRepString(const uint8_t* b, size_t n) {
@@ -6017,6 +6038,7 @@ static void magic_insn_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) g_roi_begin_seen = true;   // (1.12.115): see SimEnd
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) repRoiMark(0);   // (1.12.289): the REP counts at the first roi_begin
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin(tid);   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS
@@ -6415,6 +6437,7 @@ static void xchg_pending_exec_cb(unsigned int vcpu_index, void *userdata) {
     uint32_t payload_size = static_cast<uint32_t>(op >> 32);
 
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) g_roi_begin_seen = true;   // (1.12.115): see SimEnd
+    if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) repRoiMark(0);   // (1.12.289): the REP counts at the first roi_begin
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) stackAtRoiBegin(tid);   // 1.12.17: the main thread's stack
     if (opcode == ZSIM_MAGIC_OP_ROI_BEGIN) {
         // 1.6 thread-MPI: every rank-thread baselines ITS OWN core at ITS

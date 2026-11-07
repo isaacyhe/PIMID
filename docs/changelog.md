@@ -6,6 +6,20 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.289 -- the run log's REP string access counts are split at the region of interest
+
+- **The problem.** The line `[core] REP string accesses in the ROI` (1.12.279) counted every REP string access the run
+  recorded, those before and after the region of interest included. For an OpenMP kernel it was its data
+  preparation's fills: a 64-element HBM3 triad reported 1,375,185 accesses priced and 86,627,218 held, all of them
+  before the region of interest. The 1.12.279 entry's data-impact note also said the OpenMP kernels' REP instructions
+  before the region of interest leave their runs unchanged; the per-line pricing applies to them too, and their runs
+  change (that note is corrected).
+- **The fix.** The counts are taken at the first `roi_begin` and at the close of the region of interest (a repeated
+  region: its last close), and the line gives the accesses priced and held inside it, then those before it and after
+  it. A run without `roi_begin` records everything as its region and counts it there. The pricing is unchanged.
+- **Data impact.** None on results: counting only. The line keeps its start and its first two counts now cover the
+  region of interest alone; the counts before and after it follow on the same line.
+
 ## 1.12.288 -- an in-order or out-of-order device element in a co-simulation takes any clock
 
 - **The problem.** These elements counted their cycles on the global clock, the host's in a co-simulation: with a
@@ -229,14 +243,22 @@ release commit messages.
   per byte against about 1 for the vector copy one byte below the threshold, and as many requests in the DRAM
   replay; on `in_order_core` a serial pair of L1 accesses per byte.
 - **The fix.** Within one REP instruction, an access to the line its previous access of the same kind (load or
-  store) touched is not priced again; the first access to each line is. The iterations still execute and retire as
-  instructions. The run log counts the REP string accesses priced and those held within a line.
-- **Data impact.** Runs that execute a REP string instruction inside the ROI change: a copy, fill or scan of more
-  than a few bytes costs about one access per line instead of one per element. In the benchmark kernels these are
-  the message-passing payload copies of 2112 B or more (`stencil_2d` halo rows, `bfs` frontier exchanges, the
-  collectives' buffers), on every core type. The OpenMP kernels copy and clear their data before the ROI; the few
-  short REP instructions a run executes inside it (in the runtime and the C library) move an `alu_core` run by a few to
-  a few tens of cycles. Runs without a REP string instruction in the ROI are unchanged.
+  store) touched is not priced again; the first access to each line is. This holds for every access the run records,
+  before the region of interest as well as inside it. The iterations still execute and retire as instructions. The run
+  log counts the REP string accesses priced and those held within a line (over the whole run; split at the region of
+  interest since 1.12.289).
+- **Data impact.** Runs that execute a REP string instruction on a simulated thread change, before the region of
+  interest as well as inside it. Inside it, a copy, fill or scan of more than a few bytes costs about one access per
+  line instead of one per element: in the benchmark kernels, the message-passing payload copies of 2112 B or more
+  (`stencil_2d` halo rows, `bfs` frontier exchanges, the collectives' buffers), on every core type. Before it, the
+  OpenMP kernels clear and copy each element's data with REP string instructions, so far fewer requests reach the
+  device's memory before the region of interest (a 64-element HBM3 triad: 90.4 M instead of 177.0 M), and the region
+  of interest starts from another DRAM state: an `alu_core` OpenMP run moves by up to about 1 % (-0.85 % for that
+  triad, -0.27 % for gemv on PCM, +0.17 % for a 16-element HBM3 triad), its row-buffer miss fraction by up to about
+  0.3 % (relative), an `ooo_core` run by a few hundredths of a percent, and an `in_order_core` run counts fewer L1D
+  accesses with its cycles unchanged. Only runs that execute no REP string instruction on a simulated thread are
+  unchanged. (Corrected in 1.12.289: this note first said the OpenMP kernels' REP instructions before the region of
+  interest leave their runs unchanged.)
 
 ## 1.12.278 -- the replay's drain serves every request it was fed, so a backlog at the ROI end is no longer written off as unserved
 
