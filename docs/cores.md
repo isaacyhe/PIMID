@@ -2,6 +2,8 @@
 
 Four core models are available for PIM device PEs (`pim.pe.type`) and, in a
 co-simulation, for hosts (`system.hosts[].core_type`) and devices (`system.devices[].pe_type`).
+In a co-simulation an `in_order_core` or `ooo_core` device element needs the device at the host's clock ((1.12.287); see
+[cosim.md](cosim.md)); `compute_unit` elements take any clock.
 The in-order model also runs as the scalar single-issue PE (`issue_width: 1`,
 `branch_predictor: none`; see below), which replaced `simple_core` in 1.12.1.
 

@@ -46,7 +46,12 @@ added around that same region.
   uses a single OoO core; an **in-order host core is also supported** (since 1.7.7; see
   [Limitations](#limitations)).
 - **Device = PIM.** PEs (default `alu_core`) placed at a memory level (BANK,
-  SUBARRAY, ...) behind the device's own memory technology and NoC.
+  SUBARRAY, ...) behind the device's own memory technology and NoC. `in_order_core` and
+  `ooo_core` elements run as device elements too ((1.12.287)): the device node's cores, whatever
+  their model, run the offloaded kernel, and a cache-based element's caches drain to its home
+  memory interface through the device network, as in a device run. They count cycles on the
+  global clock, so their co-simulation needs the device at the host's clock; a run with two
+  clocks is refused (compute-unit elements take any clock).
 - **Two fabrics, one bridge.** The device-internal H-tree (JEDEC-based) and
   the host crossbar are separate; the host<->device **bridge** joins them and
   carries only boundary traffic (launch cmd/ack, coherence flush, Case-2 DMA).
@@ -469,8 +474,9 @@ scaled by f_dev / f_host: the host's requests reach the shared array at their ow
 rate (changelog, 1.12.277). The global clock is the host's (it replaces
 sys.frequency when a faster device set that), what a host core spends is converted
 at the host's clock, and the device's epochs span at least one device phase. A
-co-simulation runs alu_core and null_core device elements; one whose device runs
-in_order_core or ooo_core elements stops at configuration (not supported yet).
+co-simulation runs alu_core and null_core device elements at any clock, and
+in_order_core and ooo_core device elements at the host's clock ((1.12.287)); one whose
+device runs those at another clock stops at configuration.
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.

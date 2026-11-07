@@ -6,6 +6,29 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.287 -- an in-order or out-of-order device element in a co-simulation runs as a device element, at the host's clock
+
+- **The problem.** A co-simulation whose device runs `in_order_core` or `ooo_core` elements
+  (`system.devices[].pe_type`) stopped at configuration (1.12.283). The timing core decided which cores are the
+  device's by their type: compute-unit (`alu_core`) and null cores were the device, every in-order and out-of-order
+  core the host. Such a device therefore had no device core at all: the run was no offload co-simulation (no offload
+  window, no flush or launch charge, the kernel on the host cores and the device cores), and its caches drained to the
+  host's memory controllers.
+- **The fix.** The device's cores are the cores of the device node of the node map, whatever their model. An in-order
+  or out-of-order device element runs the offloaded kernel, its caches drain to the device's memory interfaces (each
+  element to its home interface, as in a device run, and through the device network), its requests are the device's
+  in the DRAM replay, and the run time is the latest device element's ROI end. Its clock is on the axis a compute
+  unit's is on: it starts at the doorbell, after the host's coherence flush and kernel launch, so the run time holds
+  both, and it pins the replay's consistent cut on the clock its records carry, so no record falls behind the cut. At
+  a message-passing rank's window close an in-order or out-of-order core's own activity counters (instructions,
+  micro-ops, blocks, fetch chunks, branch counters) leave the post-ROI tail together with its instruction mix, as a
+  compute unit's do; the mix alone did, and the power report then refused the run (its instruction census fell short
+  of the instruction count by the tail). These elements count their cycles on the global clock, the host's in a
+  co-simulation, so they run at the host's clock: a co-simulation with them at another clock still stops at
+  configuration, now with the two clocks named.
+- **Data impact.** None for compute-unit and null devices, device runs and host runs. A co-simulation with in-order or
+  out-of-order device elements at the host's clock now runs as an offload (it stopped at configuration).
+
 ## 1.12.286 -- the activation-window (tFAW) report also comes by window unit
 
 - **The problem.** The replay's activation-window line (1.12.273) totals the whole array, so a run could not show which

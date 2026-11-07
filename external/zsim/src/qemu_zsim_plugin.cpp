@@ -663,7 +663,8 @@ static inline void recordTailMarker(uint32_t tid) {
         zinfo->cores[cid]->markActivity(g_tailAct[tid]);
         if (g_cosim_mode) {   // (1.12.225): the arrival is a lower bound of the ROI end; the replays keep the window counters' increments from it
             const uint64_t b = zinfo->cores[cid]->getRoiBaseCycle();
-            const uint64_t v = (g_tailMarker[tid] > b) ? g_tailMarker[tid] - b : 0;
+            const uint64_t v = zinfo->cores[cid]->pimidCacheDevice ? PEMemoryInterface::roiRelOf(cid, g_tailMarker[tid])   // (1.12.287): see the cut's rr
+                                                                   : ((g_tailMarker[tid] > b) ? g_tailMarker[tid] - b : 0);
             if (zinfo->dramReplay) zinfo->dramReplay->noteCloseCandidate(v);
             if (zinfo->hostDramReplay) zinfo->hostDramReplay->noteCloseCandidate(v);
         }
@@ -686,6 +687,10 @@ static void drainHostCharges(uint32_t tid);
 static std::mutex g_migrateMutex;
 static g_vector<bool> host_mask;     // true for OOO cores
 static g_vector<bool> device_mask;   // true for ALU cores
+/* (1.12.287): an in-order / out-of-order core of a device node (cache-based device element) in a co-simulation; such a core
+ * runs on the global axis like a host core, but it is a device core: the offload window, the run time, the network's
+ * element list and its memory interface are the device's */
+static g_vector<bool> g_cacheDevice;
 static std::atomic<uint64_t> offload_count{0};
 /* (g_cosim_mode is defined earlier, near mpi_roi_base_cyc, so roiRelCycles can
  * scope the tid/cid baseline correction to co-sim.) */
@@ -1136,7 +1141,8 @@ static void roiWallEnd(uint32_t tid, const char* how) {
         for (int pass = 0; pass < 2 && n == 0; pass++) {
             for (uint32_t c = 0; c < zinfo->numCores; c++) {
                 Core* co = zinfo->cores[c];
-                if (!co || (pass == 0) != co->wakeStampable()) continue;
+                const bool devc = co && (co->wakeStampable() || (c < g_cacheDevice.size() && g_cacheDevice[c]));   // (1.12.287): a cache-based device element too
+                if (!co || (pass == 0) != devc) continue;
                 /* 1.12.18 (W9): a core that had not run at the ROI baseline
                  * (snapshot 0: OpenMP workers spawned in the ROI) has origin 0
                  * and is counted; it used to be skipped while its records
@@ -1154,7 +1160,7 @@ static void roiWallEnd(uint32_t tid, const char* how) {
             }
         }
         uint32_t f = 0;
-        if (endCore != ~0u && !zinfo->cores[endCore]->wakeStampable())
+        if (endCore != ~0u && !zinfo->cores[endCore]->wakeStampable() && !zinfo->cores[endCore]->pimidCacheDevice)   // (1.12.287): a device element is on the device's clock
             for (uint32_t nd = 0; nd < zinfo->nodeMap.numNodes && nd < 16; nd++)
                 if (endCore >= zinfo->nodeMap.nodes[nd].coreStart && endCore < zinfo->nodeMap.nodes[nd].coreEnd) f = zinfo->nodeMap.nodes[nd].freqMHz;
         zinfo->roiWall.mpiEndFreqMHz = f;   // 0 = the device PEs' (the replay's own) clock
@@ -1183,7 +1189,8 @@ static void roiWallCloseMpi(const char* how) {
             uint32_t c = g_tailDeviceCid[t];
             if (c >= zinfo->numCores || !zinfo->cores[c]) continue;
             uint64_t b = zinfo->cores[c]->getRoiBaseCycle();
-            uint64_t v = (g_tailMarker[t] > b) ? g_tailMarker[t] - b : 0;
+            uint64_t v = zinfo->cores[c]->pimidCacheDevice ? PEMemoryInterface::roiRelOf(c, g_tailMarker[t])   // (1.12.287): no exported base (core.h)
+                                                           : ((g_tailMarker[t] > b) ? g_tailMarker[t] - b : 0);
             if (v > mx) mx = v;
             n++;
             if (c < MAX_THREADS) { g_rtEnd[c] = v; g_rtEndKnown[c] = true; }   // (1.12.189)
@@ -1203,7 +1210,7 @@ static void roiWallCloseMpi(const char* how) {
         for (uint32_t c = 0; c < zinfo->numCores; c++) {
             Core* co = zinfo->cores[c];
             if (!co) continue;
-            const bool isHost = co->asInOrderCore() || co->asOOOCore();
+            const bool isHost = (co->asInOrderCore() || co->asOOOCore()) && !co->pimidCacheDevice;   // (1.12.287): a device element is a rank core
             if (g_cosim_mode && isHost != hostRanks) continue;   // the rank cores only
             const uint64_t cy = co->getCycles();
             uint64_t v = PEMemoryInterface::roiRelOf(c, cy);   // 1.12.18 (W9): an ooo/in-order PE's origin
@@ -1543,7 +1550,7 @@ static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative cl
     Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
     if (!co) return 0;
     const uint64_t cyc = co->getCycles();
-    if (!g_cosim_mode) return PEMemoryInterface::roiRelOf(c, cyc);
+    if (!g_cosim_mode || co->pimidCacheDevice) return PEMemoryInterface::roiRelOf(c, cyc);   // (1.12.287): a device element: no exported base (core.h)
     const uint64_t base = co->getRoiBaseCycle();
     return (cyc > base) ? cyc - base : 0;
 }
@@ -1556,7 +1563,7 @@ static inline uint64_t cutAxisClock(uint32_t c) {   // the cut's ROI-relative cl
 static inline int64_t cutRelDelta(uint32_t c) {   // rendezvous clock = cut clock + delta
     Core* co = (c < zinfo->numCores) ? zinfo->cores[c] : nullptr;
     if (!co || c >= MAX_THREADS) return 0;
-    const int64_t cutBase = g_cosim_mode ? (int64_t)co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);
+    const int64_t cutBase = (g_cosim_mode && !co->pimidCacheDevice) ? (int64_t)co->getRoiBaseCycle() : PEMemoryInterface::roiOriginOf(c);   // (1.12.287): core.h
     return cutBase - (int64_t)mpi_roi_base_cyc[c];
 }
 static inline uint64_t relAxisClock(uint32_t c) {   // the core's rendezvous-axis clock (as roiRelCycles)
@@ -1927,7 +1934,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
     auto isPe = [&](uint32_t c) { return zinfo->cores[c] && (!g_cosim_mode || (c < device_mask.size() && device_mask[c])); };
     auto rrOf = [&](uint32_t c) {
         const uint64_t cyc = zinfo->cores[c]->getCycles();
-        if (!g_cosim_mode) return PEMemoryInterface::roiRelOf(c, cyc);   // (1.12.189): a signed origin
+        if (!g_cosim_mode || zinfo->cores[c]->pimidCacheDevice) return PEMemoryInterface::roiRelOf(c, cyc);   // (1.12.189): a signed origin; (1.12.287): core.h
         const uint64_t base = zinfo->cores[c]->getRoiBaseCycle();
         return (cyc > base) ? cyc - base : 0;
     };
@@ -2242,14 +2249,16 @@ void EndOfPhaseActions() {
              * are stamped against; co-sim keeps the host cores out of the cut
              * as before (roiBaseCycle 0: their clock never pins it). */
             const uint64_t cyc = co->getCycles();
-            uint64_t rr = g_cosim_mode ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
+            /* (1.12.287): a cache-based device element's clock pins the cut as in a device run: it exports no ROI base cycle, and
+             * on the base's rule its clock read its whole past and never held the cut back, so its records fell behind it */
+            uint64_t rr = (g_cosim_mode && !co->pimidCacheDevice) ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
             else if (g_cosim_mode && !co->pimidDeviceGrid()) rr = pimidHostToDev(rr);   // (1.12.277): a host core on the device's axis; (1.12.283): a device-grid core as it is
             /* (1.12.270): a device PE that has not run since its ROI origin bounds nothing. In a co-simulation its axis
              * starts at the doorbell (spDevShift), so its stopped clock reads the doorbell, not 0, and a PE no thread
              * runs on (a serial kernel's other PEs) held the cut there for the whole ROI. A device run has no shift:
              * there this is the rr == 0 test below. */
-            if (g_spCut && co->wakeStampable() && PEMemoryInterface::cutRoiRelOwn(c, co->pimidRawCycle()) == 0) continue;
+            if (g_spCut && (co->wakeStampable() || co->pimidCacheDevice) && PEMemoryInterface::cutRoiRelOwn(c, co->pimidRawCycle()) == 0) continue;
             else if (g_mpi_thread_mode && (st == 1 || st == 4) && g_cutFrozenRr[c] < rr) rr = g_cutFrozenRr[c];   // (1.12.178): the clock it resumes at
             if (g_mpi_thread_mode && g_setFrozen[c].load(std::memory_order_acquire) && g_setFloor > rr) rr = g_setFloor;   // (1.12.216): it waits for its settlement
             if (rr == 0) continue;       // baselined but no ROI traffic yet
@@ -3415,7 +3424,7 @@ static void rtNetBuild() {
         if (!zinfo) return;
         std::vector<uint32_t> pes;
         for (uint32_t c = 0; c < zinfo->numCores; c++)
-            if (zinfo->cores[c] && dynamic_cast<ALUCore*>(zinfo->cores[c])) pes.push_back(c);
+            if (zinfo->cores[c] && (dynamic_cast<ALUCore*>(zinfo->cores[c]) || (c < g_cacheDevice.size() && g_cacheDevice[c]))) pes.push_back(c);   // (1.12.287): cache-based device elements
         /* a device run of in-order / out-of-order PEs: every core is a PE of the placement */
         if (pes.empty() && !g_cosim_mode && zinfo->hierarchy.peMemMapSize > 0 && zinfo->hierarchy.placementLevel < 7)
             for (uint32_t c = 0; c < zinfo->numCores; c++) if (zinfo->cores[c]) pes.push_back(c);
@@ -8435,15 +8444,28 @@ int qemu_plugin_install(qemu_plugin_id_t id,
 
     host_mask.resize(zinfo->numCores, false);
     device_mask.resize(zinfo->numCores, false);
+    g_cacheDevice.resize(zinfo->numCores, false);
     for (uint32_t i = 0; i < zinfo->numCores; i++) {
         if (dynamic_cast<ALUCore*>(zinfo->cores[i])) {
             device_mask[i] = true;
         } else if (dynamic_cast<NullCore*>(zinfo->cores[i])) {
             device_mask[i] = true;
+        } else if (pimidDeviceNodeCore(i)) {
+            /* (1.12.287): an in-order / out-of-order core of a device node is a device element (it used to be counted
+             * as a host core, and the co-simulation then ran as a host-only run without an offload) */
+            device_mask[i] = true;
+            g_cacheDevice[i] = true;
+            zinfo->cores[i]->pimidCacheDevice = true;
         } else {
             /* OoO, InOrder -- valid host cores */
             host_mask[i] = true;
         }
+    }
+    {
+        uint32_t nc = 0;
+        for (uint32_t i = 0; i < zinfo->numCores; i++) if (g_cacheDevice[i]) nc++;
+        if (nc) info("[ZSim] %u in-order / out-of-order core(s) of the device node are device elements: their caches drain to "
+                     "the device's memory interfaces and they run the offloaded kernel [(1.12.287)]", nc);
     }
 
     /* 1.9.20: ascending list of device PEs + per-PE ownership, for the
@@ -8511,6 +8533,23 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     g_cosim_mode = (nHostCores > 0 && nDeviceCores > 0 && nDeviceCores < zinfo->numCores);
     if (g_cosim_mode) {
         info("[ZSim] Co-sim mode: ROI = offload region (host runs out-of-ROI code, device runs the kernel)");
+    }
+    /* (1.12.287): an in-order / out-of-order device element counts its cycles on the global clock (the host's in a
+     * co-simulation), so with a device clock other than the host's it would compute at the host's rate. Its own phase
+     * grid and the clock crossing of its recorder are not built yet: such a run is refused, not run at the wrong rate. */
+    if (g_cosim_mode && !getenv("PIMID_COSIM_NO_OFFLOAD")) {
+        bool anyCache = false;
+        for (uint32_t i = 0; i < zinfo->numCores; i++) if (g_cacheDevice[i]) { anyCache = true; break; }
+        uint32_t fHost = 0, fDev = 0;
+        for (uint32_t n = 0; n < zinfo->nodeMap.numNodes && n < 16; n++) {
+            if (zinfo->nodeMap.nodes[n].role == 0 && !fHost) fHost = zinfo->nodeMap.nodes[n].freqMHz;
+            if (zinfo->nodeMap.nodes[n].role != 0 && !fDev) fDev = zinfo->nodeMap.nodes[n].freqMHz;
+        }
+        if (anyCache && fHost && fDev && fHost != fDev)
+            panic("[ZSim] co-simulation with in-order / out-of-order device elements at %u MHz and a host at %u MHz: these "
+                  "elements count cycles on the global (host) clock, so they would compute at %u MHz; run them at the host's "
+                  "clock (system.devices[].frequency_mhz: %u), run alu_core elements, or run the device alone [(1.12.287)]",
+                  fDev, fHost, fHost, fHost);
     }
 
     /* Thread-based MPI rank emulation: resolved once, before any guest code

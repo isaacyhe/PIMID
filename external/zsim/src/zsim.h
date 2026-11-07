@@ -846,4 +846,17 @@ uint32_t getCid(uint32_t tid);
 uint32_t TakeBarrier(uint32_t tid, uint32_t cid);
 void SimEnd(); //only call point out of zsim.cpp should be watchdog threads
 
+
+/* (1.12.287): a core of a DEVICE node of the co-simulation's node map (sys.nodeMap: role != 0), whatever its core model;
+ * false without a node map (device scope, host-only runs). Returns the node's first core in *first when given. */
+static inline bool pimidDeviceNodeCore(uint32_t cid, uint32_t* first = nullptr) {
+    if (!zinfo) return false;
+    for (uint32_t n = 0; n < zinfo->nodeMap.numNodes && n < 16; n++)
+        if (zinfo->nodeMap.nodes[n].role != 0 && cid >= zinfo->nodeMap.nodes[n].coreStart && cid < zinfo->nodeMap.nodes[n].coreEnd) {
+            if (first) *first = zinfo->nodeMap.nodes[n].coreStart;
+            return true;
+        }
+    return false;
+}
+
 #endif  // ZSIM_H_

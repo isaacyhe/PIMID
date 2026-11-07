@@ -147,7 +147,7 @@ struct CoreActivityMark {
     uint64_t mix[10];
     uint64_t fpcIns[FP_CENSUS_CATS], fpcLanes[FP_CENSUS_CATS], intOps[INT_CENSUS_CATS];
     uint64_t pgActive;
-    uint64_t own[12];
+    uint64_t own[16];   // the core type's own counters ((1.12.287): 16, an in-order core marks 13)
 };
 
 //Generic core class
@@ -357,6 +357,10 @@ class Core : public GlobAlloc {
          * runs as device elements, the ALU and the Null elements. Its clock joins the device's axis as it is, a host
          * core's scaled (pimidHostToDev). */
         virtual bool pimidDeviceGrid() const { return false; }
+        /* (1.12.287): an in-order / out-of-order core of a co-simulation's device node: a device element whose clock keeps the
+         * host rule (join re-bases it, the wall-free clock is apart). Its records' axis starts at the doorbell, as a compute
+         * unit's (PEMemoryInterface::cutRoiRel). Set once at start-up; false for every other core. */
+        bool pimidCacheDevice = false;
         virtual uint64_t syncToWaker(uint64_t t) { (void)t; return 0; }
         /* (1.12.188): a PE held by the cut hold (g_peCutHold) for one phase. An in-order / OOO core moves its clock to t,
          * the end of the held phase, booked as waiting (out of the unhalted clock, as syncToWaker): the weave's core

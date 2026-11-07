@@ -289,7 +289,8 @@ static uint64_t g_migrations = 0;
 static void buildDomainMasks() {
     g_hostMask.resize(zinfo->numCores, false); g_deviceMask.resize(zinfo->numCores, false);
     for (uint32_t i = 0; i < zinfo->numCores; i++) {
-        if (dynamic_cast<ALUCore*>(zinfo->cores[i]) || dynamic_cast<NullCore*>(zinfo->cores[i])) g_deviceMask[i] = true; else g_hostMask[i] = true;
+        if (dynamic_cast<ALUCore*>(zinfo->cores[i]) || dynamic_cast<NullCore*>(zinfo->cores[i]) || pimidDeviceNodeCore(i)) g_deviceMask[i] = true;   // (1.12.287): a device node's in-order / out-of-order core too
+        else g_hostMask[i] = true;
     }
     for (auto b : g_deviceMask) if (b) g_hasDevice = true;
     for (auto b : g_hostMask) if (b) g_hasHost = true;

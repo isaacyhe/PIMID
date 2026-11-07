@@ -654,6 +654,9 @@ public:
     static void clkAdoptRel(uint32_t c, uint64_t rel) {
         if (c >= kSpOrigins || c >= zinfo->numCores || !zinfo->cores[c]) return;
         const uint64_t wf = zinfo->cores[c]->getCycles();
+        /* (1.12.287): a release's ROI-relative clock (cutRoiRel) is on the records' axis, so a device element's origin leaves the
+         * doorbell's shift out: cutRoiRel adds it back */
+        if (zinfo->cores[c]->pimidCacheDevice) rel = (rel > spDevShift()) ? rel - spDevShift() : 0;
         /* (1.12.189): signed (stored as its two's complement): a core that waited longer than the releaser has a
          * wall-free clock behind the releaser's ROI-relative clock, and its origin lies past its own clock */
         clkOrigins()[c].store((uint64_t)((int64_t)wf - (int64_t)rel), std::memory_order_relaxed);
@@ -675,6 +678,8 @@ public:
     /* (1.12.270): a device PE's ROI-relative clock on its own origin, without a co-simulation's doorbell shift: 0 while the
      * PE has not run since its ROI origin (the consistent cut skips it, as it skips any core with no ROI traffic yet) */
     static uint64_t cutRoiRelOwn(uint32_t srcId, uint64_t cycle) {
+        if (srcId < zinfo->numCores && zinfo->cores[srcId] && zinfo->cores[srcId]->pimidCacheDevice)   // (1.12.287): the host rule's origin
+            return roiRelOf(srcId, wallFreeCycle(srcId, cycle));
         const uint64_t o = spOriginOf(srcId);
         return (cycle > o) ? cycle - o : 0;
     }
@@ -686,6 +691,9 @@ public:
             return (c > o) ? c - o : 0;
         }
         const uint64_t rel = roiRelOf(srcId, wallFreeCycle(srcId, cycle));   // 1.12.18 (W9)
+        /* (1.12.287): a device element's axis starts at the doorbell (spDevShift above): without it, its records started from 0,
+         * behind the cut the host had already moved through the flush and the launch, and the run time left those out */
+        if (co && co->pimidCacheDevice) return rel + spDevShift();
         return (co && co->pimidDeviceGrid()) ? rel : pimidHostToDev(rel);   // (1.12.277): a host core on the device's axis; (1.12.283): a device element as it is
     }
 

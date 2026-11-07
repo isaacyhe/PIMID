@@ -10505,23 +10505,35 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
  * - Per-node node_network_id (position in system network topology)
  */
 /* (1.12.283): THE CO-SIMULATION'S DEVICE ELEMENT MODELS. A co-simulation runs a device's elements as device elements --
- * the offload window, its own clock and phase grid, the device's DRAM axis -- for the alu_core and null_core models
- * only: the timing core recognises those two as device cores (qemu_zsim_plugin.cpp, device_mask). An in_order_core or
- * ooo_core device was taken for more host cores: the run had no offload window and was no co-simulation, and nothing
- * said so. Until those models run as device elements, such a system stops here. The one place this rule lives. */
+ * the offload window, its own clock and phase grid, the device's DRAM axis. The alu_core and null_core models run at any
+ * clock. (1.12.287): in_order_core and ooo_core elements run as device elements too (the device node's cores, whatever their
+ * model: qemu_zsim_plugin.cpp, g_cacheDevice), at the host's clock only: they count their cycles on the global clock, the
+ * host's, so at another clock they would compute at the host's rate. Such a system stops here; the timing core refuses
+ * the same combination at start-up, for a configuration that does not come through here. */
 static void requireCosimDeviceElementModel(const UnifiedConfig& config) {
     bool has_host = false;
-    for (const auto& n : config.system_nodes) if (n.role == UnifiedConfig::SystemNode::HOST) has_host = true;
+    int f_host = 0;   // the host's clock, as the timing core's node map takes it (the first host)
+    for (const auto& n : config.system_nodes)
+        if (n.role == UnifiedConfig::SystemNode::HOST) { if (!has_host) f_host = static_cast<int>(n.frequency_mhz); has_host = true; }
     if (!has_host) return;   // a device alone: every element model runs (device scope)
     for (const auto& n : config.system_nodes) {
         if (n.role != UnifiedConfig::SystemNode::DEVICE || n.device_type != UnifiedConfig::SystemNode::COMPUTE || n.num_pes <= 0)
             continue;
         if (n.pe_type.empty() || n.pe_type == "alu_core" || n.pe_type == "null_core") continue;   // alu_core is the default
+        if (n.pe_type == "in_order_core" || n.pe_type == "ooo_core") {   // (1.12.287)
+            const int f_dev = static_cast<int>(n.frequency_mhz);
+            if (f_dev == f_host) continue;
+            std::cerr << "[config] ERROR: device '" << n.name << "' runs " << n.pe_type << " elements at " << f_dev << " MHz in a "
+                         "co-simulation whose host runs at " << f_host << " MHz. This combination is not supported: in a "
+                         "co-simulation " << n.pe_type << " device elements count their cycles on the host's clock and would "
+                         "compute at the host's rate. Set system.devices[].frequency_mhz to " << f_host << ", use pe_type: "
+                         "alu_core, or run the device alone (device scope)." << std::endl;
+            std::exit(1);
+        }
         std::cerr << "[config] ERROR: device '" << n.name << "' runs " << n.pe_type << " elements in a co-simulation (a host "
-                     "with a device). This combination is not supported yet: a co-simulation runs alu_core and null_core "
-                     "device elements only, and with " << n.pe_type << " elements the run would have no offload window (the "
-                     "elements would be taken for more host cores, the kernel not on the device). Use pe_type: alu_core, or "
-                     "run the device alone (device scope), where every element model runs." << std::endl;
+                     "with a device). This combination is not supported: a co-simulation runs alu_core, null_core, "
+                     "in_order_core and ooo_core device elements. Use one of those, or run the device alone (device scope)."
+                  << std::endl;
         std::exit(1);
     }
 }

@@ -338,6 +338,23 @@ class InOrderCore : public Core {
             roiBaseCCycles = cRec.getContentionCycles();         // 1.11.17: like OOO (1.11.9)
             mixMarkRoi();   // 1.11.10
         }
+        /* (1.12.287): a co-simulation MPI rank's window-close marker (1.12.181): the core's own activity counters leave the
+         * post-ROI tail together with its instruction mix, as an ALU's do (the mix alone did, and an in-order device
+         * element's census then fell short of its instruction count by the tail) */
+        void markActivity(CoreActivityMark& m) const override {
+            mixMark(m);
+            const uint64_t v[13] = {instrs, uops, bbls, ifetchChunks, branches, mispredBranches, takenBranches,
+                                    indirBranches, rasReturns, btbMisses, directBranches,
+                                    branchPred.histWrites, branchPred.phtWrites};
+            for (int k = 0; k < 13; k++) m.own[k] = v[k];
+        }
+        void restoreActivity(const CoreActivityMark& m) override {
+            mixRestore(m);
+            uint64_t* v[13] = {&instrs, &uops, &bbls, &ifetchChunks, &branches, &mispredBranches, &takenBranches,
+                               &indirBranches, &rasReturns, &btbMisses, &directBranches,
+                               &branchPred.histWrites, &branchPred.phtWrites};
+            for (int k = 0; k < 13; k++) *v[k] = m.own[k];
+        }
 
         // Virtual type check for use without RTTI (Pin 4.x requires -fno-rtti)
         InOrderCore* asInOrderCore() override { return this; }

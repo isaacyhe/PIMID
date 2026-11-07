@@ -60,12 +60,14 @@ class HomeRoutedMemory : public MemObject {
     private:
         const g_vector<MemObject*> mems;
         const uint32_t pesPerMc;
+        const uint32_t firstCore;   // (1.12.287): the element numbering's first core (a co-simulation's device node starts after the host's)
         g_string name;
     public:
-        HomeRoutedMemory(const g_vector<MemObject*>& _mems, uint32_t _pesPerMc, const char* _name)
-            : mems(_mems), pesPerMc(_pesPerMc ? _pesPerMc : 1), name(_name) {}
+        HomeRoutedMemory(const g_vector<MemObject*>& _mems, uint32_t _pesPerMc, const char* _name, uint32_t _firstCore = 0)
+            : mems(_mems), pesPerMc(_pesPerMc ? _pesPerMc : 1), firstCore(_firstCore), name(_name) {}
         uint64_t access(MemReq& req) {
-            uint32_t mi = (req.srcId / pesPerMc) % (uint32_t)mems.size();
+            const uint32_t el = req.srcId >= firstCore ? req.srcId - firstCore : req.srcId;
+            uint32_t mi = (el / pesPerMc) % (uint32_t)mems.size();
             return mems[mi]->access(req);
         }
         const char* getName() { return name.c_str(); }
@@ -1756,10 +1758,24 @@ static void InitSystem(Config& config) {
          * memory is timed by the system path (the attachment's link class),
          * not by this RTT. A 1-core host (no fabric) goes L3 -> MC directly. */
         const bool hostLlcGrp = (llcGrp.compare(0, 5, "host_") == 0);
+        /* (1.12.287): in a co-simulation the memory side built above is the HOST's; a DEVICE node's cache group (in-order /
+         * out-of-order elements: ALU elements have no cache) drains to the device's own memory interfaces, each element
+         * to its home interface, as in a device run -- it used to drain to the host's memory controllers */
+        g_vector<MemObject*> llcMems = mems;
+        const int ownNode = cacheGroupOwnerNode(llcGrp);
+        if (cosimMode && !rawMIs.empty() && ownNode >= 0 && zinfo->nodeMap.nodes[ownNode].role != 0) {
+            g_vector<MemObject*> mis;
+            for (PEMemoryInterface* m : rawMIs) mis.push_back(m);
+            llcMems.clear();
+            llcMems.push_back(new HomeRoutedMemory(mis, std::max(zinfo->hierarchy.pesPerMC, 1u), "pe-mi-home",
+                                                   zinfo->nodeMap.nodes[ownNode].coreStart));
+            info("[ZSim] co-simulation: the device node's cache group %s drains to the device's %u memory interface(s), "
+                 "each element to its home interface [(1.12.287)]", llcGrp.c_str(), (unsigned)rawMIs.size());
+        }
         for (uint32_t inst = 0; inst < llcCaches.size(); inst++) {
             uint32_t childId = 0;
             for (BaseCache* llcBank : llcCaches[inst]) {
-                llcBank->setParents(childId++, mems, hostLlcGrp ? nullptr : network);
+                llcBank->setParents(childId++, llcMems, hostLlcGrp ? nullptr : network);
             }
         }
     }

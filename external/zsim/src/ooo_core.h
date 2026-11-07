@@ -743,6 +743,20 @@ class OOOCore : public Core {
             roiBaseCCycles = cRec.getContentionCycles();
             mixMarkRoi();   // 1.11.10
         }
+        /* (1.12.287): a co-simulation MPI rank's window-close marker (1.12.181): the core's own activity counters leave the
+         * post-ROI tail together with its instruction mix, as an ALU's do */
+        void markActivity(CoreActivityMark& m) const override {
+            mixMark(m);
+            const uint64_t v[11] = {instrs, uops, bbls, ifetchChunks, branches, mispredBranches, indirBranches,
+                                    rasReturns, branchPred.histWrites, branchPred.phtWrites, syntheticInstrs};
+            for (int k = 0; k < 11; k++) m.own[k] = v[k];
+        }
+        void restoreActivity(const CoreActivityMark& m) override {
+            mixRestore(m);
+            uint64_t* v[11] = {&instrs, &uops, &bbls, &ifetchChunks, &branches, &mispredBranches, &indirBranches,
+                               &rasReturns, &branchPred.histWrites, &branchPred.phtWrites, &syntheticInstrs};
+            for (int k = 0; k < 11; k++) *v[k] = m.own[k];
+        }
 
     private:
         inline void load(Address addr);
