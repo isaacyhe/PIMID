@@ -32,6 +32,8 @@
 #include "pad.h"
 
 class NullCore : public Core {
+    public:
+        bool pimidDeviceGrid() const override { return true; }   // (1.12.283): a device element, on the device's phase grid
     protected:
         uint64_t instrs;
         uint64_t curCycle;

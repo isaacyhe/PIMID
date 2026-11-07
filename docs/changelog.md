@@ -6,6 +6,46 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.283 -- every co-simulation with two clocks runs one stretch of time per phase, a faster device and Null device elements included; a co-simulation with in_order_core or ooo_core device elements stops at configuration
+
+- **The problem.** 1.12.277 gave a slower device's elements one host phase's time per phase and left the other cases:
+  - A device faster than the host: sys.frequency was the device's clock and the host cores were timed at it (a
+    1,000 MHz host ran as a 2,000 MHz one), the phases still had one length in cycles on both sides, and what a host
+    core spends -- the coherence flush, the kernel launch, the host-device link's crossings and transfers -- was
+    converted at the device's clock, f_dev / f_host times too long (2,232 and 10,722 cycles of flush and launch where a
+    1,000 MHz host spends 1,116 and 5,362). With a paced host traffic generator beside a 2,000 MHz device kernel, the
+    kernel's run time came out 4.71 M cycles against 4.20 M beside an idle host, over a replay window of 11.3 M DRAM
+    cycles against 5.05 M.
+  - Null device elements kept the host's phase grid, and their run time was read on it: below their own busy cycles
+    (12,993 against 24,871 at a 500 MHz device and a 2,000 MHz host) and moving with the host's clock (12,435 with a
+    1,000 MHz host).
+  - The replay's phase-mode paths took the host's phase-clock stamps, the window's close and its opening cycle for
+    cycle on the device's axis.
+  - A co-simulation whose device ran in_order_core or ooo_core elements had no device elements at all: the timing
+    core recognises alu_core and null_core elements as device cores and took the others for more host cores, so the
+    run had no offload window and said nothing.
+- **The fix.**
+  - The global clock is the host's, with or without an offload: when sys.frequency is another clock (a faster
+    device's), zsim's global clock takes the host's, so the host cores' cycles are timed at their own rate, and what a
+    host core spends is converted at the host's clock. A faster device's elements advance phase length x f_dev / f_host
+    of their cycles per phase, more than the phase length.
+  - The device's epochs -- the DRAM replay's and the device network's -- span at least one device phase. The folds run
+    at the phase barriers; with a faster device's phase several epochs of the phase length were folded at once, and a
+    read two epochs back found its epoch unfolded (26,287 such reads beside a 500 MHz host, 13 beside a 2,000 MHz one).
+  - Null device elements run on the device's phase grid.
+  - The phase-mode replay paths put the host's phase-clock stamps, the window's close and its opening on the device's
+    axis. Every run of the exec method replays in cut mode, so a co-simulation does not reach these paths today.
+  - A co-simulation whose device runs in_order_core or ooo_core elements stops at configuration with rc 1 and says
+    this combination is not supported yet.
+- **Data impact.** Co-simulations with a device faster than the host, or with Null device elements, change: beside
+  the generator above the kernel runs 4.20 M cycles over a 5.05 M-cycle window, and beside an idle host its run time
+  stays within 0.4 % whatever the host's clock (2,000, 1,000 or 500 MHz); a no-offload run's results no longer depend
+  on a faster device's clock; and a Null element's run time is its own clock's, whatever the host's clock. A faster
+  device's epochs are its phase, longer than the phase length, so the closed loop's prices are taken over coarser
+  epochs: a device kernel's run time can move by about 1 % with the host's clock. Runs with one clock, device runs
+  and offload runs with a slower alu_core device are unchanged. A co-simulation with in_order_core or ooo_core device
+  elements no longer runs.
+
 ## 1.12.282 -- a host page on a DDR5 device memory is spread over the bank groups, as a host controller does
 
 - **The problem.** When the device is the host's memory, a host page that no element has placed went to one unit,

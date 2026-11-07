@@ -433,7 +433,7 @@ static void roiRebaseTrafficCounters(const char* where) {
     uint64_t pre_replayed = 0;
     if (zinfo->garnetNetwork && !threadMpiMode())
         pre_replayed = zinfo->garnetNetwork->drainPendingRecords(
-            false, zinfo->phaseLength, zinfo->numPhases);
+            false, pimidEpochPl(), zinfo->numPhases);   // (1.12.283): the device's epoch
     uint64_t pre_flits = 0, pre_pkts = 0;
     if (zinfo->garnetNetwork) {
         pre_flits += zinfo->garnetNetwork->markRoiBegin();
@@ -720,7 +720,7 @@ static inline uint64_t roiWallStamp(uint32_t tid) {
         if (cid < zinfo->numCores && zinfo->cores[cid]) {
             Core* co = zinfo->cores[cid];
             /* (1.12.277): a device element's offset in its phase, on the phase clock (zsim.h) */
-            if (pimidClkScaled() && co->wakeStampable()) off = pimidDevToHost(co->getCycles() % pimidPlDev());
+            if (pimidClkScaled() && co->pimidDeviceGrid()) off = pimidDevToHost(co->getCycles() % pimidPlDev());   // (1.12.283): every device-grid core
             else off = co->getCycles() % pl;
         }
     }
@@ -1971,7 +1971,7 @@ static void mpiCutHold(uint64_t& cut, uint64_t& cutDram) {
     if (cutDram != ~0ull) lastCutDram = cutDram;
     lastEnt = ent;
     /* (2) the hold */
-    const uint64_t Ed = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * DramEpochReplay::epochPhases();
+    const uint64_t Ed = (uint64_t)(pimidEpochPl() > 0 ? pimidEpochPl() : 10000) * DramEpochReplay::epochPhases();   // (1.12.283): the device's epoch
     const uint64_t cutE = (cutDram == ~0ull) ? ~0ull : cutDram / Ed;
     /* (3) the cut can advance: the core that pins it is never held (it is the minimum), and when it is a rank waiting
      * on others -- a receive from a known source, a barrier -- the ranks it waits for are not held either */
@@ -2242,7 +2242,7 @@ void EndOfPhaseActions() {
             const uint64_t cyc = co->getCycles();
             uint64_t rr = g_cosim_mode ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
-            else if (g_cosim_mode && !co->wakeStampable()) rr = pimidHostToDev(rr);   // (1.12.277): a host core on the device's axis
+            else if (g_cosim_mode && !co->pimidDeviceGrid()) rr = pimidHostToDev(rr);   // (1.12.277): a host core on the device's axis; (1.12.283): a device-grid core as it is
             /* (1.12.270): a device PE that has not run since its ROI origin bounds nothing. In a co-simulation its axis
              * starts at the doorbell (spDevShift), so its stopped clock reads the doorbell, not 0, and a PE no thread
              * runs on (a serial kernel's other PEs) held the cut there for the whole ROI. A device run has no shift:
@@ -2285,7 +2285,7 @@ void EndOfPhaseActions() {
         if (foldNoc && g_spCut && !zinfo->garnetNetwork->cutAxis()) {   // 1.12.18
             zinfo->garnetNetwork->enterCutAxis();
         }
-        if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, zinfo->phaseLength);
+        if (foldNoc) zinfo->garnetNetwork->foldByCut(cut, pimidEpochPl());   // (1.12.283): the device's epoch
         if (foldNoc) { spNocCut = cut; spNocFolded = true; }
         if (g_mpi_thread_mode && !g_cosim_mode && (!g_cutOpenerBegun.load() || !ranksRoiStarted())) cutDram = 0;   // (1.12.199): see g_rankRoiStart
         if (g_mpi_thread_mode && g_cosim_mode && g_cosim_no_offload) {
@@ -2304,7 +2304,7 @@ void EndOfPhaseActions() {
         if ((foldDram || foldHostDram) && cutDram != ~0ull) g_recLastCut = cutDram;   // (1.12.189): see g_recSyncClk
         if (foldDram) {   // the epoch length the access hook keys on (PEMemoryInterface::localAccessLatency)
             const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145)
-            const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            const uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;   // (1.12.283): the device's epoch
             zinfo->dramReplay->foldByCut(cutDram, (uint64_t)pl * E);
         }
         if (foldHostDram) {   // 1.12.18: as above, the host interfaces' epoch length is the same
@@ -2312,7 +2312,7 @@ void EndOfPhaseActions() {
             /* (1.12.277): a host memory replayed on its own (a decoupled host memory) is on the host's axis; one sharing
              * the device's instance is on the device's */
             const bool own = zinfo->hostDramReplay != zinfo->dramReplay;
-            const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            const uint32_t pl = own ? (zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) : (pimidEpochPl() > 0 ? pimidEpochPl() : 10000);   // (1.12.283)
             zinfo->hostDramReplay->foldByCut((own && cutDram != ~0ull) ? pimidDevToHost(cutDram) : cutDram, (uint64_t)pl * E);
         }
         /* (1.12.189): the accesses the folds settled are reconciled now, while every core is synced
@@ -2347,7 +2347,7 @@ void EndOfPhaseActions() {
                      "(folded at the phase barrier; an access in epoch k reads epoch k-1; E_phases=%u x %u cycles) [1.12.18]",
                      gn->detEpochPhases(), (unsigned)zinfo->phaseLength);
             }
-            const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            const uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;   // (1.12.283): the device's epoch
             if (!g_spCut || !gn->cutAxis()) {   // before the ROI baseline: the phase grid
                 gn->foldByCut(((uint64_t)zinfo->numPhases + 1) * pl, pl);
                 gn->publishCompletedEpochs(zinfo->numPhases);
@@ -2437,7 +2437,7 @@ static uint64_t g_detQ = 0;   // kDetTurnCycles once the fixed order is on
 static uint64_t g_detTurnEnd[MAX_THREADS];
 /* (1.12.277): a device element's turn is the same stretch of time as a host core's (per-clock-domain phases, zsim.h) */
 static inline uint64_t detQFor(const Core* c) {
-    if (!pimidClkScaled() || !c->wakeStampable()) return g_detQ;
+    if (!pimidClkScaled() || !c->pimidDeviceGrid()) return g_detQ;   // (1.12.283): every device-grid core
     return std::max<uint64_t>(1, (uint64_t)((unsigned __int128)g_detQ * pimidPlDev() / zinfo->phaseLength));
 }
 static inline void detTurnBegin(uint32_t tid, uint32_t cid) {
@@ -2831,7 +2831,7 @@ static void dumpTerminationStats() {
          * Replay what is pending (thread-MPI: every bucket still held back
          * by the cut) before the stats are written. */
         uint64_t tail = zinfo->garnetNetwork->drainPendingRecords(
-            threadMpiMode(), zinfo->phaseLength, zinfo->numPhases + 1);
+            threadMpiMode(), pimidEpochPl(), zinfo->numPhases + 1);   // (1.12.283): the device's epoch
         if (tail)
             info("[roi] %lu pending NoC records replayed before the final stats write",
                  (unsigned long)tail);
@@ -5024,7 +5024,7 @@ static void handleMpiMagicOp(uint64_t op, uint32_t tid) {
              * they physically contend, deterministically), and the charged
              * latency comes from the batch-smoothed RTT -- a pure function of
              * the deterministic batch history. Same modeling contract as OMP. */
-            uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;   // (1.12.283): the device's epoch
             uint64_t coreCyc = cores[tid] ? cores[tid]->getCycles() : 0;
             uint64_t stamp = (uint64_t)zinfo->numPhases * pl + (coreCyc % pl);
             uint32_t numPackets = std::max(1u, (uint32_t)((params.msg_size + 63) / 64));

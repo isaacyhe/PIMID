@@ -188,6 +188,7 @@ class ALUCore : public Core {
 
         /* 1.12.18 (sync to waker), see core.h */
         bool wakeStampable() const override { return true; }
+        bool pimidDeviceGrid() const override { return true; }   // (1.12.283)
         uint64_t syncToWaker(uint64_t t) override;   // alu_core.cpp
         /* 1.12.18 (model the lock word), see core.h */
         uint32_t lockClockDomain() const override { return 2; }

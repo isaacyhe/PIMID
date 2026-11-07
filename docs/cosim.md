@@ -461,11 +461,16 @@ their records on that clock. It used to run on the device elements' clock,
 which spread the host's requests over a DRAM timeline f_host / f_dev times too
 long and raised the run time by that factor; a baseline whose host and device
 clocks are equal was not affected (changelog, 1.12.272). An offload
-run keeps the device clock; when the device elements run slower than the host
-cores, they advance phase length x f_dev / f_host of their own cycles per phase,
-so a phase is the same stretch of time on both sides, and the host's stamps join
-the device's axis scaled by f_dev / f_host: the host's requests reach the shared
-array at their own rate (changelog, (1.12.277)).
+run keeps the device clock; when the device elements run on another clock than
+the host cores, they advance phase length x f_dev / f_host of their own cycles
+per phase (fewer on a slower device, more on a faster one), so a phase is the
+same stretch of time on both sides, and the host's stamps join the device's axis
+scaled by f_dev / f_host: the host's requests reach the shared array at their own
+rate (changelog, 1.12.277). The global clock is the host's (it replaces
+sys.frequency when a faster device set that), what a host core spends is converted
+at the host's clock, and the device's epochs span at least one device phase. A
+co-simulation runs alu_core and null_core device elements; one whose device runs
+in_order_core or ooo_core elements stops at configuration (not supported yet).
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.

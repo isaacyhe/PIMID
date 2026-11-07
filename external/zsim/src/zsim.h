@@ -813,7 +813,10 @@ extern GlobSimInfo* zinfo;
  * f_host / f_dev times as long as phaseLength host cycles, so each phase took the device that much further in time
  * than the host: a host program ran f_dev / f_host as fast as the device kernel beside it, and its requests reached
  * the shared DRAM that much farther apart. The device elements now advance phaseLengthDev = phaseLength x f_dev / f_host
- * of their own cycles per phase (init.cpp), so a phase is one stretch of time on both sides. The device's axis is its
+ * of their own cycles per phase (init.cpp), so a phase is one stretch of time on both sides. (1.12.283): a faster device
+ * too (phaseLengthDev > phaseLength); the global clock is the host's (init.cpp sets freqMHz to it when sys.frequency is
+ * a faster device's), and the device's grid covers every device element model that runs in a co-simulation (the ALU
+ * and the Null elements, Core::pimidDeviceGrid). The device's axis is its
  * elements' own clock: their records' stamps, the consistent cut and the shared DRAM replay (on the device clock in an
  * offload run); the replay's and the device network's epochs keep their length in device cycles (the phase length x
  * their phases), as in a device run. A host stamp, and a host core's clock in the cut, join that axis scaled by
@@ -830,6 +833,13 @@ static inline uint64_t pimidDevToHost(uint64_t c) {
     if (!pimidClkScaled()) return c;
     return (uint64_t)((unsigned __int128)c * zinfo->phaseLength / zinfo->phaseLengthDev);
 }
+/* (1.12.283): the phase clock on the device's grid (globPhaseCycles is phases x phaseLength: exactly phases x phaseLengthDev) */
+static inline uint64_t pimidDevGlob() { return pimidHostToDev(zinfo->globPhaseCycles); }
+/* (1.12.283): the device's epoch unit (the DRAM replay's and the device network's epochs, and the network's phase-grid
+ * stamps): phaseLength device cycles, as in a device run, but never less than the device's phase -- the folds run at
+ * the phase barriers, so an epoch shorter than a phase (a faster device's) was folded with the next ones and a read two
+ * epochs back found it unfolded */
+static inline uint32_t pimidEpochPl() { const uint32_t d = pimidPlDev(); return d > zinfo->phaseLength ? d : zinfo->phaseLength; }
 
 //Process-wide functions, defined in zsim.cpp
 uint32_t getCid(uint32_t tid);

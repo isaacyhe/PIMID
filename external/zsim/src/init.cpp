@@ -1257,32 +1257,34 @@ static void InitSystem(Config& config) {
     g_vector<MemObject*> mems;
     g_vector<PEMemoryInterface*> rawMIs;  // saved before SplitAddrMemory wrapping, for ALU core wiring
     bool cosimMode = config.exists("sys.nodeMap");
-    /* (1.12.277): per-clock-domain phases (zsim.h, pimidPlDev). An offload co-simulation whose device elements run slower
-     * than the host cores (sys.frequency, the global clock, is the host's) gives the device elements
-     * phaseLength x f_dev / f_host of their own cycles per phase. A no-offload run keeps one axis: its replay runs on the
-     * host clock and its device elements do not run (1.12.272). */
+    /* (1.12.277, (1.12.283)): per-clock-domain phases (zsim.h, pimidPlDev). An offload co-simulation whose device elements run
+     * on another clock than the host cores gives the device elements phaseLength x f_dev / f_host of their own cycles per
+     * phase -- fewer on a slower device, more on a faster one -- so a phase is one stretch of time on both. The global
+     * clock is the host's: the host cores advance phaseLength of their cycles per phase and their timing caches' events
+     * are in their cycles, so when sys.frequency is another clock's (a faster device sets it to its own), freqMHz takes
+     * the host's and the host cores' cycles are timed at their own rate, with or without an offload. A no-offload run keeps
+     * one axis: its replay runs on the host clock and its device elements do not run (1.12.272). */
     {
         const uint32_t fDev = zinfo->hierarchy.nocBandwidthFreqMHz, fRef = zinfo->freqMHz;
         const uint32_t fHost = config.get<uint32_t>("sys.mem.hostFreqMHz", fRef);
-        if (cosimMode && getenv("PIMID_COSIM_NO_OFFLOAD") == nullptr && fDev > 0 && fRef > 0 && fDev != fRef
+        if (cosimMode && fHost > 0 && fHost != fRef) {
+            info("[ZSim] co-simulation: sys.frequency (%u MHz) is not the host's clock (%u MHz): the global clock is the "
+                 "host's, so the host cores' cycles are timed at %u MHz [(1.12.283)]", fRef, fHost, fHost);
+            zinfo->freqMHz = fHost;
+        }
+        if (cosimMode && getenv("PIMID_COSIM_NO_OFFLOAD") == nullptr && fDev > 0 && fHost > 0 && fDev != fHost
             && zinfo->phaseLength > 0) {
-            if (fDev > fRef || fHost != fRef) {
-                warn("[ZSim] co-simulation with device clock %u MHz and host clock %u MHz against sys.frequency %u MHz: the "
-                     "per-clock-domain phases need the host on the global clock and a slower device; every core keeps "
-                     "phaseLength of its own cycles per phase [(1.12.277)]", fDev, fHost, fRef);
-            } else {
-                const uint64_t num = (uint64_t)zinfo->phaseLength * fDev;
-                uint64_t pd = (num + fRef / 2) / fRef;
-                if (pd < 1) pd = 1;
-                zinfo->phaseLengthDev = (uint32_t)pd;
-                info("[ZSim] offload co-simulation with two clocks: the device elements (%u MHz) advance %u of their cycles per "
-                     "phase, the host cores (%u MHz) %u, so a phase is one stretch of time on both; host stamps join the device's "
-                     "axis scaled by %u/%u [(1.12.277)]", fDev, (unsigned)pd, fRef, zinfo->phaseLength, (unsigned)pd, zinfo->phaseLength);
-                if (pd * fRef != num)
-                    warn("[ZSim] the device phase (%u cycles) rounds phaseLength x %u / %u = %.3f: the two clocks' phases differ by "
-                         "%.4f %% in time [(1.12.277)]", (unsigned)pd, fDev, fRef, (double)num / fRef,
-                         100.0 * (double)((pd * fRef > num) ? pd * fRef - num : num - pd * fRef) / (double)num);
-            }
+            const uint64_t num = (uint64_t)zinfo->phaseLength * fDev;
+            uint64_t pd = (num + fHost / 2) / fHost;
+            if (pd < 1) pd = 1;
+            zinfo->phaseLengthDev = (uint32_t)pd;
+            info("[ZSim] offload co-simulation with two clocks: the device elements (%u MHz) advance %u of their cycles per "
+                 "phase, the host cores (%u MHz) %u, so a phase is one stretch of time on both; host stamps join the device's "
+                 "axis scaled by %u/%u [(1.12.277)]", fDev, (unsigned)pd, fHost, zinfo->phaseLength, (unsigned)pd, zinfo->phaseLength);
+            if (pd * fHost != num)
+                warn("[ZSim] the device phase (%u cycles) rounds phaseLength x %u / %u = %.3f: the two clocks' phases differ by "
+                     "%.4f %% in time [(1.12.277)]", (unsigned)pd, fDev, fHost, (double)num / fHost,
+                     100.0 * (double)((pd * fHost > num) ? pd * fHost - num : num - pd * fHost) / (double)num);
         }
     }
 

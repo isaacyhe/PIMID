@@ -10463,8 +10463,31 @@ static void synthesizeSystemNodes(UnifiedConfig& config) {
  * - Per-device addr_start / addr_end (4GB-aligned contiguous ranges)
  * - Per-node node_network_id (position in system network topology)
  */
+/* (1.12.283): THE CO-SIMULATION'S DEVICE ELEMENT MODELS. A co-simulation runs a device's elements as device elements --
+ * the offload window, its own clock and phase grid, the device's DRAM axis -- for the alu_core and null_core models
+ * only: the timing core recognises those two as device cores (qemu_zsim_plugin.cpp, device_mask). An in_order_core or
+ * ooo_core device was taken for more host cores: the run had no offload window and was no co-simulation, and nothing
+ * said so. Until those models run as device elements, such a system stops here. The one place this rule lives. */
+static void requireCosimDeviceElementModel(const UnifiedConfig& config) {
+    bool has_host = false;
+    for (const auto& n : config.system_nodes) if (n.role == UnifiedConfig::SystemNode::HOST) has_host = true;
+    if (!has_host) return;   // a device alone: every element model runs (device scope)
+    for (const auto& n : config.system_nodes) {
+        if (n.role != UnifiedConfig::SystemNode::DEVICE || n.device_type != UnifiedConfig::SystemNode::COMPUTE || n.num_pes <= 0)
+            continue;
+        if (n.pe_type.empty() || n.pe_type == "alu_core" || n.pe_type == "null_core") continue;   // alu_core is the default
+        std::cerr << "[config] ERROR: device '" << n.name << "' runs " << n.pe_type << " elements in a co-simulation (a host "
+                     "with a device). This combination is not supported yet: a co-simulation runs alu_core and null_core "
+                     "device elements only, and with " << n.pe_type << " elements the run would have no offload window (the "
+                     "elements would be taken for more host cores, the kernel not on the device). Use pe_type: alu_core, or "
+                     "run the device alone (device scope), where every element model runs." << std::endl;
+        std::exit(1);
+    }
+}
+
 static void normalizeSystemConfig(UnifiedConfig& config) {
     if (config.system_nodes.empty()) return;
+    requireCosimDeviceElementModel(config);   // (1.12.283)
 
     /* 1.12.13: a host needs a device (a memory with PEs). A host
      * alone, or a host with only system.memories[] entries, is a host-only system, whose run is not supported in this build (it needs the multi-host /
@@ -21285,10 +21308,10 @@ static void emitHostMemBlock(std::ostream& out, const UnifiedConfig& config,
         }
         out << "        flushWritebacksToMC = " << (config.pm_flush_writebacks_replayed ? 1 : 0) << ";\n";   // 1.12.18 (bug 7)
         out << "        hostDramReplay = " << (on ? 1 : 0) << ";\n";
+        out << "        hostFreqMHz = " << static_cast<int>(host_freq) << ";\n";   // (1.12.283): replay or not, zsim's global clock (init.cpp)
         if (on) {
             out << "        hostReplayShared = " << (coupled ? 1 : 0) << ";\n";
             out << "        hostPathCycles = " << adder_cycles << ";\n";
-            out << "        hostFreqMHz = " << static_cast<int>(host_freq) << ";\n";
             if (!coupled) {
                 /* the host memory's own part: its DDR5 grade, the default
                  * device width (the decoupled host array's energy population,
@@ -21647,6 +21670,13 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
     if (!cfg.is_open()) return "";
 
     double ref_freq = config.reference_frequency_mhz;
+    /* (1.12.283): the host cores' clock. sys.frequency (ref_freq) is the fastest node's, and zsim's global clock is the
+     * host's (init.cpp). What a host core spends -- the host<->device link's crossings and transfers, the coherence
+     * flush, the kernel launch -- is in its cycles and is converted at this clock; at a faster device's clock it came
+     * out f_dev / f_host times too long. */
+    double host_clk = ref_freq;
+    for (const auto& n : config.system_nodes)
+        if (n.role == UnifiedConfig::SystemNode::HOST && n.frequency_mhz > 0.0) { host_clk = n.frequency_mhz; break; }
     int total_cores = 0;
     for (const auto& n : config.system_nodes) total_cores += n.num_cores;
 
@@ -22150,11 +22180,11 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
         // Pass the DEVICE node's clock so the device memory-bandwidth contention
         // (M/D/1 service rate + bandwidth floor) is clocked at the device freq,
         // NOT sys.frequency (= max = host) -- the host-clock invariance fix.
-        emitZSimHierarchyBlock(cfg, config, sys_device_bw_freq_mhz, ref_freq);
+        emitZSimHierarchyBlock(cfg, config, sys_device_bw_freq_mhz, host_clk);   // (1.12.283): its link cycles are the host's
     } else {
         // No DRAM hierarchy block, but still emit the host<->device offload-link
         // pcie* keys so getPCIeLatency charges the chosen link_type.
-        emitZSimPcieBlock(cfg, config, ref_freq);
+        emitZSimPcieBlock(cfg, config, host_clk);   // (1.12.283): the host's clock
     }
 
     // -- Host<->device TWO-LAYER BRIDGE (1.7.1) --
@@ -22173,7 +22203,7 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
         if (dev_node) {
             BridgeDefaults bd = resolveBridge(config, dev_node->memory_tech);
             config.bridge_present = true;
-            emitZSimBridgeBlock(cfg, bd, ref_freq);
+            emitZSimBridgeBlock(cfg, bd, host_clk);   // (1.12.283): every crossing is charged on a host core
 
             // -- Case-1 COHERENCE flush accounting (1.7.2) --
             // Charged on the host core at roi_begin in co-sim. Writeback BW
@@ -22194,13 +22224,13 @@ static std::string generateSystemConfig(UnifiedConfig& config) {
                 if (host_node2->mem_channels > 0)      hbw.channels = host_node2->mem_channels;
                 wb_bw_gbs = ((double)hbw.per_channel_mbs * (double)hbw.channels) / 1000.0;  // MB/s -> GB/s
             }
-            emitZSimCoherenceBlock(cfg, config, wb_bw_gbs, ref_freq);
+            emitZSimCoherenceBlock(cfg, config, wb_bw_gbs, host_clk);   // (1.12.283): the host's clock
 
             // -- Kernel LAUNCH cost tree (1.7.3, HANDOFF ISSUE 2) --
             // Charged on the host core at the offload doorbell in co-sim. Bridge
             // crossings for the cmd/ack packets are priced by the same `bd`
             // resolved above, so DDR5 vs HBM3 differ only in the bridge component.
-            emitZSimLaunchBlock(cfg, config, bd, ref_freq);
+            emitZSimLaunchBlock(cfg, config, bd, host_clk);   // (1.12.283): the host's clock
         }
     }
 

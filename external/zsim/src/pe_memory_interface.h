@@ -685,7 +685,8 @@ public:
             const uint64_t c = cycle + spDevShift(), o = spOriginOf(srcId);
             return (c > o) ? c - o : 0;
         }
-        return pimidHostToDev(roiRelOf(srcId, wallFreeCycle(srcId, cycle)));   // 1.12.18 (W9); (1.12.277): on the device's axis
+        const uint64_t rel = roiRelOf(srcId, wallFreeCycle(srcId, cycle));   // 1.12.18 (W9)
+        return (co && co->pimidDeviceGrid()) ? rel : pimidHostToDev(rel);   // (1.12.277): a host core on the device's axis; (1.12.283): a device element as it is
     }
 
     // 1.9.0 escape hatch (A/B only). Default thread-MPI pricing is now the
@@ -726,8 +727,14 @@ public:
         return false;
     }
 
+    /* (1.12.283): a device record's phase-mode stamp on the device's grid: phases x the device's phase plus the core's offset
+     * in it (the DRAM replay places it on the device clock); phaseStamp itself stays the network's phase grid */
+    static uint64_t phaseStampDev(uint64_t coreCycle) {
+        const uint64_t pl = pimidPlDev() > 0 ? pimidPlDev() : 10000;
+        return (uint64_t)zinfo->numPhases * pl + (coreCycle % pl);
+    }
     static uint64_t phaseStamp(uint64_t coreCycle) {
-        uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
         // Stamp on numPhases -- THE SAME counter that gates batch claims -- not
         // on globPhaseCycles. glob freezes whenever the scheduler stops ticking
         // (thread leave/park at OMP region boundaries, termination tail) while
@@ -855,7 +862,7 @@ public:
         }
         // 2) Partition pending: stamps <= cut are FINAL (no rank can publish
         //    below its watermark) and get bucketed by phase; the rest wait.
-        uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
         std::map<uint64_t, std::vector<GarnetNetwork::BatchAccess>> buckets;
         std::vector<GarnetNetwork::BatchAccess> keep;
         keep.reserve(sn->pending.size());
@@ -906,7 +913,7 @@ public:
     static uint64_t epochOfAccess(GarnetNetwork* gn, SharedNoc* sn,
                                   uint64_t reqCycle, uint32_t srcId) {
         uint32_t E = gn->detEpochPhases();
-        uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
         uint64_t epochLen = (uint64_t)pl * E;
         if (sn) {
             uint64_t base = zinfo->hierarchy.mpiNocRoiBase;
@@ -1331,7 +1338,7 @@ public:
                              * of epoch k - lag, k the epoch of this access on its
                              * core's ROI-relative clock (lag as thread-MPI's). */
                             const uint32_t E = gn->detEpochPhases();
-                            const uint64_t eL = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * (E > 0 ? E : 1);
+                            const uint64_t eL = (uint64_t)(pimidEpochPl() > 0 ? pimidEpochPl() : 10000) * (E > 0 ? E : 1);
                             const uint64_t k = cutRoiRel(req.srcId, req.cycle) / eL;
                             fe = (k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1;
                         }
@@ -1841,7 +1848,7 @@ protected:
         if (!cutPricing() || !zinfo->hierarchy.mpiNocBaselined) return 0.0;
         const uint32_t E = zinfo->garnetNetwork
             ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
-        const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+        const uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
         const uint64_t epochLen = (uint64_t)pl * (E > 0 ? E : 1);
         uint64_t k, done, lag;
         if (devCutAxis()) {
@@ -2079,7 +2086,7 @@ protected:
             const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145): the replay's own epoch
             uint64_t curEpoch, stamp;
             if (replayCut) {
-                const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+                const uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
                 stamp = cutRoiRel(req.srcId, req.cycle);   // 1.12.18: perCoreRoiRel under thread-MPI
                 if (singleProcCut() && req.srcId < zinfo->numCores && zinfo->cores[req.srcId] && !zinfo->cores[req.srcId]->wakeStampable())
                     clkNoteRec(req.srcId, stamp);   // 1.12.19
@@ -2088,7 +2095,7 @@ protected:
                 uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
                 uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
                 curEpoch = rel / E;
-                stamp = phaseStamp(req.cycle);
+                stamp = phaseStampDev(req.cycle);   // (1.12.283): the device's grid
             }
             const bool isWrite = (req.type == PUTX) || (req.type == GETX && getxIsStore_);
             /* 1.11.98: the TARGET bank -- the unit the address
@@ -2129,7 +2136,7 @@ protected:
             // access reads it. Pre-ROI (not baselined) falls to the base path below.
             uint32_t E = zinfo->garnetNetwork
                 ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
-            uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
             uint64_t epochLen = (uint64_t)pl * (E > 0 ? E : 1);
             uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
             uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
@@ -2295,7 +2302,7 @@ protected:
                     : epochFrozenNocLat(gn, nullptr, cycle, srcId);
             } else if (singleProcCut() && zinfo->hierarchy.mpiNocBaselined) {   // 1.12.18
                 const uint32_t E = gn->detEpochPhases();
-                const uint64_t eL = (uint64_t)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * (E > 0 ? E : 1);
+                const uint64_t eL = (uint64_t)(pimidEpochPl() > 0 ? pimidEpochPl() : 10000) * (E > 0 ? E : 1);
                 const uint64_t k = cutRoiRel(srcId, cycle) / eL;
                 garnetLat = gn->frozenAvgLatency((k >= kNocReadLagEpochs) ? (int64_t)(k - kNocReadLagEpochs) : -1);
             } else {
@@ -3001,7 +3008,7 @@ protected:
             static EpochFrozenScalar cbwCutEpoch;   // (1.12.188): on the cut axis (see cutFrozenScalar)
             uint32_t E = zinfo->garnetNetwork
                 ? zinfo->garnetNetwork->detEpochPhases() : GarnetNetwork::kDefaultDetEpochPhases;
-            uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            uint32_t pl = pimidEpochPl() > 0 ? pimidEpochPl() : 10000;
             uint64_t epochLen = (uint64_t)pl * (E > 0 ? E : 1);
             uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
             uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;

@@ -353,6 +353,10 @@ class Core : public GlobAlloc {
          * OOOCore::syncToWaker; the plugin keeps their stamps apart, and
          * wakeStampable stays the ALU PE's own-timeline flag). */
         virtual bool wakeStampable() const { return false; }
+        /* (1.12.283): this core runs on the device's phase grid (zsim.h, pimidPlDev): the device elements a co-simulation
+         * runs as device elements, the ALU and the Null elements. Its clock joins the device's axis as it is, a host
+         * core's scaled (pimidHostToDev). */
+        virtual bool pimidDeviceGrid() const { return false; }
         virtual uint64_t syncToWaker(uint64_t t) { (void)t; return 0; }
         /* (1.12.188): a PE held by the cut hold (g_peCutHold) for one phase. An in-order / OOO core moves its clock to t,
          * the end of the held phase, booked as waiting (out of the unhalted clock, as syncToWaker): the weave's core

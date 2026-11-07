@@ -50,7 +50,7 @@ void NullCore::initStats(AggregateStat* parentStat) {
 }
 
 uint64_t NullCore::getPhaseCycles() const {
-    return curCycle - zinfo->globPhaseCycles;
+    return curCycle - pimidDevGlob();   // (1.12.283): the device's grid (zsim.h)
 }
 
 void NullCore::bbl(BblInfo* bblInfo) {
@@ -68,8 +68,8 @@ void NullCore::bbl(BblInfo* bblInfo) {
 void NullCore::contextSwitch(int32_t gid) {}
 
 void NullCore::join() {
-    curCycle = MAX(curCycle, zinfo->globPhaseCycles);
-    phaseEndCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
+    curCycle = MAX(curCycle, pimidDevGlob());   // (1.12.283): the device's grid (zsim.h)
+    phaseEndCycle = pimidDevGlob() + pimidPlDev();
 }
 
 //Static class functions: Function pointers and trampolines
@@ -88,8 +88,8 @@ void NullCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     core->bbl(bblInfo);
 
     while (unlikely(core->curCycle > core->phaseEndCycle)) {
-        assert(core->phaseEndCycle == zinfo->globPhaseCycles + zinfo->phaseLength);
-        core->phaseEndCycle += zinfo->phaseLength;
+        assert(core->phaseEndCycle == pimidDevGlob() + pimidPlDev());   // (1.12.283): the device's grid
+        core->phaseEndCycle += pimidPlDev();
 
         uint32_t cid = getCid(tid);
         //NOTE: TakeBarrier may take ownership of the core, and so it will be used by some other thread. If TakeBarrier context-switches us,

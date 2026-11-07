@@ -694,12 +694,16 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
             if (!hostOnly_) stamp = pimidHostToDev(stamp);   // (1.12.277): the shared array's axis is the device's (zsim.h)
             hostPhaseStamps_.fetch_add(1, std::memory_order_relaxed);
         }
-        epoch = stamp / ((uint64_t)pl * E);
+        epoch = stamp / ((uint64_t)(hostOnly_ ? pl : (pimidEpochPl() > 0 ? pimidEpochPl() : 10000)) * E);   // (1.12.283): the device's epoch
     } else {
         const uint64_t bp = zinfo->hierarchy.mpiNocRoiBasePhase;
         const uint64_t rel = (zinfo->numPhases >= bp) ? zinfo->numPhases - bp : 0;
         epoch = rel / E;
-        stamp = PEMemoryInterface::phaseStamp(cycle);
+        {   // (1.12.283): the host's phase-mode stamp, on its own phase grid, then on the device's axis
+            const uint64_t hpl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            stamp = (uint64_t)zinfo->numPhases * hpl + (cycle % hpl);
+        }
+        if (!hostOnly_) stamp = pimidHostToDev(stamp);
     }
     /* (1.12.189): priced first, so the record carries its charge, its core and whether the core waits for it, as at a
      * device interface; the price reads epochs before `epoch`, which this record does not join */
@@ -995,12 +999,13 @@ void DramEpochReplay::armClose(bool fromFinalize) {
         if (zinfo->roiWall.source == 1) {
             std::string why;
             const uint64_t w = phaseWindowCycles(&why);
-            closeTick_ = (uint64_t)((double)(zinfo->roiWall.beginStamp + w) * ticksPerCycle_);
+            const uint64_t b0 = hostOnly_ ? zinfo->roiWall.beginStamp : pimidHostToDev(zinfo->roiWall.beginStamp);   // (1.12.283): the phase clock on this axis
+            closeTick_ = (uint64_t)((double)(b0 + w) * ticksPerCycle_);
             if (w != zinfo->roiWall.cycles())
                 info("[mem] %s: 1.12.18: replay window = the pricing window: run time %lu cycles raised to the busy max %lu (core clock of this replay) [B4]",
                      name_.c_str(), (unsigned long)zinfo->roiWall.cycles(), (unsigned long)w);
         } else if (zinfo->pgres.kernelClosed) {
-            const uint64_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
+            const uint64_t pl = (hostOnly_ ? zinfo->phaseLength : pimidPlDev()) > 0 ? (hostOnly_ ? zinfo->phaseLength : pimidPlDev()) : 10000;   // (1.12.283)
             closeTick_ = (uint64_t)((double)(zinfo->pgres.closePhase * pl) * ticksPerCycle_);
         } else {
             return;
@@ -1484,7 +1489,8 @@ void DramEpochReplay::compNote(uint32_t mi, uint64_t latCyc) {   // mi = a price
     if (!clOn() || !roiMarked_) return;
     if (compBin_.size() < kPriceKinds * (size_t)numMIs_) compBin_.resize(kPriceKinds * (size_t)numMIs_);
     if (mi >= compBin_.size()) return;
-    const double eTicks = (double)epochPhases() * (double)(zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000) * ticksPerCycle_;
+    const uint32_t plAx = hostOnly_ ? zinfo->phaseLength : pimidEpochPl();   // (1.12.283): this instance's epoch
+    const double eTicks = (double)epochPhases() * (double)(plAx > 0 ? plAx : 10000) * ticksPerCycle_;
     const uint64_t bin = (curTick_ > roiTick0_ && eTicks > 0.0) ? (uint64_t)((double)(curTick_ - roiTick0_) / eTicks) : 0;
     CompBin& b = compBin_[mi];
     if (bin != b.bin) {
@@ -2556,7 +2562,7 @@ void DramEpochReplay::markRoi() {
          * stamp, the phase clock plus the opening core's offset. */
         const uint64_t open = (zinfo->roiWall.source == 1 && !zinfo->roiWall.ended && zinfo->roiWall.beginStamp > 0)
                             ? zinfo->roiWall.beginStamp : (uint64_t)zinfo->numPhases * pl;
-        tickTo((uint64_t)((double)open * ticksPerCycle_));
+        tickTo((uint64_t)((double)(hostOnly_ ? open : pimidHostToDev(open)) * ticksPerCycle_));   // (1.12.283): the phase clock on this axis
     }
     closeArmed_ = closeSnapped_ = false; closeTick_ = closeLate_ = pastEndRecs_ = 0;   // 1.12.18: every mode
     hist_.clear();   // 1.12.18 (shift by lag)
