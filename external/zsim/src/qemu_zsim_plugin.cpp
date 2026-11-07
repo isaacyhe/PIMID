@@ -7011,7 +7011,9 @@ static void statCallReturn(unsigned int vcpu, int64_t ret) {
     g_byte_array_free(b, TRUE);
 }
 
+static void guestDeadlineRestore(unsigned int vcpu);   // (1.12.275): with the guest clock, below
 static void syscall_ret_cb(unsigned int vcpu_index, int64_t num, int64_t ret, void* userdata) {
+    guestDeadlineRestore(vcpu_index);   // (1.12.275): a deadline moved onto the host's clock for the call is the guest's again
     statCallReturn(vcpu_index, ret);   // (1.12.157): fixed host-identity fields of a file status
     if (vcpu_index < MAX_VCPUS && vcpuToTid[vcpu_index] < MAX_THREADS)   // (1.12.188): the call has returned (see g_cutInWait)
         g_cutInWait[vcpuToTid[vcpu_index]].store(0, std::memory_order_release);
@@ -7223,10 +7225,148 @@ static bool guestShimOpen(const std::string& path, uint64_t flags, uint64_t mode
     *sysret = fd < 0 ? -errno : fd;
     return true;
 }
+/* (1.12.275): THE GUEST READS SIMULATED TIME.
+ * QEMU passed the guest's clock calls (clock_gettime, gettimeofday, time) to the host, so a program read the host's
+ * real time, a value that differs in every run and on every node. A program whose path follows those values ran
+ * other instructions: CPython reads CLOCK_MONOTONIC about 400 times while it starts, and the instructions it ran
+ * between two reads followed the values, so its ROI began from other cache, row-buffer and replay-controller state
+ * and the same no-offload co-simulation gave another run time on every node and, on some nodes, from run to run
+ * (0.04 % across nodes, 0.02 % run to run). The guest now reads a clock of the simulation, as it reads a fixed-step
+ * time-stamp counter (QEMU patch 0004): a fixed epoch plus the calling thread's core clock (its raw cycles at its
+ * own rate), never earlier than that thread's previous read. CLOCK_REALTIME (and gettimeofday, time) count from
+ * 2026-01-01T00:00:00Z, CLOCK_TAI 37 s later, the monotonic and boot clocks from a fixed 1000 s, the CPU-time clocks
+ * from 0; any other clock is the host's. A wait with an ABSOLUTE deadline on one of these clocks (FUTEX_WAIT_BITSET
+ * and the PI waits, futex_waitv, clock_nanosleep with TIMER_ABSTIME) runs on the host's clock, so for the call its
+ * deadline is moved to the same distance from the host's clock, and the guest's own value is put back when the call
+ * returns. Programs that do not read the clock run as before. */
+static const int64_t kGuestRealtimeEpochSec = 1767225600;   // 2026-01-01T00:00:00Z
+static const int64_t kGuestTaiOffsetSec = 37;
+static const int64_t kGuestMonoBaseSec = 1000;
+static uint64_t g_guestClkLast[MAX_VCPUS];                    // per vCPU thread: its latest simulated nanosecond
+struct GuestDeadline { uint64_t addr = 0; uint8_t orig[16]; };
+static GuestDeadline g_guestDl[MAX_VCPUS];                    // a deadline moved for the running call, put back at its return
+/* the calling thread's simulated time in ns: its core's raw clock at the core's own rate */
+static uint64_t guestSimNs(unsigned int vcpu) {
+    uint64_t ns = 0;
+    const uint32_t tid = vcpu < MAX_VCPUS ? vcpuToTid[vcpu] : (uint32_t)MAX_THREADS;
+    const uint32_t cid = tid < MAX_THREADS ? cids[tid] : (uint32_t)INVALID_CID;
+    if (zinfo && cid < zinfo->numCores && zinfo->cores[cid]) {
+        const uint32_t f = coreFreqMHzFor(tid);
+        if (f) ns = (uint64_t)((unsigned __int128)zinfo->cores[cid]->pimidRawCycle() * 1000u / f);
+    }
+    if (vcpu < MAX_VCPUS) {
+        if (ns < g_guestClkLast[vcpu]) ns = g_guestClkLast[vcpu];
+        g_guestClkLast[vcpu] = ns;
+    }
+    return ns;
+}
+/* the base of a clock the guest reads simulated (ns); false: the host's clock */
+static bool guestClockBase(int64_t clk, int64_t* baseNs) {
+    switch (clk) {
+        case CLOCK_REALTIME: case CLOCK_REALTIME_COARSE: *baseNs = kGuestRealtimeEpochSec * 1000000000ll; return true;
+        case CLOCK_TAI: *baseNs = (kGuestRealtimeEpochSec + kGuestTaiOffsetSec) * 1000000000ll; return true;
+        case CLOCK_MONOTONIC: case CLOCK_MONOTONIC_RAW: case CLOCK_MONOTONIC_COARSE: case CLOCK_BOOTTIME:
+            *baseNs = kGuestMonoBaseSec * 1000000000ll; return true;
+        case CLOCK_PROCESS_CPUTIME_ID: case CLOCK_THREAD_CPUTIME_ID: *baseNs = 0; return true;
+        default: return false;
+    }
+}
+static bool guestWrite64x2(uint64_t addr, int64_t a, int64_t b) {
+    if (!addr) return false;
+    int64_t v[2] = {a, b};
+    GByteArray* g = g_byte_array_new();
+    g_byte_array_append(g, (const guint8*)v, sizeof(v));
+    const bool ok = qemu_plugin_write_memory_vaddr(addr, g);
+    g_byte_array_free(g, TRUE);
+    return ok;
+}
+/* an absolute deadline (struct timespec at ts) on guest clock clk: moved to the host's clock for this call */
+static void guestDeadlineMove(unsigned int vcpu, uint64_t ts, int64_t clk) {
+    int64_t base = 0;
+    if (!ts || vcpu >= MAX_VCPUS || !guestClockBase(clk, &base)) return;
+    GByteArray* g = g_byte_array_new();
+    const bool ok = qemu_plugin_read_memory_vaddr(ts, g, 16) && g->len == 16;
+    int64_t v[2] = {0, 0};
+    if (ok) memcpy(v, g->data, 16);
+    if (ok) memcpy(g_guestDl[vcpu].orig, g->data, 16);
+    g_byte_array_free(g, TRUE);
+    if (!ok || v[0] < 0 || v[1] < 0 || v[1] >= 1000000000ll) return;   // a malformed deadline: the host answers EINVAL
+    struct timespec h;
+    if (clock_gettime((clockid_t)clk, &h) != 0) return;
+    const int64_t nowG = base + (int64_t)g_guestClkLast[vcpu];        // the thread's latest simulated read
+    const int64_t dl = v[0] * 1000000000ll + v[1];
+    const int64_t left = dl > nowG ? dl - nowG : 0;
+    const int64_t hostDl = (int64_t)h.tv_sec * 1000000000ll + h.tv_nsec + left;
+    if (guestWrite64x2(ts, hostDl / 1000000000ll, hostDl % 1000000000ll)) g_guestDl[vcpu].addr = ts;
+}
+/* put back a deadline moved for the call that just returned */
+static void guestDeadlineRestore(unsigned int vcpu) {
+    if (vcpu >= MAX_VCPUS || !g_guestDl[vcpu].addr) return;
+    GByteArray* g = g_byte_array_new();
+    g_byte_array_append(g, g_guestDl[vcpu].orig, 16);
+    qemu_plugin_write_memory_vaddr(g_guestDl[vcpu].addr, g);
+    g_byte_array_free(g, TRUE);
+    g_guestDl[vcpu].addr = 0;
+}
+/* the guest's clock calls; true: answered here (*sysret), false: the host runs the call (a deadline it carries moved) */
+static bool guestClockSyscall(unsigned int vcpu, int64_t num, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
+                              uint64_t a5, int64_t* sysret) {
+    if (num == SYS_clock_gettime) {   // (clockid, tp)
+        int64_t base = 0;
+        if (!guestClockBase((int64_t)(int32_t)a1, &base)) return false;
+        const int64_t t = base + (int64_t)guestSimNs(vcpu);
+        *sysret = guestWrite64x2(a2, t / 1000000000ll, t % 1000000000ll) ? 0 : -EFAULT;
+        return true;
+    }
+    if (num == SYS_gettimeofday) {   // (tv, tz)
+        const int64_t t = kGuestRealtimeEpochSec * 1000000000ll + (int64_t)guestSimNs(vcpu);
+        bool ok = !a1 || guestWrite64x2(a1, t / 1000000000ll, (t % 1000000000ll) / 1000);
+        if (ok && a2) {   // struct timezone: UTC, no DST
+            GByteArray* g = g_byte_array_new(); const int32_t z[2] = {0, 0};
+            g_byte_array_append(g, (const guint8*)z, sizeof(z));
+            ok = qemu_plugin_write_memory_vaddr(a2, g);
+            g_byte_array_free(g, TRUE);
+        }
+        *sysret = ok ? 0 : -EFAULT;
+        return true;
+    }
+    if (num == SYS_time) {   // (tloc)
+        const int64_t s = kGuestRealtimeEpochSec + (int64_t)(guestSimNs(vcpu) / 1000000000ull);
+        if (a1) {
+            GByteArray* g = g_byte_array_new();
+            g_byte_array_append(g, (const guint8*)&s, sizeof(s));
+            const bool ok = qemu_plugin_write_memory_vaddr(a1, g);
+            g_byte_array_free(g, TRUE);
+            if (!ok) { *sysret = -EFAULT; return true; }
+        }
+        *sysret = s;
+        return true;
+    }
+    if (num == SYS_futex && a4) {   // (uaddr, op, val, timeout, ...): the absolute-deadline waits
+        const uint32_t c = (uint32_t)(a2 & 0x7f);
+        const bool rt = (a2 & FUTEX_CLOCK_REALTIME) != 0;
+        if (c == FUTEX_WAIT_BITSET || c == FUTEX_WAIT_REQUEUE_PI || c == 13 /* FUTEX_LOCK_PI2 */)
+            guestDeadlineMove(vcpu, a4, rt ? CLOCK_REALTIME : CLOCK_MONOTONIC);
+        else if (c == FUTEX_LOCK_PI)
+            guestDeadlineMove(vcpu, a4, CLOCK_REALTIME);
+        return false;
+    }
+    if (num == 449 && a4) {   // futex_waitv(waiters, nr, flags, timeout, clockid)
+        guestDeadlineMove(vcpu, a4, (int64_t)(int32_t)a5);
+        return false;
+    }
+    if (num == SYS_clock_nanosleep && (a2 & TIMER_ABSTIME)) {   // (clockid, flags, request, remain)
+        guestDeadlineMove(vcpu, a3, (int64_t)(int32_t)a1);
+        return false;
+    }
+    return false;
+}
 static bool guestCpuSyscallFilter(unsigned int vcpu_index, int64_t num, uint64_t a1, uint64_t a2,
                                   uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
                                   uint64_t a8, int64_t* sysret, void* userdata) {
     (void)vcpu_index; (void)a4; (void)a5; (void)a6; (void)a7; (void)a8; (void)userdata;
+    if (vcpu_index < MAX_VCPUS && !vcpu_is_internal[vcpu_index] && guestClockSyscall(vcpu_index, num, a1, a2, a3, a4, a5, sysret))
+        return true;   // (1.12.275): the guest reads simulated time
     const uint32_t n = g_guestCpus;
     if (!n) return false;
     const uint64_t need = ((uint64_t)n + 63) / 64 * 8;   // the kernel's cpumask size for n processors

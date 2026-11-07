@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.275 -- the guest reads simulated time, so a program that reads the clock no longer runs differently from run to run and from node to node
+
+- **The problem.** QEMU passed the guest's clock calls (`clock_gettime`, `gettimeofday`, `time`) to the host, so a
+  program read the host's real time: a value that differs in every run and on every node. A program whose path follows
+  the values ran other instructions. CPython reads `CLOCK_MONOTONIC` about 400 times while it starts, and the number of
+  instructions it ran between two reads followed the values, so its ROI began from other cache, row-buffer and
+  replay-controller state. A no-offload co-simulation of a CPython program gave another run time on every node and,
+  on some nodes, from run to run (0.04 % across nodes, 0.02 % run to run; its ROI instructions were the same). The
+  time-stamp counter has been fixed since 1.12.157; the clock calls were not.
+- **The fix.** The guest reads a clock of the simulation: a fixed epoch plus the calling thread's core clock (its raw
+  cycles at its own rate), never earlier than that thread's previous read. `CLOCK_REALTIME`, `gettimeofday` and `time`
+  count from 2026-01-01T00:00:00Z, `CLOCK_TAI` 37 s later, the monotonic and boot clocks from 1000 s, the CPU-time
+  clocks from 0; any other clock is the host's. A wait with an absolute deadline on one of these clocks
+  (`FUTEX_WAIT_BITSET` and the priority-inheritance waits, `futex_waitv`, `clock_nanosleep` with `TIMER_ABSTIME`)
+  waits on the host's clock, so for the call its deadline is moved to the same distance from the host's clock, and the
+  guest's own value is put back when the call returns.
+- **Data impact.** A program that reads the clock and follows its value changes, and now repeats. A program that does
+  not read the clock, or reads it without following the value, is unchanged: the benchmark kernels do not read it
+  (PIMID's MPI library reads it only in `MPI_Wtime` and its trace), and their results are identical. What a program
+  reads from files that differ between machines (locale data, name-service configuration, its language's library
+  directories) still reaches it; the container image gives every machine the same files.
+
 ## 1.12.274 -- GDDR6 at bank and bank-group placement keeps tFAW, tRRD_S, the precharge-all timing and the refresh spacing
 
 - **The problem.** At `BANK` and `BANK_GROUP` placement the replayed controller is bank-parallel (1.12.17): it lifts the

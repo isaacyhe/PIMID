@@ -177,6 +177,17 @@ directories. A variable a workload needs from the shell beyond those passed
 goes in `workload.env`. Every run prints the launch it used (`[guest]
 launch: ...`).
 
+**The guest reads simulated time ((1.12.275)).** The guest's `clock_gettime`, `gettimeofday` and `time` are answered by
+PIMID, not by the host: a fixed epoch plus the calling thread's core clock (its raw cycles at its own rate), never
+earlier than that thread's previous read (`CLOCK_REALTIME`, `gettimeofday` and `time` from 2026-01-01T00:00:00Z,
+`CLOCK_TAI` 37 s later, the monotonic and boot clocks from 1000 s, the CPU-time clocks from 0; any other clock is the
+host's). Before, a program that follows the clock's value (CPython reads it about 400 times while it starts) ran
+other instructions in every run. A wait with an absolute deadline on one of these clocks (`FUTEX_WAIT_BITSET` and the
+priority-inheritance waits, `futex_waitv`, `clock_nanosleep` with `TIMER_ABSTIME`) waits on the host's clock: for the
+call its deadline is moved to the same distance from the host's clock, and the guest's value is put back when the
+call returns. Files the guest reads from the machine it runs on (locale data, name-service configuration, a
+language's library directories) are still that machine's; the container image gives every machine the same ones.
+
 **The program's command line and environment are part of its input (since 1.12.125, corrected in 1.12.136).**
 PIMID passes the program path exactly as it was given -- as the guest's `argv[0]` and as the file name QEMU
 records for it -- and the guest's startup reads it, as it reads the other arguments and the guest's environment
