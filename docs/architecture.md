@@ -191,6 +191,22 @@ relative timeout (`poll`, `epoll_wait`, a relative `FUTEX_WAIT`) runs for its le
 guest reads from the machine it runs on (locale data, a language's library directories) are still that machine's;
 the container image gives every machine the same ones.
 
+**A timed wait expires on simulated time ((1.12.284)).** The guest's sleeps and waits with a timeout (`nanosleep`,
+`clock_nanosleep`, `poll`, `ppoll`, `select`, `pselect6`, `epoll_wait`, `epoll_pwait`, `epoll_pwait2`, `semtimedop`, `FUTEX_WAIT`
+and `FUTEX_WAIT_BITSET`) end at the phase that reaches the thread's core clock at the call plus the timeout. The thread
+leaves its core at once. At that phase's end the wait is marked expired and the thread's rejoin is counted like that
+of a woken thread, so it takes its place in that phase before the next turn runs, and its core's clock resumes at the
+deadline (booked as waiting, as a wake; a device element's clock stands still while its thread is out, a host core's
+moves to the phase clock as it rejoins); with every thread out, time moves to
+the earliest deadline, first for that long on the host's clock (a host process may be what the wait waits for), then
+by idle phases. A wake or an event ends the wait as before. An expiring futex wait wakes the other waiters on its word
+too: they see a spurious wake, which futex allows. The timeout stays on the host's clock for a call with a signal mask
+to apply during the wait, for `rt_sigtimedwait`, `recvmmsg`, `io_getevents`, `mq_timedsend`, `mq_timedreceive`, `futex_waitv`
+and the priority-inheritance futex waits, for the timers (`timerfd`, `timer_settime`), for a wait in the message-passing
+transport's comm window (it keeps the core), and before a thread has a core or after the ROI. What a wait waits for can
+still follow the host: an event from a host process, or an fd event from another simulated thread, ends the wait when
+the host delivers it.
+
 **The guest's name-service lookups read PIMID's files ((1.12.280)).** The guest sysroot carries `etc/nsswitch.conf`
 (every database from `files`), `etc/passwd` and `etc/group` (root and the guest's identity, 1000:1000), and QEMU opens
 them from the sysroot, so a user or group lookup (CPython makes one while it starts) is answered by glibc's built-in

@@ -6,6 +6,29 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.284 -- a timed wait expires on simulated time
+
+- **The problem.** The guest reads simulated time (1.12.275), but its timed waits ran on the host's clock: a relative
+  timeout as it stood, an absolute one moved to the same distance from the host's clock. A timed wait between two
+  simulated threads could expire before the simulated wake arrived, or not, by how fast the host ran, and a thread
+  that slept came back at a phase of the host's choosing: such a program ran differently from run to run and from
+  node to node, and a sleep's length in simulated time followed the host.
+- **The fix.** A wait's deadline is kept in phases: the thread's core clock at the call plus the timeout, on its core's
+  phase axis. The thread leaves its core at once, and the wait ends at the phase end that reaches the deadline; its
+  rejoin is counted like that of a woken thread, so it takes its place in that phase before the next turn runs, and
+  its core's clock resumes at the deadline (a device element's clock stands still while its thread is out). With
+  every thread out, time moves to the earliest deadline, first for that long on the host's clock (a host process may
+  be what the wait waits for), then by idle phases. It covers `nanosleep`, `clock_nanosleep`, `poll`, `ppoll`, `select`,
+  `pselect6`, `epoll_wait`, `epoll_pwait`, `epoll_pwait2`, `semtimedop`, `FUTEX_WAIT` and `FUTEX_WAIT_BITSET`. An expiring futex
+  wait wakes the other waiters on its word too, a spurious wake that futex allows. Still on the host's clock: a call
+  with a signal mask to apply during the wait, `rt_sigtimedwait`, `recvmmsg`, `io_getevents`, `mq_timedsend`, `mq_timedreceive`,
+  `futex_waitv`, the priority-inheritance futex waits, the timers (`timerfd`, `timer_settime`), a wait in the
+  message-passing transport's comm window, and a wait before a thread has a core or after the ROI. A wait on a host
+  process, or on an fd event from another simulated thread, still ends when the host delivers the event.
+- **Data impact.** Programs that make such a call with a timeout change, and repeat. Every other program is unchanged:
+  the benchmark kernels make none (the transport's polling sleeps are in its comm window), and their results are
+  identical.
+
 ## 1.12.283 -- every co-simulation with two clocks runs one stretch of time per phase, a faster device and Null device elements included; a co-simulation with in_order_core or ooo_core device elements stops at configuration
 
 - **The problem.** 1.12.277 gave a slower device's elements one host phase's time per phase and left the other cases:

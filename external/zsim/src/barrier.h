@@ -61,6 +61,11 @@ extern std::atomic<uint8_t> g_detCredit[MAX_THREADS];    // per tid: its next jo
 extern uint64_t (*g_detClockOf)(uint32_t cid);           // a core's clock (the global phase axis)
 extern void (*g_detTurnStart)();                         // run by a thread as its turn starts
 extern void (*g_detBeforeLeave)(uint32_t tid);           // run before a thread leaves its core
+/* (1.12.284): the guest's timed waits (qemu_zsim_plugin.cpp, "a timed wait expires on simulated time"): at each phase end, with
+ * schedLock held; the earliest armed deadline phase (0: none); end every armed wait (the program runs free) */
+extern void (*g_twOnPhase)(uint64_t phase);
+extern uint64_t (*g_twEarliest)();
+extern void (*g_twFree)();
 extern bool g_detClockMode;                              // (1.12.126): turns by clock; false = by place in the seeded shuffle
 extern uint64_t g_detShufKey[MAX_THREADS];               // (1.12.126): a core's place in this phase's seeded shuffle
 static inline bool detBefore(uint32_t a, uint32_t b) {   // turn order: earlier clock first, then lower id

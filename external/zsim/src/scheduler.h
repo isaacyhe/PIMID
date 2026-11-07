@@ -536,6 +536,8 @@ class Scheduler : public GlobAlloc, public Callee {
 
             assert(curPhase == zinfo->numPhases); //check they don't skew
 
+            if (g_twOnPhase) g_twOnPhase(curPhase);   // (1.12.284): the guest's timed waits due at this phase
+
             //Wake up all sleeping threads where deadline is met
             if (!sleepQueue.empty()) {
                 ThreadInfo* th = sleepQueue.front();

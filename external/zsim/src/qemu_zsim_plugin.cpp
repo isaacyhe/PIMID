@@ -198,6 +198,7 @@ static uint32_t g_coreOwner[MAX_THREADS];
 static uint64_t g_coreForeignBinds[MAX_THREADS] = {};
 static uint32_t nextTid = 0;
 static const uint64_t kFutexWaitSynthPc = 0x2000 + 202;   // (1.12.76): futex WAIT-class ops (see syscall_cb)
+static const uint64_t kTimedWaitSynthPc = 0x3000;         // (1.12.284): the other timed waits on simulated time (see twArm)
 /* (1.12.76): a new thread's domain is read by its parent at the clone (the guest's
  * own order), not by the new thread when QEMU first runs it. */
 static int g_cloneDomPending[MAX_VCPUS];
@@ -3063,6 +3064,7 @@ static void ensureThreadInit(uint32_t tid) {
 
 static std::atomic<uint32_t> trace_join_count[MAX_THREADS];
 
+static void twSyncApply(uint32_t tid, uint32_t cid);   // (1.12.284): see "a timed wait expires on simulated time"
 static void Join(uint32_t tid) {
     if (pimidPostRoiFree()) { fPtrs[tid] = nopPtrs; return; }   // 1.12.18: after the ROI, run free
     /* trace only each thread's first few joins -- the startup hang window */
@@ -3073,6 +3075,7 @@ static void Join(uint32_t tid) {
     setCid(tid, cid);
     if (unlikely(g_spmPendAny.load(std::memory_order_relaxed))) spmApplyPending(tid);   // (1.12.164)
     wakeSyncApply(tid, cid);   // 1.12.18 (sync to waker)
+    twSyncApply(tid, cid);     // (1.12.284): a timed wait that expired resumes at its deadline
     detTurnBegin(tid, cid);
     if (g_spCut && cid < MAX_THREADS) {   // 1.12.18: awake again -> ACTIVE (after the wake sync)
         uint32_t q = 1;
@@ -7360,7 +7363,8 @@ static bool guestShimOpen(const std::string& path, uint64_t flags, uint64_t mode
  * from 0; any other clock is the host's. A wait with an ABSOLUTE deadline on one of these clocks (FUTEX_WAIT_BITSET
  * and the PI waits, futex_waitv, clock_nanosleep with TIMER_ABSTIME) runs on the host's clock, so for the call its
  * deadline is moved to the same distance from the host's clock, and the guest's own value is put back when the call
- * returns. Programs that do not read the clock run as before. */
+ * returns ((1.12.284): only the waits that do not expire on simulated time, see below). Programs that do not read the clock
+ * run as before. */
 static const int64_t kGuestRealtimeEpochSec = 1767225600;   // 2026-01-01T00:00:00Z
 static const int64_t kGuestTaiOffsetSec = 37;
 static const int64_t kGuestMonoBaseSec = 1000;
@@ -7468,8 +7472,292 @@ static void guestDeadlineRestore(unsigned int vcpu) {
     g_guestDl[vcpu].addr = 0;
 }
 /* the guest's clock calls; true: answered here (*sysret), false: the host runs the call (a deadline it carries moved) */
+/* (1.12.284): A TIMED WAIT EXPIRES ON SIMULATED TIME.
+ * The guest reads simulated time (1.12.275), but its timed waits ran on the host's clock: a relative timeout as it stood, an
+ * absolute one moved to the same distance from the host's clock. A timed wait between two simulated threads could expire
+ * before the simulated signal arrived, or not, by how fast the host ran; and a thread that slept rejoined at a phase of
+ * the host's choosing. As zsim's own virtualization did (a sleep queue on the phase clock), the deadline is now kept in
+ * phases: the thread's core clock at the call plus the timeout, on its core's phase axis. The thread leaves its core at
+ * once (the call cannot be a "fake leave": the phase clock has to move) and the wait ends at the phase end that reaches the
+ * deadline (twOnPhase, schedLock held): it is marked expired and its rejoin is counted like that of a woken thread, so the
+ * next turn waits for it and it takes its place in that phase; its clock resumes at the deadline (twSyncApply). With
+ * every thread out, the scheduler's watchdog moves
+ * time to the earliest deadline. The call itself is served here (the syscall filter), by kind:
+ *   sleep  nanosleep, clock_nanosleep, and poll or select on nothing: waits on a word of its own
+ *   futex  FUTEX_WAIT, FUTEX_WAIT_BITSET: stays queued on the guest's word, without the guest's timeout. A wake finds it
+ *          queued as it finds any waiter. An expiry wakes the word's waiters: the others see a spurious wake, which futex
+ *          allows, and they count as woken
+ *   fd     poll, ppoll, select, pselect6, epoll_wait, epoll_pwait, epoll_pwait2, semtimedop: the host's call, again and again
+ *          with a short timeout, until an event or the expiry (a last call without a timeout takes what is ready then)
+ * What stays on the host's clock: a call with a signal mask to apply for the wait (ppoll, pselect6, epoll_pwait with one),
+ * rt_sigtimedwait, recvmmsg, io_getevents, mq_timed*, futex_waitv and the PI futex waits, and the timers (timerfd,
+ * timer_settime). A wait in the message-passing transport's comm window keeps the core, as before, and a wait before a
+ * thread has a core or after the ROI is the host's too. What a wait waits for can still follow the host: an event from a
+ * host process, or an fd event from another simulated thread, ends the wait when the host delivers it. */
+enum { TW_SLEEP = 1, TW_FUTEX = 2, TW_FD = 3 };
+static const int64_t kTwFdPollNs = 1000000;     // an fd wait looks for its expiry every 1 ms of host time
+static const int64_t kTwFutexBackstopS = 1;     // a queued futex wait comes up for air only as a backstop
+struct TimedWait {
+    uint8_t run = 0;     // armed by this thread's syscall_cb: its filter call serves the wait
+    uint8_t armed = 0;   // under g_twMu: not ended yet
+    uint8_t kind = 0;
+    int priv = 0;        // the futex's FUTEX_PRIVATE_FLAG
+    int64_t num = 0;
+    uint64_t a[6] = {0, 0, 0, 0, 0, 0};
+    uint64_t wakePhase = 0, dNs = 0;
+    uint32_t pl = 0, mhz = 0;
+    uint64_t dlCyc = 0;  // the deadline on the thread's core clock (its clock at the call + the timeout)
+    std::atomic<uint8_t> expired{0};
+    std::atomic<uint32_t> word{1};
+};
+static TimedWait g_tw[MAX_THREADS];
+static std::mutex g_twMu;   // a leaf: taken with schedLock held, never the other way
+static std::atomic<uint32_t> g_twArmedN{0};
+static uint32_t g_twTop = 0;
+static bool g_twEnabled = false;
+static void twExpireLocked(uint64_t phase, bool all) {
+    struct Word { uint64_t a; int priv; int64_t n; };
+    std::vector<Word> words;
+    const bool count = !all && g_detOrder && detActive();
+    for (uint32_t t = 0; t < g_twTop; t++) {
+        TimedWait& w = g_tw[t];
+        if (!w.armed || (!all && w.wakePhase > phase)) continue;
+        w.armed = 0;
+        g_twArmedN.fetch_sub(1);
+        if (count && !g_detCredit[t].exchange(1)) g_detPending.fetch_add(1);
+        w.expired.store(1);
+        if (w.kind == TW_SLEEP) {
+            w.word.store(0);
+            syscall(SYS_futex, (void*)&w.word, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1, nullptr, nullptr, 0);
+        } else if (w.kind == TW_FUTEX) {
+            bool found = false;
+            for (auto& x : words) if (x.a == w.a[0] && x.priv == w.priv) { x.n++; found = true; }
+            if (!found) words.push_back(Word{w.a[0], w.priv, 1});
+        }
+    }
+    for (const auto& x : words) {   // guest_base 0: the guest's address is the host's
+        const long n = syscall(SYS_futex, (void*)(uintptr_t)x.a, FUTEX_WAKE | x.priv, INT_MAX, nullptr, nullptr, 0);
+        if (count && n > x.n) g_detPending.fetch_add(n - x.n);   // the other waiters, woken as by a FUTEX_WAKE
+    }
+}
+static void twOnPhase(uint64_t phase) {
+    if (g_twArmedN.load(std::memory_order_acquire) == 0) return;
+    std::lock_guard<std::mutex> lk(g_twMu);
+    twExpireLocked(phase, false);
+}
+static void twFreeAll() {   // no phase will come (the program runs to its exit after the ROI)
+    if (g_twArmedN.load(std::memory_order_acquire) == 0) return;
+    std::lock_guard<std::mutex> lk(g_twMu);
+    twExpireLocked(0, true);
+}
+/* with every thread out no turn runs to settle the threads that went to sleep (detSettle): the watchdog does it here */
+static void twSettleSleepers() {
+    if (g_detSleepers.load() == 0) return;
+    const uint32_t top = std::min<uint32_t>(g_detSleepTop.load(), MAX_THREADS);
+    for (uint32_t t = 0; t < top; t++)
+        if (g_detSleepWatch[t].load() && detAsleep(t) && g_detSleepWatch[t].exchange(0)) {
+            g_detSleepers.fetch_sub(1);
+            if (g_detCredit[t].exchange(0)) g_detPending.fetch_sub(1);
+        }
+}
+static uint64_t twEarliestPhase() {
+    if (g_twArmedN.load(std::memory_order_acquire) == 0) return 0;
+    twSettleSleepers();
+    std::lock_guard<std::mutex> lk(g_twMu);
+    uint64_t e = 0;
+    for (uint32_t t = 0; t < g_twTop; t++)
+        if (g_tw[t].armed && (e == 0 || g_tw[t].wakePhase < e)) e = g_tw[t].wakePhase;
+    return e;
+}
+static bool twRead64x2(uint64_t p, int64_t* x, int64_t* y) {
+    GByteArray* g = g_byte_array_new();
+    const bool ok = qemu_plugin_read_memory_vaddr(p, g, 16) && g->len == 16;
+    if (ok) { memcpy(x, g->data, 8); memcpy(y, g->data + 8, 8); }
+    g_byte_array_free(g, TRUE);
+    return ok;
+}
+static bool twTimespecNs(uint64_t p, int64_t* ns) {   // a valid struct timespec at p; false: the host answers the call
+    int64_t s = 0, n = 0;
+    if (!p || !twRead64x2(p, &s, &n) || s < 0 || n < 0 || n >= 1000000000ll || s > (INT64_MAX / 1000000000ll - 1)) return false;
+    *ns = s * 1000000000ll + n;
+    return true;
+}
+/* syscall_cb, in the thread's turn, before it leaves its core: a timed wait with a timeout still to run is armed here */
+static bool twArm(unsigned int vcpu, uint32_t tid, uint32_t cid, int64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+                  uint64_t a4, uint64_t a5, uint64_t a6) {
+    if (!g_twEnabled || tid >= MAX_THREADS || cid >= zinfo->numCores || !zinfo->cores[cid]) return false;
+    int64_t d = 0;
+    uint8_t kind = TW_FD;
+    int priv = 0;
+    switch (num) {
+        case 35: kind = TW_SLEEP; if (!twTimespecNs(a1, &d)) return false; break;                 // nanosleep(req, rem)
+        case 230: {                                                                               // clock_nanosleep(clk, flags, req, rem)
+            kind = TW_SLEEP;
+            if (!twTimespecNs(a3, &d)) return false;
+            if (a2 & TIMER_ABSTIME) {
+                int64_t base = 0;
+                if (!guestClockBase((int64_t)(int32_t)a1, &base)) return false;
+                d -= base + (int64_t)guestSimNs(vcpu);
+            }
+            break;
+        }
+        case 7: d = (int64_t)(int32_t)a3 * 1000000ll; if (a2 == 0) kind = TW_SLEEP; break;         // poll(fds, n, ms)
+        case 271: if (a4 || !twTimespecNs(a3, &d)) return false; if (a2 == 0) kind = TW_SLEEP; break;   // ppoll(fds, n, ts, sigmask, size)
+        case 23: {                                                                                // select(n, r, w, e, tv)
+            int64_t s = 0, u = 0;
+            if (!a5 || !twRead64x2(a5, &s, &u) || s < 0 || u < 0 || u >= 1000000) return false;
+            d = s * 1000000000ll + u * 1000;
+            if (!a2 && !a3 && !a4) kind = TW_SLEEP;
+            break;
+        }
+        case 270: {                                                                               // pselect6(n, r, w, e, ts, {sigmask, size})
+            if (!twTimespecNs(a5, &d)) return false;
+            if (a6) { int64_t m = 0, sz = 0; if (!twRead64x2(a6, &m, &sz) || m) return false; }
+            if (!a2 && !a3 && !a4) kind = TW_SLEEP;
+            break;
+        }
+        case 232: d = (int64_t)(int32_t)a4 * 1000000ll; break;                                    // epoll_wait(ep, ev, max, ms)
+        case 281: if (a5) return false; d = (int64_t)(int32_t)a4 * 1000000ll; break;              // epoll_pwait(ep, ev, max, ms, sigmask, size)
+        case 441: if (a5 || !twTimespecNs(a4, &d)) return false; break;                           // epoll_pwait2(ep, ev, max, ts, sigmask, size)
+        case 220: if (!twTimespecNs(a4, &d)) return false; break;                                 // semtimedop(id, sops, n, ts)
+        case 202: {                                                                               // futex(uaddr, op, val, timeout, uaddr2, bitset)
+            const uint32_t c = (uint32_t)(a2 & 0x7f);
+            if ((c != FUTEX_WAIT && c != FUTEX_WAIT_BITSET) || !a1 || !twTimespecNs(a4, &d)) return false;
+            if (*(volatile uint32_t*)(uintptr_t)a1 != (uint32_t)a3) return false;   // EAGAIN at once (guest_base 0)
+            if (c == FUTEX_WAIT_BITSET) {
+                int64_t base = 0;
+                if (!guestClockBase((a2 & FUTEX_CLOCK_REALTIME) ? CLOCK_REALTIME : CLOCK_MONOTONIC, &base)) return false;
+                d -= base + (int64_t)guestSimNs(vcpu);
+            }
+            kind = TW_FUTEX;
+            priv = (int)(a2 & FUTEX_PRIVATE_FLAG);
+            break;
+        }
+        default: return false;
+    }
+    if (d <= 0) return false;   // nothing to wait for (or to wait forever): as before
+    Core* co = zinfo->cores[cid];
+    const uint32_t mhz = coreFreqMHzFor(tid);
+    const uint32_t pl = (pimidClkScaled() && co->wakeStampable()) ? pimidPlDev() : zinfo->phaseLength;
+    if (!mhz || !pl) return false;
+    const unsigned __int128 dc = ((unsigned __int128)d * mhz + 999) / 1000;
+    const unsigned __int128 p = ((unsigned __int128)co->pimidRawCycle() + dc + pl - 1) / pl;
+    TimedWait& w = g_tw[tid];
+    w.kind = kind; w.priv = priv; w.num = num;
+    w.a[0] = a1; w.a[1] = a2; w.a[2] = a3; w.a[3] = a4; w.a[4] = a5; w.a[5] = a6;
+    w.wakePhase = std::max<uint64_t>(zinfo->numPhases + 1, p > (unsigned __int128)UINT64_MAX ? UINT64_MAX : (uint64_t)p);
+    w.dNs = (uint64_t)d; w.pl = pl; w.mhz = mhz;
+    const unsigned __int128 dl = (unsigned __int128)co->pimidRawCycle() + dc;
+    w.dlCyc = dl > (unsigned __int128)UINT64_MAX ? UINT64_MAX : (uint64_t)dl;
+    w.expired.store(0); w.word.store(1);
+    w.run = 1;
+    {
+        std::lock_guard<std::mutex> lk(g_twMu);
+        w.armed = 1;
+        if (tid + 1 > g_twTop) g_twTop = tid + 1;
+        g_twArmedN.fetch_add(1);
+    }
+    static std::atomic<bool> said{false};
+    if (!said.exchange(true))
+        info("[guest] timed waits expire on simulated time: the first at phase %lu, due at phase %lu [(1.12.284)]",
+             (unsigned long)zinfo->numPhases, (unsigned long)w.wakePhase);
+    return true;
+}
+/* what is left of the timeout when a wait ends early, in simulated ns */
+static uint64_t twRemainNs(const TimedWait& w, bool expired) {
+    if (expired || w.wakePhase <= zinfo->numPhases) return 0;
+    const unsigned __int128 r = (unsigned __int128)(w.wakePhase - zinfo->numPhases) * w.pl * 1000 / w.mhz;
+    return r > w.dNs ? w.dNs : (uint64_t)r;
+}
+/* Join, after the wake sync: a thread whose wait expired resumes at its deadline (Core::syncToWaker, booked as waiting
+ * like a wake). A device element's clock is its own timeline and stands still while the thread is out; a host core
+ * re-based to the phase clock on its join is past the deadline already */
+static uint64_t g_twSyncTo[MAX_THREADS];
+static uint32_t g_twSyncMhz[MAX_THREADS];
+static void twSyncApply(uint32_t tid, uint32_t cid) {
+    if (tid >= MAX_THREADS || !g_twSyncTo[tid]) return;
+    const uint64_t t = g_twSyncTo[tid];
+    g_twSyncTo[tid] = 0;
+    if (cid < zinfo->numCores && zinfo->cores[cid] && coreFreqMHzFor(tid) == g_twSyncMhz[tid]) zinfo->cores[cid]->syncToWaker(t);
+}
+static int64_t twFdCall(const TimedWait& w, int64_t ns) {
+    const int ms = ns > 0 ? std::max<int>(1, (int)(ns / 1000000)) : 0;
+    struct timespec ts = {(time_t)(ns / 1000000000ll), (long)(ns % 1000000000ll)};
+    struct timeval tv = {(time_t)(ns / 1000000000ll), (suseconds_t)((ns % 1000000000ll) / 1000)};
+    const uint64_t* a = w.a;
+    long r = -1;
+    switch (w.num) {
+        case 7: r = syscall(SYS_poll, a[0], a[1], ms); break;
+        case 271: r = syscall(SYS_ppoll, a[0], a[1], &ts, nullptr, 0); break;
+        case 23: r = syscall(SYS_select, a[0], a[1], a[2], a[3], &tv); break;
+        case 270: r = syscall(SYS_pselect6, a[0], a[1], a[2], a[3], &ts, nullptr); break;
+        case 232: r = syscall(SYS_epoll_wait, a[0], a[1], a[2], ms); break;
+        case 281: r = syscall(SYS_epoll_pwait, a[0], a[1], a[2], ms, nullptr, 0); break;
+        case 441: r = syscall(441, a[0], a[1], a[2], &ts, nullptr, 0); break;
+        case 220: r = syscall(SYS_semtimedop, a[0], a[1], a[2], &ts); break;
+        default: errno = ENOSYS; break;
+    }
+    return r < 0 ? -(int64_t)errno : (int64_t)r;
+}
+/* the filter: serves the wait twArm armed for this thread */
+static bool twRun(unsigned int vcpu, int64_t* sysret) {
+    const uint32_t t = vcpuToTid[vcpu];
+    if (t >= MAX_THREADS || !g_tw[t].run) return false;
+    TimedWait& w = g_tw[t];
+    w.run = 0;
+    int64_t r = 0;
+    if (w.kind == TW_SLEEP) {
+        while (w.word.load() != 0) {
+            if (syscall(SYS_futex, (void*)&w.word, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 1, nullptr, nullptr, 0) < 0 && errno == EINTR) { r = -EINTR; break; }
+        }
+    } else if (w.kind == TW_FUTEX) {
+        const int op = (int)(w.a[1] & ~(uint64_t)FUTEX_CLOCK_REALTIME);   // a backstop on the monotonic clock, relative or absolute by the op
+        const bool abs = (uint32_t)(w.a[1] & 0x7f) == FUTEX_WAIT_BITSET;
+        r = -ETIMEDOUT;
+        while (!w.expired.load()) {
+            struct timespec ts = {kTwFutexBackstopS, 0};
+            if (abs) { clock_gettime(CLOCK_MONOTONIC, &ts); ts.tv_sec += kTwFutexBackstopS; }
+            const long x = syscall(SYS_futex, (void*)(uintptr_t)w.a[0], op, (uint32_t)w.a[2], &ts, nullptr, (uint32_t)w.a[5]);
+            if (x >= 0) { r = w.expired.load() ? -ETIMEDOUT : 0; break; }
+            if (errno != ETIMEDOUT) { r = -(int64_t)errno; break; }
+        }
+    } else {
+        std::vector<uint8_t> sets[3];
+        const bool sel = (w.num == 23 || w.num == 270);
+        const size_t nb = sel ? (size_t)((uint32_t)w.a[0] + 7) / 8 : 0;
+        if (sel) for (int i = 0; i < 3; i++) if (w.a[i + 1]) { sets[i].resize(nb); memcpy(sets[i].data(), (void*)(uintptr_t)w.a[i + 1], nb); }
+        const int64_t timedOut = (w.num == 220) ? -EAGAIN : 0;
+        for (;;) {
+            const bool last = w.expired.load();
+            r = twFdCall(w, last ? 0 : kTwFdPollNs);
+            if (r != timedOut || last) break;
+            if (sel) for (int i = 0; i < 3; i++) if (w.a[i + 1]) memcpy((void*)(uintptr_t)w.a[i + 1], sets[i].data(), nb);
+        }
+    }
+    bool expired;
+    {
+        std::lock_guard<std::mutex> lk(g_twMu);
+        if (w.armed) { w.armed = 0; g_twArmedN.fetch_sub(1); }
+        expired = w.expired.load() != 0;
+    }
+    if (expired && r != -EINTR) { g_twSyncTo[t] = w.dlCyc; g_twSyncMhz[t] = w.mhz; }   // its rejoin resumes at the deadline
+    const uint64_t rem = twRemainNs(w, expired);
+    if (w.num == 35 || w.num == 230) {   // an interrupted relative sleep reports what is left
+        const uint64_t ra = (w.num == 35) ? w.a[1] : ((w.a[1] & TIMER_ABSTIME) ? 0 : w.a[3]);
+        if (r == -EINTR && ra) guestWrite64x2(ra, (int64_t)(rem / 1000000000ull), (int64_t)(rem % 1000000000ull));
+    } else if (w.num == 271 && w.a[2]) {   // the raw calls write back what is left
+        guestWrite64x2(w.a[2], (int64_t)(rem / 1000000000ull), (int64_t)(rem % 1000000000ull));
+    } else if (w.num == 270 && w.a[4]) {
+        guestWrite64x2(w.a[4], (int64_t)(rem / 1000000000ull), (int64_t)(rem % 1000000000ull));
+    } else if (w.num == 23 && w.a[4]) {
+        guestWrite64x2(w.a[4], (int64_t)(rem / 1000000000ull), (int64_t)((rem % 1000000000ull) / 1000));
+    }
+    *sysret = r;
+    return true;
+}
 static bool guestClockSyscall(unsigned int vcpu, int64_t num, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
                               uint64_t a5, int64_t* sysret) {
+    if (vcpu < MAX_VCPUS && twRun(vcpu, sysret)) return true;   // (1.12.284): armed by this thread's syscall_cb
     if (num == SYS_clock_gettime) {   // (clockid, tp)
         int64_t base = 0;
         if (!guestClockBase((int64_t)(int32_t)a1, &base)) return false;
@@ -7702,6 +7990,8 @@ static void syscall_cb(unsigned int vcpu_index,
         case 271: /* ppoll -- glibc poll() uses this on modern kernels */
         case 281: /* epoll_pwait */
         case 288: /* accept4 */
+        case 220: /* semtimedop (1.12.284) */
+        case 441: /* epoll_pwait2 (1.12.284) */
         case 449: /* futex_waitv -- glibc >= 2.35 pthread waits use this on
                    * kernels >= 5.16. Without a syscallLeave here a guest
                    * thread blocking in it kept its core slot and starved the
@@ -7722,6 +8012,7 @@ static void syscall_cb(unsigned int vcpu_index,
              * Offset by 0x1000 to avoid address 0 (which could confuse
              * the blacklist's unordered_set). */
             uint64_t synth_pc = 0x1000 + (uint64_t)num;
+            const bool tw = twArm(vcpu_index, tid, cid, num, a1, a2, a3, a4, a5, a6);   // (1.12.284): the deadline, read on this core's clock
             /* (1.12.76): a futex wait that will sleep has its own synthetic PC, marked
              * blocking at start-up: it leaves the core at once, as the OS takes a
              * sleeping thread off its CPU. WAIT / WAIT_BITSET / WAIT_REQUEUE_PI
@@ -7736,9 +8027,10 @@ static void syscall_cb(unsigned int vcpu_index,
                 else if ((c7 == 0 || c7 == 9 || c7 == 11) && a1 &&
                          *(volatile uint32_t*)(uintptr_t)a1 == (uint32_t)a3) synth_pc = kFutexWaitSynthPc;
             }
+            if (tw) synth_pc = (g_tw[tid].kind == TW_FUTEX) ? kFutexWaitSynthPc : kTimedWaitSynthPc;   // (1.12.284): leaves the core at once
             if (num == 202) wakeSyncOnFutexEntry(tid, cid, a1, a2, a5);   // 1.12.18 (sync to waker)
             if (g_detOrder) {   // (1.12.123): before a leave, every thread this turn woke, created or moved has joined
-                if (in_roi.load()) {
+                if (in_roi.load() || tw) {   // (1.12.284): a timed wait at any time: its expiry finds it queued
                     detSettle();
                     if (tid < MAX_THREADS && (synth_pc == kFutexWaitSynthPc || num == 449)) {
                         /* the wait leaves the core: pending until the kernel has queued it */
@@ -7756,7 +8048,7 @@ static void syscall_cb(unsigned int vcpu_index,
             /* (1.12.188): for the cut hold's liveness test (mpiCutHold): a wait on another thread, or a call that returns by
              * itself (a futex wake, a write, a timed sleep) */
             if (tid < MAX_THREADS)
-                g_cutInWait[tid].store((synth_pc == kFutexWaitSynthPc || (num != 202 && num != 1 && num != 35 && num != 230)) ? 1 : 0,
+                g_cutInWait[tid].store(((synth_pc == kFutexWaitSynthPc || (num != 202 && num != 1 && num != 35 && num != 230)) && !(tw && g_tw[tid].kind == TW_SLEEP)) ? 1 : 0,
                                        std::memory_order_release);
             zinfo->sched->syscallLeave(procIdx, tid, cid, synth_pc,
                                        (int)num, a1, a2);
@@ -8115,6 +8407,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     if (!getenv("PIMID_MPI_RANK")) {
         zinfo->sched->markBlockingSyscall(procIdx, kFutexWaitSynthPc);   // futex WAIT-class ops
         zinfo->sched->markBlockingSyscall(procIdx, 0x1000 + 449);        // futex_waitv
+        zinfo->sched->markBlockingSyscall(procIdx, kTimedWaitSynthPc);   // (1.12.284): the other timed waits on simulated time
         info("[ZSim] futex waits leave the core at once (futex WAIT-class ops, futex_waitv) [(1.12.76)]");
         /* (1.12.123): fixed thread order. One core runs at a time; the cores take
          * their turns in the order of their clocks (the global phase axis; the
@@ -8127,6 +8420,7 @@ int qemu_plugin_install(qemu_plugin_id_t id,
          * simulated time comes from the model as before; the order in which the
          * threads touch shared state no longer comes from the host. */
         zinfo->sched->setFixedOrder();
+        g_twOnPhase = twOnPhase; g_twEarliest = twEarliestPhase; g_twFree = twFreeAll; g_twEnabled = true;   // (1.12.284)
         g_detTurnStart = []() {
             while (g_termHold && !g_termStatsWritten) usleep(5);   // (1.12.180): the simulation is ending: the statistics are written first
             if (detActive()) detSettle();

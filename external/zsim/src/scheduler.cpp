@@ -31,6 +31,9 @@ std::atomic<uint8_t> g_detCredit[MAX_THREADS];
 uint64_t (*g_detClockOf)(uint32_t cid) = nullptr;
 void (*g_detTurnStart)() = nullptr;
 void (*g_detBeforeLeave)(uint32_t tid) = nullptr;
+void (*g_twOnPhase)(uint64_t phase) = nullptr;   // (1.12.284)
+uint64_t (*g_twEarliest)() = nullptr;
+void (*g_twFree)() = nullptr;
 bool g_detClockMode = true;
 uint64_t g_detShufKey[MAX_THREADS];
 #include "bithacks.h"
@@ -113,6 +116,7 @@ void Scheduler::watchdogThreadFunc() {
 
         const bool term = zinfo->terminationConditionMet;   // (1.12.180): read once (see TakeBarrier in the plugin)
         if (term && pimidPostRoiFree()) {
+            if (g_twFree) g_twFree();   // (1.12.284): no phase will come: the timed waits end
             continue;   // 1.12.18: the program is running to its own exit after the ROI
         }
         if (term) {
@@ -251,6 +255,29 @@ void Scheduler::watchdogThreadFunc() {
                         info("Termination condition met inside watchdog thread loop, exiting");
                         break;
                     }
+                }
+                idlePeriods.inc();
+                multiplier = 0;
+            }
+        }
+
+        /* (1.12.284): every thread is out and a guest timed wait is armed: time moves to its deadline, as for a sleeping
+         * thread above: first for that long on the host's clock (a host process may be what the wait waits for), then by
+         * idle phases. Not while a join is pending: the thread that expired joins before time moves on. */
+        const uint64_t twNext = g_twEarliest ? g_twEarliest() : 0;
+        if (twNext && lastPhase == curPhase && scheduledThreads == outQueue.size() && g_detPending.load() == 0) {
+            const int64_t wakeupCycles = ((int64_t)twNext - (int64_t)curPhase)*zinfo->phaseLength;
+            const int64_t wakeupUsec = (wakeupCycles > 0)? wakeupCycles/zinfo->freqMHz : 0;
+            futex_unlock(&schedLock);
+            TrueSleep(WATCHDOG_INTERVAL_USEC + wakeupUsec);
+            futex_lock(&schedLock);
+            if (lastPhase == curPhase && scheduledThreads == outQueue.size()) {
+                uint64_t n;
+                while ((n = g_twEarliest()) != 0 && curPhase < n && g_detPending.load() == 0) {
+                    idlePhases.inc();
+                    callback();   // the wait expires at its phase (g_twOnPhase)
+                    if (futex_haswaiters(&schedLock)) break;
+                    if (zinfo->terminationConditionMet) break;
                 }
                 idlePeriods.inc();
                 multiplier = 0;
