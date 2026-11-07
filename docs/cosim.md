@@ -461,9 +461,11 @@ their records on that clock. It used to run on the device elements' clock,
 which spread the host's requests over a DRAM timeline f_host / f_dev times too
 long and raised the run time by that factor; a baseline whose host and device
 clocks are equal was not affected (changelog, 1.12.272). An offload
-run keeps the device clock, and its log notes a host clock that differs from
-it: the host's requests then reach the shared array f_host / f_dev times as far
-apart as on the host's own clock.
+run keeps the device clock; when the device elements run slower than the host
+cores, they advance phase length x f_dev / f_host of their own cycles per phase,
+so a phase is the same stretch of time on both sides, and the host's stamps join
+the device's axis scaled by f_dev / f_host: the host's requests reach the shared
+array at their own rate (changelog, (1.12.277)).
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.

@@ -717,7 +717,12 @@ static inline uint64_t roiWallStamp(uint32_t tid) {
     uint64_t off = 0;
     if (tid < MAX_THREADS && thread_initialized[tid]) {
         uint32_t cid = cids[tid];
-        if (cid < zinfo->numCores && zinfo->cores[cid]) off = zinfo->cores[cid]->getCycles() % pl;
+        if (cid < zinfo->numCores && zinfo->cores[cid]) {
+            Core* co = zinfo->cores[cid];
+            /* (1.12.277): a device element's offset in its phase, on the phase clock (zsim.h) */
+            if (pimidClkScaled() && co->wakeStampable()) off = pimidDevToHost(co->getCycles() % pimidPlDev());
+            else off = co->getCycles() % pl;
+        }
     }
     return (uint64_t)zinfo->numPhases * pl + off;
 }
@@ -2236,6 +2241,7 @@ void EndOfPhaseActions() {
             const uint64_t cyc = co->getCycles();
             uint64_t rr = g_cosim_mode ? ((cyc > co->getRoiBaseCycle()) ? cyc - co->getRoiBaseCycle() : 0) : PEMemoryInterface::roiRelOf(c, cyc);
             if (g_spCut) rr = PEMemoryInterface::cutRoiRel(c, co->pimidRawCycle());   // 1.12.18: the records' axis (W9: the raw clock a request carries)
+            else if (g_cosim_mode && !co->wakeStampable()) rr = pimidHostToDev(rr);   // (1.12.277): a host core on the device's axis
             /* (1.12.270): a device PE that has not run since its ROI origin bounds nothing. In a co-simulation its axis
              * starts at the doorbell (spDevShift), so its stopped clock reads the doorbell, not 0, and a PE no thread
              * runs on (a serial kernel's other PEs) held the cut there for the whole ROI. A device run has no shift:
@@ -2302,8 +2308,11 @@ void EndOfPhaseActions() {
         }
         if (foldHostDram) {   // 1.12.18: as above, the host interfaces' epoch length is the same
             const uint32_t E = DramEpochReplay::epochPhases();   // (1.12.145)
+            /* (1.12.277): a host memory replayed on its own (a decoupled host memory) is on the host's axis; one sharing
+             * the device's instance is on the device's */
+            const bool own = zinfo->hostDramReplay != zinfo->dramReplay;
             const uint32_t pl = zinfo->phaseLength > 0 ? zinfo->phaseLength : 10000;
-            zinfo->hostDramReplay->foldByCut(cutDram, (uint64_t)pl * E);
+            zinfo->hostDramReplay->foldByCut((own && cutDram != ~0ull) ? pimidDevToHost(cutDram) : cutDram, (uint64_t)pl * E);
         }
         /* (1.12.189): the accesses the folds settled are reconciled now, while every core is synced
          * (DramEpochReplay::reconcileAtBarrier). An active core takes its balance; so does a sleeping single-process
@@ -2425,9 +2434,14 @@ static void detSettle(int64_t own = 0) {   // wait until every thread this turn 
 static const uint64_t kDetTurnCycles = 1000;
 static uint64_t g_detQ = 0;   // kDetTurnCycles once the fixed order is on
 static uint64_t g_detTurnEnd[MAX_THREADS];
+/* (1.12.277): a device element's turn is the same stretch of time as a host core's (per-clock-domain phases, zsim.h) */
+static inline uint64_t detQFor(const Core* c) {
+    if (!pimidClkScaled() || !c->wakeStampable()) return g_detQ;
+    return std::max<uint64_t>(1, (uint64_t)((unsigned __int128)g_detQ * pimidPlDev() / zinfo->phaseLength));
+}
 static inline void detTurnBegin(uint32_t tid, uint32_t cid) {
     if (g_detQ && tid < MAX_THREADS && cid < zinfo->numCores && zinfo->cores[cid])
-        g_detTurnEnd[tid] = zinfo->cores[cid]->lockClock() + g_detQ;
+        g_detTurnEnd[tid] = zinfo->cores[cid]->lockClock() + detQFor(zinfo->cores[cid]);
 }
 
 uint32_t TakeBarrier(uint32_t tid, uint32_t cid) {
@@ -2823,7 +2837,7 @@ static void dumpTerminationStats() {
                  "%lu of %lu keyed read(s) took an epoch before the lag [1.12.18]",
                  (unsigned long)late, (unsigned long)lateEp, (unsigned long)stale, (unsigned long)reads);
         }
-        zinfo->garnetNetwork->setTotalCycles(zinfo->globPhaseCycles);
+        zinfo->garnetNetwork->setTotalCycles(pimidHostToDev(zinfo->globPhaseCycles));   // (1.12.277): in device cycles
         std::string garnetStatsPath = std::string(zinfo->outputDir) + "/garnet_stats.txt";
         zinfo->garnetNetwork->writeStatsFile(garnetStatsPath.c_str());
         zinfo->garnetNetwork->printStats();
@@ -4161,11 +4175,11 @@ static void insn_exec_cb(unsigned int vcpu_index, void *userdata) {
         const uint32_t cid = cids[tid];
         if (cid < zinfo->numCores && zinfo->cores[cid] && fPtrs[tid].bblPtr != JoinBbl) {
             Core* c = zinfo->cores[cid];
-            if (g_detTurnEnd[tid] == 0) g_detTurnEnd[tid] = c->lockClock() + g_detQ;
+            if (g_detTurnEnd[tid] == 0) g_detTurnEnd[tid] = c->lockClock() + detQFor(c);   // (1.12.277)
             else if (c->lockClock() >= g_detTurnEnd[tid]) {
                 detSettle();   // the threads this turn woke, created or moved join first, so they count below
                 if (zinfo->sched->detOthersToRun()) zinfo->sched->detYield(procIdx, tid, cid);
-                g_detTurnEnd[tid] = c->lockClock() + g_detQ;
+                g_detTurnEnd[tid] = c->lockClock() + detQFor(c);   // (1.12.277)
             }
         }
     }

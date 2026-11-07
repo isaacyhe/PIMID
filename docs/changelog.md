@@ -6,6 +6,32 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.277 -- an offload co-simulation with two clocks runs its host cores and device elements through the same time per phase, so the host's requests reach the shared memory at their own rate
+
+- **The problem.** Every core advanced the phase length of its own cycles per phase. With the device elements on a
+  slower clock than the host cores, a phase therefore took the device f_host / f_dev times as far in time as the host,
+  and the shared DRAM replay (on the device clock) took the host's stamps cycle for cycle. In an offload
+  co-simulation a host program beside the device kernel ran f_dev / f_host as fast as it should, and its requests
+  reached the shared array that much farther apart: a paced host traffic generator next to a 350 MHz device reached
+  0.18 of the bandwidth it asked for (350 / 2,000 = 0.175), and with the device at the host's 2,000 MHz 1.00. Host
+  traffic interfered with the device kernel that much less, and the host's waits, its DRAM counters and the window's
+  host share were measured on the stretched pattern. 1.12.272 fixed the no-offload case, whose device elements do not
+  run; an offload run printed a note.
+- **The fix.** In an offload co-simulation whose device elements run slower than the host cores, the device elements
+  advance phase length x f_dev / f_host of their own cycles per phase (a 10,000-cycle phase: 1,750 cycles of a 350 MHz
+  element, 2,500 of a 500 MHz one, against a 2,000 MHz host), so a phase is the same stretch of time on both sides.
+  The shared DRAM replay stays on the device clock and its epochs keep their length in device cycles, as in a device
+  run; a host stamp, and a host core's clock in the consistent cut, join the device's axis scaled by f_dev / f_host,
+  exactly at every phase boundary. A device element's turn in the fixed thread order is the same stretch of time as a
+  host core's. The log states both phase lengths; a phase length the clocks' ratio does not divide is rounded, with a
+  warning. Runs with one clock, no-offload runs and device runs keep one phase length and are unchanged.
+- **Data impact.** Offload co-simulations whose device clock is slower than the host's change: the host's requests
+  reach the shared array at their own rate (the generator above now reaches 1.00 of its requested bandwidth with the
+  device at 350 MHz), host traffic contends with the device kernel while it runs, and the host's coherence flush
+  before the doorbell drains at its own rate (on one DDR5 channel its writebacks now hold the device's start longer; on
+  HBM3 they no longer spill into the kernel). The device's run time, the host's waits and latencies, and the DRAM
+  counters and energy move with it. Every other run is unchanged.
+
 ## 1.12.276 -- the memory technology's timing rules come from configuration: the part record states them and the run's YAML can override them
 
 - **The problem.** Two rules of the DRAM replay were fixed in the code: whether a technology's channel level is the

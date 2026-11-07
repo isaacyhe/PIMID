@@ -95,6 +95,7 @@ struct GlobSimInfo {
 
     //World-readable
     uint32_t phaseLength;
+    uint32_t phaseLengthDev;   // (1.12.277): the device elements' phase length; 0 = phaseLength (pimidPlDev below)
     uint32_t statsPhaseInterval;
     uint32_t freqMHz;
 
@@ -787,6 +788,30 @@ extern uint64_t procMask;
 extern bool dqDataReadable;   // line addresses are this process's guest addresses (dq_data_stats.h)
 
 extern GlobSimInfo* zinfo;
+
+/* (1.12.277) PER-CLOCK-DOMAIN PHASES. Every core advances a phase's worth of its own cycles per phase. With one clock that
+ * is phaseLength everywhere, and a phase covers the same time on every core. In an offload co-simulation whose device
+ * elements run on another clock than the host cores (sys.frequency, the global clock), phaseLength device cycles last
+ * f_host / f_dev times as long as phaseLength host cycles, so each phase took the device that much further in time
+ * than the host: a host program ran f_dev / f_host as fast as the device kernel beside it, and its requests reached
+ * the shared DRAM that much farther apart. The device elements now advance phaseLengthDev = phaseLength x f_dev / f_host
+ * of their own cycles per phase (init.cpp), so a phase is one stretch of time on both sides. The device's axis is its
+ * elements' own clock: their records' stamps, the consistent cut and the shared DRAM replay (on the device clock in an
+ * offload run); the replay's and the device network's epochs keep their length in device cycles (the phase length x
+ * their phases), as in a device run. A host stamp, and a host core's clock in the cut, join that axis scaled by
+ * phaseLengthDev / phaseLength (pimidHostToDev), exact at every phase boundary; a device element's per-phase rates
+ * divide by phaseLengthDev. Every run with one clock keeps phaseLengthDev 0: every helper below is then the identity and
+ * every result is unchanged. */
+static inline uint32_t pimidPlDev() { return zinfo->phaseLengthDev ? zinfo->phaseLengthDev : zinfo->phaseLength; }
+static inline bool pimidClkScaled() { return zinfo->phaseLengthDev != 0 && zinfo->phaseLengthDev != zinfo->phaseLength; }
+static inline uint64_t pimidHostToDev(uint64_t c) {
+    if (!pimidClkScaled()) return c;
+    return (uint64_t)((unsigned __int128)c * zinfo->phaseLengthDev / zinfo->phaseLength);
+}
+static inline uint64_t pimidDevToHost(uint64_t c) {
+    if (!pimidClkScaled()) return c;
+    return (uint64_t)((unsigned __int128)c * zinfo->phaseLength / zinfo->phaseLengthDev);
+}
 
 //Process-wide functions, defined in zsim.cpp
 uint32_t getCid(uint32_t tid);

@@ -364,7 +364,13 @@ uint32_t DramEpochReplay::addHostInterface(uint64_t hostFreqHz) {
     info("[mem] %s: host memory interface %u joined the replay (%s): host clock %.1f MHz = %.4f DRAM cycles per host cycle; its requests carry source_id 1 and the controller splits their row hits/misses/conflicts and activates [1.12.18]",
          name_.c_str(), mi, hostOnly_ ? "host-only instance" : "the device's instance: the shared array, interfaces after the device's",
          (double)hostFreqHz / 1e6, tpc);
-    if (!hostOnly_ && hostFreqHz != coreFreqHz_)   // (1.12.272): see init.cpp (a no-offload run is replayed on the host clock)
+    if (!hostOnly_ && hostFreqHz != coreFreqHz_ && pimidClkScaled()) {   // (1.12.277): per-clock-domain phases (zsim.h)
+        info("[mem] %s: the host clock (%.1f MHz) differs from this replay's clock (%.1f MHz, the device elements'): the two advance one "
+             "stretch of time per phase (%u device and %u host cycles), and a host record joins the device's axis scaled by the "
+             "clocks' ratio, so host and device requests reach the shared array at their own times [(1.12.277)]",
+             name_.c_str(), (double)hostFreqHz / 1e6, (double)coreFreqHz_ / 1e6, pimidPlDev(), zinfo->phaseLength);
+    }
+    if (!hostOnly_ && hostFreqHz != coreFreqHz_ && !pimidClkScaled())   // (1.12.272): see init.cpp (a no-offload run is replayed on the host clock)
         info("[mem] %s: the host clock (%.1f MHz) differs from this replay's clock (%.1f MHz, the device elements'): a host record is stamped on the host clock and placed "
              "on the replay's, so the host's requests reach the shared array %.3f times as far apart in DRAM time as on the host's own clock (their latencies are still "
              "returned in host cycles); the device's requests are timed on their own clock [(1.12.272)]",
@@ -668,6 +674,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
              * waits for, issued before roi_end and stamped 53 cycles past its clock there, fell outside the window
              * (baseline_DDR5_omp_gemv_16core). */
             if (PEMemoryInterface::singleProcCut()) PEMemoryInterface::clkNoteRec(srcId, stamp);
+            if (!hostOnly_) stamp = pimidHostToDev(stamp);   // (1.12.277): the shared array's axis is the device's (zsim.h)
         } else {
             /* The ROI-relative phase grid: phases since the ROI baseline, plus the core's offset in its phase -- the
              * axis the shared-memory replay stamps host records on. A thread-MPI host core is stamped here: its own
@@ -684,6 +691,7 @@ uint32_t DramEpochReplay::hostAccess(uint32_t mi, uint64_t lineAddr, uint64_t cy
                 off = (now % pl) + (cycle > now ? cycle - now : 0);
             }
             stamp = rel * pl + off;
+            if (!hostOnly_) stamp = pimidHostToDev(stamp);   // (1.12.277): the shared array's axis is the device's (zsim.h)
             hostPhaseStamps_.fetch_add(1, std::memory_order_relaxed);
         }
         epoch = stamp / ((uint64_t)pl * E);

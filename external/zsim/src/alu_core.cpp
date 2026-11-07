@@ -58,7 +58,7 @@ ALUCore::ALUCore(g_string& _name, double _computeFactor, double _accessFactor,
 }
 
 uint64_t ALUCore::getPhaseCycles() const {
-    return curCycle % zinfo->phaseLength;
+    return curCycle % pimidPlDev();   // (1.12.277): the device's phase (zsim.h)
 }
 
 void ALUCore::initStats(AggregateStat* parentStat) {
@@ -192,7 +192,7 @@ void ALUCore::join() {
 }
 
 uint64_t ALUCore::gridPhaseEnd(uint64_t c) {   // 1.12.18 (sync to waker), see alu_core.h
-    const uint64_t pl = zinfo->phaseLength ? zinfo->phaseLength : 1;
+    const uint64_t pl = pimidPlDev() ? pimidPlDev() : 1;   // (1.12.277): the device's phase (zsim.h)
     return (c / pl + 1) * pl;
 }
 
@@ -256,7 +256,7 @@ void ALUCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
 
     // Timing simulation only within phases
     while (core->curCycle > core->phaseEndCycle) {
-        core->phaseEndCycle += zinfo->phaseLength;
+        core->phaseEndCycle += pimidPlDev();   // (1.12.277): the device's phase (zsim.h)
         uint32_t cid = getCid(tid);
 
         // NOTE: TakeBarrier may take ownership of the core, and so it will be used by some other thread.

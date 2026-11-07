@@ -685,7 +685,7 @@ public:
             const uint64_t c = cycle + spDevShift(), o = spOriginOf(srcId);
             return (c > o) ? c - o : 0;
         }
-        return roiRelOf(srcId, wallFreeCycle(srcId, cycle));   // 1.12.18 (W9)
+        return pimidHostToDev(roiRelOf(srcId, wallFreeCycle(srcId, cycle)));   // 1.12.18 (W9); (1.12.277): on the device's axis
     }
 
     // 1.9.0 escape hatch (A/B only). Default thread-MPI pricing is now the
@@ -2164,7 +2164,7 @@ protected:
                     curPhaseAccesses_ = 0;
 
                     double load = smoothedPhaseAccesses_ /
-                                  (zinfo->phaseLength * maxRequestsPerCycle_);
+                                  (pimidPlDev() * maxRequestsPerCycle_)   /* (1.12.277): the device's phase */;
 
                     // TEMP (pre-arXiv) M/D/c stop-gap: numChannels_ independent DRAM
                     // channels serve requests in parallel, so the offered load is
@@ -2806,7 +2806,7 @@ protected:
                 double svcTime = (double)flitsPerPkt;
                 double N = (double)zinfo->hierarchy.nocNumNodes;
                 if (N < 2.0) N = 2.0;
-                double arrivalRate = nocSmoothedRate / (double)zinfo->phaseLength;
+                double arrivalRate = nocSmoothedRate / (double)pimidPlDev()   /* (1.12.277) */;
 
                 // VC HOL-blocking reduction: 1/sqrt(VCs) factor (Dally & Towles)
                 uint32_t vcs = zinfo->hierarchy.nocVcsPerVnet;
@@ -2952,7 +2952,7 @@ protected:
                 cbwAccesses = 0;
 
                 // Aggregate offered rate (lines/cycle across the whole device).
-                double aggArrivalRate = cbwSmoothedRate / (double)zinfo->phaseLength;
+                double aggArrivalRate = cbwSmoothedRate / (double)pimidPlDev()   /* (1.12.277) */;
 
                 // Channel service rate (lines/cycle per channel).
                 //   aggBW [B/s] -> bytes/cycle = aggBW / freqHz ; lines = /lineSize
@@ -3007,7 +3007,7 @@ protected:
 
                 double N = (double)zinfo->hierarchy.nocNumNodes;
                 if (N < 1.0) N = 1.0;
-                double aggRate = curveSmoothedRate / (double)zinfo->phaseLength;
+                double aggRate = curveSmoothedRate / (double)pimidPlDev()   /* (1.12.277) */;
                 double perNodeRate = aggRate / N;
 
                 curvePublishedLat = (uint32_t)(interpCurve(perNodeRate) + 0.5);

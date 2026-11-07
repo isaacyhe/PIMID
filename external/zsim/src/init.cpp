@@ -1255,6 +1255,34 @@ static void InitSystem(Config& config) {
     g_vector<MemObject*> mems;
     g_vector<PEMemoryInterface*> rawMIs;  // saved before SplitAddrMemory wrapping, for ALU core wiring
     bool cosimMode = config.exists("sys.nodeMap");
+    /* (1.12.277): per-clock-domain phases (zsim.h, pimidPlDev). An offload co-simulation whose device elements run slower
+     * than the host cores (sys.frequency, the global clock, is the host's) gives the device elements
+     * phaseLength x f_dev / f_host of their own cycles per phase. A no-offload run keeps one axis: its replay runs on the
+     * host clock and its device elements do not run (1.12.272). */
+    {
+        const uint32_t fDev = zinfo->hierarchy.nocBandwidthFreqMHz, fRef = zinfo->freqMHz;
+        const uint32_t fHost = config.get<uint32_t>("sys.mem.hostFreqMHz", fRef);
+        if (cosimMode && getenv("PIMID_COSIM_NO_OFFLOAD") == nullptr && fDev > 0 && fRef > 0 && fDev != fRef
+            && zinfo->phaseLength > 0) {
+            if (fDev > fRef || fHost != fRef) {
+                warn("[ZSim] co-simulation with device clock %u MHz and host clock %u MHz against sys.frequency %u MHz: the "
+                     "per-clock-domain phases need the host on the global clock and a slower device; every core keeps "
+                     "phaseLength of its own cycles per phase [(1.12.277)]", fDev, fHost, fRef);
+            } else {
+                const uint64_t num = (uint64_t)zinfo->phaseLength * fDev;
+                uint64_t pd = (num + fRef / 2) / fRef;
+                if (pd < 1) pd = 1;
+                zinfo->phaseLengthDev = (uint32_t)pd;
+                info("[ZSim] offload co-simulation with two clocks: the device elements (%u MHz) advance %u of their cycles per "
+                     "phase, the host cores (%u MHz) %u, so a phase is one stretch of time on both; host stamps join the device's "
+                     "axis scaled by %u/%u [(1.12.277)]", fDev, (unsigned)pd, fRef, zinfo->phaseLength, (unsigned)pd, zinfo->phaseLength);
+                if (pd * fRef != num)
+                    warn("[ZSim] the device phase (%u cycles) rounds phaseLength x %u / %u = %.3f: the two clocks' phases differ by "
+                         "%.4f %% in time [(1.12.277)]", (unsigned)pd, fDev, fRef, (double)num / fRef,
+                         100.0 * (double)((pd * fRef > num) ? pd * fRef - num : num - pd * fRef) / (double)num);
+            }
+        }
+    }
 
     if (zinfo->hierarchy.enabled && zinfo->hierarchy.totalMCs > 0) {
         uint32_t mcCount = zinfo->hierarchy.totalMCs;
@@ -2469,6 +2497,7 @@ void SimInit(const char* configFile, const char* outputDir, uint32_t shmid) {
     zinfo->numPhases = 0;
 
     zinfo->phaseLength = config.get<uint32_t>("sim.phaseLength", 10000);
+    zinfo->phaseLengthDev = 0;   // (1.12.277): set in InitSystem for an offload co-simulation with two clocks
     zinfo->statsPhaseInterval = config.get<uint32_t>("sim.statsPhaseInterval", 100);
     zinfo->freqMHz = config.get<uint32_t>("sys.frequency", 2000);
 
