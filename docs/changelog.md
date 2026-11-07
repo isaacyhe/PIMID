@@ -6,6 +6,19 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.278 -- the replay's drain serves every request it was fed, so a backlog at the ROI end is no longer written off as unserved
+
+- **The problem.** At the end of the run the DRAM replay drains what it was fed, bounded so a lost request cannot hang
+  the run. The bound was a fixed 50,000,000 DRAM cycles. A run whose controller ended the ROI far behind its requests
+  (one element on one bank with a random-access kernel ended about 1.9 M requests behind) hit it and wrote the rest
+  off as unserved (the `unserved` statistic, which should be 0): those requests were issued and their read and write
+  energy priced from the interface's count, but they were never served, so their waits never reached the run time,
+  and the replayed counts fell short of the priced ones.
+- **The fix.** The drain stops only when 50,000,000 DRAM cycles pass with no request served, or at a hard cap of 4,096
+  cycles per request held when it starts; a drain past the former bound is logged.
+- **Data impact.** Only runs with a nonzero `unserved` count change: their run time grows by the waits the drain now
+  serves, and their replayed counts meet the priced ones. Every other run is unchanged.
+
 ## 1.12.277 -- an offload co-simulation with two clocks runs its host cores and device elements through the same time per phase, so the host's requests reach the shared memory at their own rate
 
 - **The problem.** Every core advanced the phase length of its own cycles per phase. With the device elements on a

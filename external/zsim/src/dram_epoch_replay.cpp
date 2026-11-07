@@ -2084,11 +2084,27 @@ void DramEpochReplay::finalizeEpoch(uint64_t epoch) {
 }
 
 /* everything fed is served (pre-ROI before the window opens; the tail before
- * the counters are read). Bounded so a lost request cannot hang the run. */
+ * the counters are read). Bounded so a lost request cannot hang the run.
+ * (1.12.278): bounded by PROGRESS, not by a fixed total. The drain used to stop after 50,000,000 DRAM cycles whatever was
+ * left; a run whose controller ended the ROI far behind its requests (one element on one bank, a random-access kernel:
+ * 1.9 M requests behind) wrote the rest off as unserved: issued and priced, never served, their waits never
+ * reconciled into the run time. It now stops only when 50,000,000 DRAM cycles pass with no request served (a lost
+ * request), or at a hard cap far beyond any real backlog (4096 cycles per request still held at the drain's start). */
+static const uint64_t kDrainIdleBound = 50000000ull;
 void DramEpochReplay::drainAll() {
     if (par()) { drainAllPar(); return; }   // (1.12.144)
-    uint64_t guard = 0;
-    while ((outstanding_ > 0 || waitingN_ > 0 || !rel_.empty() || clHeld_ > 0) && guard < 50000000ull) { tickOnce(); guard++; }   // (1.12.189): + released / held
+    auto held = [this]() { return (uint64_t)outstanding_ + (uint64_t)waitingN_ + (uint64_t)rel_.size() + (uint64_t)clHeld_; };
+    const uint64_t held0 = held(), cap = std::max<uint64_t>(kDrainIdleBound, 4096ull * held0);
+    uint64_t guard = 0, idle = 0, last = held0;
+    while (held() > 0 && idle < kDrainIdleBound && guard < cap) {   // (1.12.189): + released / held; (1.12.278): progress bound
+        tickOnce(); guard++;
+        const uint64_t h = held();
+        if (h < last) { last = h; idle = 0; } else idle++;
+    }
+    if (guard > kDrainIdleBound)
+        info("[mem] %s: the drain served a backlog of %lu request(s) over %lu DRAM cycles, past the former fixed bound of %lu "
+             "(their waits are reconciled as any other) [(1.12.278)]", name_.c_str(), (unsigned long)held0, (unsigned long)guard,
+             (unsigned long)kDrainIdleBound);
     if (outstanding_ > 0 || waitingN_ > 0 || !rel_.empty() || clHeld_ > 0) {
         raw_.unserved += outstanding_ + waitingN_ + rel_.size() + clHeld_;
         outstanding_ = 0; waitingN_ = 0; doors_.clear(); inflight_.clear();
@@ -2429,8 +2445,14 @@ void DramEpochReplay::drainAllPar() {
     const uint64_t t0 = curTick_;
     chanBegin();
     std::function<void(Chan&)> f1 = [this, t0](Chan& K) {
-        uint64_t guard = 0;
-        while ((K.outstanding > 0 || K.waitingN > 0) && guard < 50000000ull) { chanTickOnce(K); guard++; }
+        auto held = [&K]() { return (uint64_t)K.outstanding + (uint64_t)K.waitingN; };
+        const uint64_t held0 = held(), cap = std::max<uint64_t>(kDrainIdleBound, 4096ull * held0);   // (1.12.278): progress bound, as drainAll
+        uint64_t guard = 0, idle = 0, last = held0;
+        while (held() > 0 && idle < kDrainIdleBound && guard < cap) {
+            chanTickOnce(K); guard++;
+            const uint64_t h = held();
+            if (h < last) { last = h; idle = 0; } else idle++;
+        }
         K.drained = K.curTick - t0;
     };
     parRun(f1);
