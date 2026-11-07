@@ -6,6 +6,30 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.288 -- an in-order or out-of-order device element in a co-simulation takes any clock
+
+- **The problem.** These elements counted their cycles on the global clock, the host's in a co-simulation: with a
+  device clock other than the host's they would compute at the host's rate, so such a run stopped at configuration
+  (1.12.287). Two more defects sat on this path. A host core synced to a waker or a lock releaser inside the ROI took
+  an origin on the device's axis against its own clock, so with two clocks its records were scaled to the device's
+  axis twice from that sync on (host programs that hand a futex or a lock over inside the ROI). And at a
+  message-passing rank's window close an in-order or out-of-order element's L1 and L2 counters kept counting the
+  post-ROI tail, while its misses from there on were in no memory-interface counter.
+- **The fix.** An in-order or out-of-order device element counts its cycles on the device's clock and advances the
+  device's cycles per phase (the per-clock-domain phases), as a compute unit does. Its join re-bases to the phase start
+  on that clock, and a timed wait's wake phase is on the device's phases. Its caches and memory interfaces produce no
+  timing records, so its recorder keeps no weave events, and a timing record on such an element stops the run. A lock
+  or futex release stays on the global clock of the tables the host cores share, and each side converts at that
+  boundary. A host core adopting a release's ROI-relative clock takes it back to its own clock first. At the window
+  close the element's private cache levels (one bank per element) are taken as they stood, as its activity counters
+  are; a shared level keeps its sum, and the cache contents are not rewound. The configuration no longer stops these
+  runs.
+- **Data impact.** None for compute-unit and null devices, device runs, host baselines, and co-simulations whose host
+  cores take no sync inside the ROI (a scan of the two-clock co-simulation logs found every ROI sync on the device's
+  elements). A two-clock host program that syncs its host cores inside the ROI changes. In-order and out-of-order
+  device elements now run at two clocks; at the host's clock their message-passing co-simulations report lower L1 and
+  L2 counters (the tail is out of them), and a little less cache energy.
+
 ## 1.12.287 -- an in-order or out-of-order device element in a co-simulation runs as a device element, at the host's clock
 
 - **The problem.** A co-simulation whose device runs `in_order_core` or `ooo_core` elements

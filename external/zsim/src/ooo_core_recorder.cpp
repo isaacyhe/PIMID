@@ -120,6 +120,15 @@ OOOCoreRecorder::OOOCoreRecorder(uint32_t _domain, g_string& _name)
 
 
 uint64_t OOOCoreRecorder::notifyJoin(uint64_t curCycle) {
+    if (ownClock) {   // (1.12.288): core_recorder.h
+        if (state == HALTED) {
+            curCycle = pimidHostToDev(zinfo->globPhaseCycles);   // start at the beginning of the phase, on this core's clock
+            assert(lastUnhaltedCycle <= curCycle);
+            totalHaltedCycles += curCycle - lastUnhaltedCycle;
+        }
+        state = RUNNING;
+        return curCycle;
+    }
     if (state == HALTED) {
         assert(!lastEvProduced);
         curCycle = zinfo->globPhaseCycles; //start at beginning of the phase
@@ -192,6 +201,7 @@ void OOOCoreRecorder::addIssueEvent(uint64_t evCycle) {
 void OOOCoreRecorder::notifyLeave(uint64_t curCycle) {
     assert_msg(state == RUNNING, "invalid state = %d on leave", state);
     state = DRAINING;
+    if (ownClock) { ownLeaveCycle = curCycle; return; }   // (1.12.288): core_recorder.h
     assert(lastEvProduced);
     // Cover delay to curCycle
     uint64_t zllCycle = curCycle - gapCycles;
@@ -214,6 +224,7 @@ S& GetPrioQueueContainer(std::priority_queue<T, S, C>& q) {
 }
 
 void OOOCoreRecorder::recordAccess(uint64_t curCycle, uint64_t dispatchCycle, uint64_t respCycle) {
+    if (ownClock) panic("[%s] a timing record on a device element with its own clock: its caches and memory interfaces must not produce weave events (a timing cache in its hierarchy?) [(1.12.288)]", name.c_str());
     assert(eventRecorder.hasRecord());
     TimingRecord tr = eventRecorder.popRecord();
 
@@ -288,6 +299,12 @@ uint64_t OOOCoreRecorder::cSimStart(uint64_t curCycle) {
 
     DEBUG_MSG("[%s] Cycle %ld cSimStart %d", name.c_str(), curCycle, state);
 
+    if (ownClock) {   // (1.12.288): core_recorder.h
+        const uint64_t nextOwn = pimidHostToDev(zinfo->globPhaseCycles + zinfo->phaseLength);
+        if (state == DRAINING && curCycle < nextOwn) curCycle = nextOwn;
+        return curCycle;
+    }
+
     uint64_t nextPhaseCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
 
     uint64_t zllCycle = curCycle - gapCycles;
@@ -315,6 +332,14 @@ uint64_t OOOCoreRecorder::cSimEnd(uint64_t curCycle) {
     if (state == HALTED) return curCycle; //nothing to do
 
     DEBUG_MSG("[%s] Cycle %ld done state %d", name.c_str(), curCycle, state);
+
+    if (ownClock) {   // (1.12.288): core_recorder.h: no contention, no skew; the taper's cycle reached means drained
+        if (state == DRAINING && ownLeaveCycle < pimidHostToDev(zinfo->globPhaseCycles + zinfo->phaseLength)) {
+            lastUnhaltedCycle = ownLeaveCycle;
+            state = HALTED;
+        }
+        return curCycle;
+    }
 
     // Adjust curCycle to account for contention simulation delay
 
@@ -374,7 +399,7 @@ void OOOCoreRecorder::reportIssueEventSimulated(OOOIssueEvent* ev, uint64_t star
 
 //Stats
 uint64_t OOOCoreRecorder::getUnhaltedCycles(uint64_t curCycle) const {
-    uint64_t cycle = MAX(curCycle, zinfo->globPhaseCycles);
+    uint64_t cycle = MAX(curCycle, ownClock ? pimidHostToDev(zinfo->globPhaseCycles) : zinfo->globPhaseCycles);   // (1.12.288)
     uint64_t haltedCycles =  totalHaltedCycles + ((state == HALTED)? (cycle - lastUnhaltedCycle) : 0);
     return cycle - haltedCycles;
 }

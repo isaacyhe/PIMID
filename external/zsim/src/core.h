@@ -361,6 +361,15 @@ class Core : public GlobAlloc {
          * host rule (join re-bases it, the wall-free clock is apart). Its records' axis starts at the doorbell, as a compute
          * unit's (PEMemoryInterface::cutRoiRel). Set once at start-up; false for every other core. */
         bool pimidCacheDevice = false;
+        /* (1.12.288): such an element in a co-simulation with per-clock-domain phases (zsim.h, pimidPlDev) counts its cycles on the
+         * device's clock and advances the device's phase per phase, as a compute unit does; its join re-bases to the phase
+         * start on that clock, and its recorder keeps no weave events (core_recorder.h). lockClock stays on the global axis
+         * of the clock tables shared with the host cores; pimidClkIn takes a value of that axis to this core's clock (the
+         * syncs' argument is on this core's clock, as a compute unit's). Set once at start-up; false for every other core. */
+        bool pimidDevClock = false;
+        virtual void pimidSetDevClock() {}
+        virtual uint64_t pimidClkIn(uint64_t t) const { return t; }
+        virtual uint64_t pimidClkOut(uint64_t c) const { return c; }
         virtual uint64_t syncToWaker(uint64_t t) { (void)t; return 0; }
         /* (1.12.188): a PE held by the cut hold (g_peCutHold) for one phase. An in-order / OOO core moves its clock to t,
          * the end of the held phase, booked as waiting (out of the unhalted clock, as syncToWaker): the weave's core

@@ -88,8 +88,12 @@ class OOOCoreRecorder {
         uint32_t domain;
         g_string name;
 
+        bool ownClock = false;        // (1.12.288): a device element on the device's clock, see core_recorder.h
+        uint64_t ownLeaveCycle = 0;
+
     public:
         OOOCoreRecorder(uint32_t _domain, g_string& _name);
+        void pimidSetOwnClock() { ownClock = true; }
 
         //Methods called in the bound phase
         uint64_t notifyJoin(uint64_t curCycle); //returns th updated curCycle, if it needs updating

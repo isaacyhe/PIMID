@@ -302,7 +302,11 @@ class InOrderCore : public Core {
         /* 1.12.18 (model the lock word), see core.h:
          * the issue cursor (global phase axis), advanced like addDelay. */
         uint32_t lockClockDomain() const override { return 1; }
-        uint64_t lockClock() const override { return curCycle; }
+        uint64_t lockClock() const override { return pimidClkOut(curCycle); }   // (1.12.288): the global axis (core.h, pimidDevClock)
+        uint64_t pimidClkIn(uint64_t t) const override;    // (1.12.288): in_order_core.cpp
+        uint64_t pimidClkOut(uint64_t c) const override;   // (1.12.288)
+        void pimidSetDevClock() override { pimidDevClock = true; cRec.pimidSetOwnClock(); }   // (1.12.288)
+        bool pimidDeviceGrid() const override { return pimidDevClock; }   // (1.12.288): core.h
         uint64_t syncToLock(uint64_t t) override {
             if (t <= curCycle) return 0;
             const uint64_t skip = t - curCycle;

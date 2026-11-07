@@ -657,6 +657,9 @@ public:
         /* (1.12.287): a release's ROI-relative clock (cutRoiRel) is on the records' axis, so a device element's origin leaves the
          * doorbell's shift out: cutRoiRel adds it back */
         if (zinfo->cores[c]->pimidCacheDevice) rel = (rel > spDevShift()) ? rel - spDevShift() : 0;
+        /* (1.12.288): and a host core takes it back to its own clock, which the origin is on; taken as it was, at two clocks its
+         * records were scaled to the device's axis twice from this sync on */
+        else rel = pimidDevToHost(rel);
         /* (1.12.189): signed (stored as its two's complement): a core that waited longer than the releaser has a
          * wall-free clock behind the releaser's ROI-relative clock, and its origin lies past its own clock */
         clkOrigins()[c].store((uint64_t)((int64_t)wf - (int64_t)rel), std::memory_order_relaxed);

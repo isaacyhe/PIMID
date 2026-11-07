@@ -104,6 +104,11 @@ class Stat : public GlobAlloc {
          * the kernel's time. Aggregates forward; Counter and VectorCounter
          * snapshot; everything else (proxies, lambdas) is left alone. */
         virtual void roiRebase() {}
+        /* (1.12.288): one element's private-cache traffic leaves the priced window at its message-passing window close: tailMark
+         * appends the raw values, tailRestore puts them back before the dump. Aggregates forward; Counter, VectorCounter and
+         * RoiZeroProxyStat keep theirs; everything else is left alone. */
+        virtual void tailMark(g_vector<uint64_t>& m) const {}
+        virtual void tailRestore(const g_vector<uint64_t>& m, size_t& i) {}
 
         const char* name() const {
             assert(_name);
@@ -193,6 +198,8 @@ class AggregateStat : public Stat {
         uint32_t curSize() const {
             return _children.size();
         }
+        void tailMark(g_vector<uint64_t>& m) const override { for (Stat* c : _children) c->tailMark(m); }   // (1.12.288)
+        void tailRestore(const g_vector<uint64_t>& m, size_t& i) override { for (Stat* c : _children) c->tailRestore(m, i); }
         void roiRebase() override {
             for (Stat* c : _children) c->roiRebase();
         }
@@ -259,6 +266,8 @@ class Counter : public ScalarStat {
         }
 
         void roiRebase() override { _roiBase = _count; }
+        void tailMark(g_vector<uint64_t>& m) const override { m.push_back(_count); }   // (1.12.288)
+        void tailRestore(const g_vector<uint64_t>& m, size_t& i) override { _count = m[i++]; }
         uint64_t rawCount() const { return _count; }
 
         inline void inc(uint64_t delta) {
@@ -293,6 +302,8 @@ class VectorCounter : public VectorStat {
 
     public:
         VectorCounter() : VectorStat() {}
+        void tailMark(g_vector<uint64_t>& m) const override { for (uint64_t v : _counters) m.push_back(v); }   // (1.12.288)
+        void tailRestore(const g_vector<uint64_t>& m, size_t& i) override { for (uint64_t& v : _counters) v = m[i++]; }
         void roiRebase() override {
             _roiBases.resize(_counters.size());
             for (uint32_t i = 0; i < _counters.size(); i++) _roiBases[i] = _counters[i];
@@ -392,6 +403,8 @@ class RoiZeroProxyStat : public ScalarStat {
             return *_statPtr;
         }
 
+        void tailMark(g_vector<uint64_t>& m) const override { assert(_statPtr); m.push_back(*_statPtr); }   // (1.12.288)
+        void tailRestore(const g_vector<uint64_t>& m, size_t& i) override { assert(_statPtr); *_statPtr = m[i++]; }
         void roiRebase() override {
             assert(_statPtr);
             *_statPtr = 0;

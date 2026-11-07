@@ -645,6 +645,26 @@ static uint64_t g_tailMarker[MAX_THREADS]   = {0};   // PE cycles at close (post
 static uint32_t g_tailDeviceCid[MAX_THREADS];         // PE cid at close
 static bool     g_tailMarked[MAX_THREADS]   = {false};
 static CoreActivityMark g_tailAct[MAX_THREADS];      // (1.12.181): the PE's activity counters at the marker
+/* (1.12.288): a cache-based device element's traffic in the tail is outside the priced window too: what its misses send on is
+ * in no interface counter from the marker on, and the private levels' counters are taken at the marker and reported as
+ * they stood, as its activity is. A level one bank per element of the node holds this element's own; a shared level (fewer
+ * banks) sums the node's elements, and its counters stay as they ran. Counters only: the cache contents are not rewound. */
+static g_vector<uint64_t> g_tailCacheMark[MAX_THREADS];
+static g_vector<Stat*> pimidPrivateCacheStats(uint32_t cid) {
+    g_vector<Stat*> out;
+    for (uint32_t nd = 0; nd < zinfo->nodeMap.numNodes && nd < 16; nd++) {
+        const auto& n = zinfo->nodeMap.nodes[nd];
+        if (n.role == 0 || cid < n.coreStart || cid >= n.coreEnd) continue;
+        const size_t nl = strlen(n.name);
+        for (uint32_t i = 0; i < zinfo->rootStat->size(); i++) {
+            AggregateStat* g = zinfo->rootStat->get(i)->asAggregate();
+            if (!g || strncmp(g->name(), n.name, nl) || g->name()[nl] != '_' || g->size() != n.coreEnd - n.coreStart) continue;
+            AggregateStat* b = g->get(cid - n.coreStart)->asAggregate();
+            if (b && strstr(b->desc(), "ache stats")) out.push_back(b);   // "Cache stats", "Filter cache stats"
+        }
+    }
+    return out;
+}
 
 /* Record a rank's post-ROI tail marker in its own thread context: the device
  * PE cycle count at the instant the window closes for this rank. No locks, no
@@ -661,6 +681,10 @@ static inline void recordTailMarker(uint32_t tid) {
          * (recordProtocolTailStats), and its memory accesses from here on are in none of the interface's ROI
          * counters (pe_memory_interface.h, g_peTailRun). */
         zinfo->cores[cid]->markActivity(g_tailAct[tid]);
+        if (zinfo->cores[cid]->pimidCacheDevice) {   // (1.12.288)
+            g_tailCacheMark[tid].clear();
+            for (Stat* s : pimidPrivateCacheStats(cid)) s->tailMark(g_tailCacheMark[tid]);
+        }
         if (g_cosim_mode) {   // (1.12.225): the arrival is a lower bound of the ROI end; the replays keep the window counters' increments from it
             const uint64_t b = zinfo->cores[cid]->getRoiBaseCycle();
             const uint64_t v = zinfo->cores[cid]->pimidCacheDevice ? PEMemoryInterface::roiRelOf(cid, g_tailMarker[tid])   // (1.12.287): see the cut's rr
@@ -806,6 +830,7 @@ static bool clkStampGet(uint64_t addr, uint64_t& cyc, uint64_t& rel, uint32_t* c
     return true;
 }
 static inline uint64_t clkRelOf(uint32_t cid, uint64_t raw) {   // the ROI-relative clock a domain-1 release carries
+    if (cid < zinfo->numCores && zinfo->cores[cid]) raw = zinfo->cores[cid]->pimidClkIn(raw);   // (1.12.288): lockClock is on the global axis (core.h)
     return (g_spCut && zinfo->hierarchy.mpiNocBaselined) ? PEMemoryInterface::cutRoiRel(cid, raw) : 0;
 }
 static bool wakeStampGet(uint64_t addr, uint64_t& cyc, uint64_t* org = nullptr, uint32_t* cid = nullptr, uint32_t* gen = nullptr) {
@@ -885,7 +910,7 @@ static void wakeSyncApply(uint32_t tid, uint32_t cid) {
             rel = clkRelOf(g_clkSyncCid[tid], t);   // (1.12.206): released before this ROI: on its axis now
         g_clkSyncTo[tid] = 0;
         if (cid < zinfo->numCores && zinfo->cores[cid] && !zinfo->cores[cid]->wakeStampable() && zinfo->cores[cid]->lockClockDomain() == 1) {
-            const uint64_t sk = zinfo->cores[cid]->syncToWaker(t);
+            const uint64_t sk = zinfo->cores[cid]->syncToWaker(zinfo->cores[cid]->pimidClkIn(t));   // (1.12.288): a global-axis release (core.h)
             if (sk) { g_wakeSyncN.fetch_add(1, std::memory_order_relaxed); g_wakeSyncSkip.fetch_add(sk, std::memory_order_relaxed); }
             if (sk && g_spCut && zinfo->hierarchy.mpiNocBaselined) PEMemoryInterface::clkAdoptRel(cid, rel);
         }
@@ -980,7 +1005,7 @@ static inline Core* lockCoreOf(uint32_t tid) {
     return zinfo->cores[cid];
 }
 static void lockSyncApply(Core* c, uint64_t t, uint32_t cid = ~0u, uint64_t org = 0, uint64_t rel = 0) {
-    const uint64_t sk = c->syncToLock(t);
+    const uint64_t sk = c->syncToLock(c->pimidClkIn(t));   // (1.12.288): a global-axis release (core.h)
     if (sk) { g_lockSyncN.fetch_add(1, std::memory_order_relaxed); g_lockSyncSkip.fetch_add(sk, std::memory_order_relaxed); }
     if (sk && g_spCut && cid != ~0u && zinfo->hierarchy.mpiNocBaselined) {
         if (c->lockClockDomain() == 1) PEMemoryInterface::clkAdoptRel(cid, rel);   // 1.12.21: an in-order / OOO acquirer
@@ -2448,7 +2473,7 @@ static uint64_t g_detQ = 0;   // kDetTurnCycles once the fixed order is on
 static uint64_t g_detTurnEnd[MAX_THREADS];
 /* (1.12.277): a device element's turn is the same stretch of time as a host core's (per-clock-domain phases, zsim.h) */
 static inline uint64_t detQFor(const Core* c) {
-    if (!pimidClkScaled() || !c->pimidDeviceGrid()) return g_detQ;   // (1.12.283): every device-grid core
+    if (!pimidClkScaled() || !c->pimidDeviceGrid() || c->pimidDevClock) return g_detQ;   // (1.12.283): every device-grid core
     return std::max<uint64_t>(1, (uint64_t)((unsigned __int128)g_detQ * pimidPlDev() / zinfo->phaseLength));
 }
 static inline void detTurnBegin(uint32_t tid, uint32_t cid) {
@@ -2542,6 +2567,17 @@ static void recordProtocolTailStats() {
         g_mpiProtocolTailCyc[dcid] = tail;   // receipt only (fixed global array), no ledger move
         g_mpiRoiCyc[dcid] = g_tailMarker[tid];   // 1.12.3: the kernel-window receipt = the marker
         zinfo->cores[dcid]->restoreActivity(g_tailAct[tid]);   // (1.12.181): the activity as it stood at the marker
+        if (zinfo->cores[dcid]->pimidCacheDevice) {   // (1.12.288): its private caches' counters too
+            g_vector<uint64_t> now;
+            g_vector<Stat*> st = pimidPrivateCacheStats(dcid);
+            for (Stat* s : st) s->tailMark(now);
+            uint64_t back = 0;
+            for (size_t i = 0; i < now.size() && i < g_tailCacheMark[tid].size(); i++) back += now[i] - g_tailCacheMark[tid][i];
+            size_t at = 0;
+            for (Stat* s : st) s->tailRestore(g_tailCacheMark[tid], at);
+            info("Protocol tail: rank %u PE(cid %u) private-cache counters as at the window close: %lu counted in the tail taken "
+                 "out of them", tid, dcid, (unsigned long)back);
+        }
         info("Protocol tail: rank %u PE(cid %u) post-ROI inter-PE collective tail %lu cyc "
              "(device-resident); kernel window %lu cyc", tid, dcid, (unsigned long)tail,
              (unsigned long)g_tailMarker[tid]);
@@ -7651,7 +7687,7 @@ static bool twArm(unsigned int vcpu, uint32_t tid, uint32_t cid, int64_t num, ui
     if (d <= 0) return false;   // nothing to wait for (or to wait forever): as before
     Core* co = zinfo->cores[cid];
     const uint32_t mhz = coreFreqMHzFor(tid);
-    const uint32_t pl = (pimidClkScaled() && co->wakeStampable()) ? pimidPlDev() : zinfo->phaseLength;
+    const uint32_t pl = (pimidClkScaled() && (co->wakeStampable() || co->pimidDevClock)) ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
     if (!mhz || !pl) return false;
     const unsigned __int128 dc = ((unsigned __int128)d * mhz + 999) / 1000;
     const unsigned __int128 p = ((unsigned __int128)co->pimidRawCycle() + dc + pl - 1) / pl;
@@ -8534,22 +8570,25 @@ int qemu_plugin_install(qemu_plugin_id_t id,
     if (g_cosim_mode) {
         info("[ZSim] Co-sim mode: ROI = offload region (host runs out-of-ROI code, device runs the kernel)");
     }
-    /* (1.12.287): an in-order / out-of-order device element counts its cycles on the global clock (the host's in a
-     * co-simulation), so with a device clock other than the host's it would compute at the host's rate. Its own phase
-     * grid and the clock crossing of its recorder are not built yet: such a run is refused, not run at the wrong rate. */
+    /* (1.12.288): an in-order / out-of-order device element of a co-simulation with two clocks counts its cycles on the device's
+     * clock and advances the device's phase per phase (core.h, pimidDevClock), as a compute unit does. */
     if (g_cosim_mode && !getenv("PIMID_COSIM_NO_OFFLOAD")) {
-        bool anyCache = false;
-        for (uint32_t i = 0; i < zinfo->numCores; i++) if (g_cacheDevice[i]) { anyCache = true; break; }
+        uint32_t nc = 0;
+        for (uint32_t i = 0; i < zinfo->numCores; i++) if (g_cacheDevice[i]) nc++;
         uint32_t fHost = 0, fDev = 0;
         for (uint32_t n = 0; n < zinfo->nodeMap.numNodes && n < 16; n++) {
             if (zinfo->nodeMap.nodes[n].role == 0 && !fHost) fHost = zinfo->nodeMap.nodes[n].freqMHz;
             if (zinfo->nodeMap.nodes[n].role != 0 && !fDev) fDev = zinfo->nodeMap.nodes[n].freqMHz;
         }
-        if (anyCache && fHost && fDev && fHost != fDev)
-            panic("[ZSim] co-simulation with in-order / out-of-order device elements at %u MHz and a host at %u MHz: these "
-                  "elements count cycles on the global (host) clock, so they would compute at %u MHz; run them at the host's "
-                  "clock (system.devices[].frequency_mhz: %u), run alu_core elements, or run the device alone [(1.12.287)]",
-                  fDev, fHost, fHost, fHost);
+        if (nc && pimidClkScaled()) {
+            for (uint32_t i = 0; i < zinfo->numCores; i++) if (g_cacheDevice[i]) zinfo->cores[i]->pimidSetDevClock();
+            info("[ZSim] %u in-order / out-of-order device element(s) count their cycles on the device's clock (%u MHz; the host's "
+                 "is %u MHz): %u of their cycles per phase, no weave events (their caches and memory interfaces produce no timing "
+                 "records) [(1.12.288)]", nc, fDev, fHost, pimidPlDev());
+        } else if (nc && fHost && fDev && fHost != fDev) {
+            panic("[ZSim] co-simulation with in-order / out-of-order device elements at %u MHz and a host at %u MHz without "
+                  "per-clock-domain phases: these elements would compute at the host's rate [(1.12.288)]", fDev, fHost);
+        }
     }
 
     /* Thread-based MPI rank emulation: resolved once, before any guest code

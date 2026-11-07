@@ -66,8 +66,16 @@ class CoreRecorder {
         uint32_t domain;
         g_string name;
 
+        /* (1.12.288): a device element on the device's clock (core.h, pimidDevClock). The weave runs on the global clock, and
+         * this element's caches and memory interfaces produce no timing records, so there is no contention to simulate:
+         * it keeps no events, its zll clock is its clock, and only the HALTED / RUNNING / DRAINING accounting remains, on
+         * its own clock. A timing record in this mode stops the run (recordAccess). */
+        bool ownClock = false;
+        uint64_t ownLeaveCycle = 0;
+
     public:
         CoreRecorder(uint32_t _domain, g_string& _name);
+        void pimidSetOwnClock() { ownClock = true; }
 
         //Methods called in the bound phase
         uint64_t notifyJoin(uint64_t curCycle); //returns th updated curCycle, if it needs updating

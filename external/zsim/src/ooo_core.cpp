@@ -291,7 +291,10 @@ void OOOCore::initStats(AggregateStat* parentStat) {
 }
 
 uint64_t OOOCore::getInstrs() const {return instrs;}
-uint64_t OOOCore::getPhaseCycles() const {return curCycle % zinfo->phaseLength;}
+uint64_t OOOCore::pimidClkIn(uint64_t t) const { return pimidDevClock ? pimidHostToDev(t) : t; }   // (1.12.288), core.h
+uint64_t OOOCore::pimidClkOut(uint64_t c) const { return pimidDevClock ? pimidDevToHost(c) : c; }
+
+uint64_t OOOCore::getPhaseCycles() const {return curCycle % (pimidDevClock ? pimidPlDev() : zinfo->phaseLength);}   // (1.12.288): core.h
 
 void OOOCore::contextSwitch(int32_t gid) {
     if (gid == -1) {
@@ -806,7 +809,8 @@ void OOOCore::join() {
         if (pimidCommParked) insWindow.longAdvance(curCycle, targetCycle);
         else advance(targetCycle);
     }
-    phaseEndCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
+    phaseEndCycle = pimidDevClock ? pimidHostToDev(zinfo->globPhaseCycles) + pimidPlDev()   // (1.12.288): core.h
+                                  : zinfo->globPhaseCycles + zinfo->phaseLength;
     // assert(targetCycle <= phaseEndCycle);
     DEBUG_MSG("[%s] Joined, curCycle %ld phaseEnd %ld", name.c_str(), curCycle, phaseEndCycle);
 }
@@ -825,7 +829,7 @@ void OOOCore::cutHoldWait(uint64_t t) {   /* (1.12.188), see core.h */
 
 void OOOCore::heldPhase() {   /* (1.12.216), see core.h */
     cutHoldWait(phaseEndCycle + 1);
-    phaseEndCycle += zinfo->phaseLength;
+    phaseEndCycle += pimidDevClock ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
 }
 
 uint64_t OOOCore::syncToWaker(uint64_t t) {   /* 1.12.21, see core.h */
@@ -898,7 +902,7 @@ void OOOCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
     core->bbl(bblAddr, bblInfo);
 
     while (core->curCycle > core->phaseEndCycle) {
-        core->phaseEndCycle += zinfo->phaseLength;
+        core->phaseEndCycle += core->pimidDevClock ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
 
         uint32_t cid = getCid(tid);
         // NOTE: TakeBarrier may take ownership of the core, and so it will be used by some other thread. If TakeBarrier context-switches us,
@@ -913,7 +917,7 @@ void OOOCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
         /* (1.12.188): held by the cut hold (core.h): the next barrier without running, the clock frozen */
         while (cid < MAX_THREADS && g_peCutHold[cid].load(std::memory_order_acquire)) {
             core->cutHoldWait(core->phaseEndCycle + 1);   // the held phase (past its end, as the loop above), booked as waiting (core.h)
-            core->phaseEndCycle += zinfo->phaseLength;
+            core->phaseEndCycle += core->pimidDevClock ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
             newCid = TakeBarrier(tid, cid);
             if (newCid != cid) break;
         }

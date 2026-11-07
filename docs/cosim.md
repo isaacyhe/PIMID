@@ -50,8 +50,7 @@ added around that same region.
   `ooo_core` elements run as device elements too ((1.12.287)): the device node's cores, whatever
   their model, run the offloaded kernel, and a cache-based element's caches drain to its home
   memory interface through the device network, as in a device run. They count cycles on the
-  global clock, so their co-simulation needs the device at the host's clock; a run with two
-  clocks is refused (compute-unit elements take any clock).
+  device's clock, as compute units do, at any device and host clocks ((1.12.288)).
 - **Two fabrics, one bridge.** The device-internal H-tree (JEDEC-based) and
   the host crossbar are separate; the host<->device **bridge** joins them and
   carries only boundary traffic (launch cmd/ack, coherence flush, Case-2 DMA).
@@ -474,9 +473,11 @@ scaled by f_dev / f_host: the host's requests reach the shared array at their ow
 rate (changelog, 1.12.277). The global clock is the host's (it replaces
 sys.frequency when a faster device set that), what a host core spends is converted
 at the host's clock, and the device's epochs span at least one device phase. A
-co-simulation runs alu_core and null_core device elements at any clock, and
-in_order_core and ooo_core device elements at the host's clock ((1.12.287)); one whose
-device runs those at another clock stops at configuration.
+co-simulation runs alu_core, null_core, in_order_core and ooo_core device
+elements at any clock. In-order and out-of-order elements advance the device's
+cycles per phase on the device's clock ((1.12.288)); their caches and memory interfaces
+produce no timing records, so they keep no weave events, and a lock or a futex
+handed between a host core and such an element crosses on the global clock.
 This yields the host-only baseline cells (1/4/16 OoO host cores). See
 [examples.md](examples.md) for the `baseline_host_{1,4,16}core.yaml` configs
 and [benchmarks.md](benchmarks.md) for the experiment shape.

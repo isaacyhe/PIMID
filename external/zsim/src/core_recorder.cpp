@@ -72,6 +72,15 @@ static bool joinqDbg() { static int v = getenv("PIMID_DEBUG_JOINQ") ? 1 : 0; ret
 uint64_t CoreRecorder::notifyJoin(uint64_t curCycle) {
     if (joinqDbg()) fprintf(stderr, "[JOINQ %s] notifyJoin in curCycle=%lu state=%d gpc=%lu lastUnhalted=%lu prevRespCycle(pre)=%lu\n",
         name.c_str(), (unsigned long)curCycle, state, (unsigned long)zinfo->globPhaseCycles, (unsigned long)lastUnhaltedCycle, (unsigned long)prevRespCycle);
+    if (ownClock) {   // (1.12.288): core_recorder.h
+        if (state == HALTED) {
+            curCycle = pimidHostToDev(zinfo->globPhaseCycles);   // start at the beginning of the phase, on this core's clock
+            assert(lastUnhaltedCycle <= curCycle);
+            totalHaltedCycles += curCycle - lastUnhaltedCycle;
+        }
+        state = RUNNING;
+        return curCycle;
+    }
     if (state == HALTED) {
         assert(!prevRespEvent);
         curCycle = zinfo->globPhaseCycles; //start at beginning of the phase
@@ -106,6 +115,7 @@ void CoreRecorder::notifyLeave(uint64_t curCycle) {
         name.c_str(), (unsigned long)curCycle, (unsigned long)prevRespCycle, (unsigned long)zinfo->globPhaseCycles);
     assert(state == RUNNING);
     state = DRAINING;
+    if (ownClock) { ownLeaveCycle = curCycle; return; }   // (1.12.288): core_recorder.h
     assert(prevRespEvent);
     //Taper off the event
     // Cover delay to curCycle
@@ -138,6 +148,7 @@ void CoreRecorder::notifyLeave(uint64_t curCycle) {
 }
 
 void CoreRecorder::recordAccess(uint64_t startCycle) {
+    if (ownClock) panic("[%s] a timing record on a device element with its own clock: its caches and memory interfaces must not produce weave events (a timing cache in its hierarchy?) [(1.12.288)]", name.c_str());
     assert(eventRecorder.hasRecord());
     TimingRecord tr = eventRecorder.popRecord();
     TimingEvent* origPrevResp = prevRespEvent;
@@ -183,6 +194,12 @@ uint64_t CoreRecorder::cSimStart(uint64_t curCycle) {
 
     DEBUG_MSG("[%s] Cycle %ld cSimStart %d", name.c_str(), curCycle, state);
 
+    if (ownClock) {   // (1.12.288): core_recorder.h
+        const uint64_t nextOwn = pimidHostToDev(zinfo->globPhaseCycles + zinfo->phaseLength);
+        if (state == DRAINING && curCycle < nextOwn) curCycle = nextOwn;
+        return curCycle;
+    }
+
     uint64_t nextPhaseCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
 
     // If needed, bring us to the current cycle
@@ -214,6 +231,14 @@ uint64_t CoreRecorder::cSimEnd(uint64_t curCycle) {
     if (state == HALTED) return curCycle; //nothing to do
 
     DEBUG_MSG("[%s] Cycle %ld done state %d", name.c_str(), curCycle, state);
+
+    if (ownClock) {   // (1.12.288): core_recorder.h: no contention, no skew; the taper's cycle reached means drained
+        if (state == DRAINING && ownLeaveCycle < pimidHostToDev(zinfo->globPhaseCycles + zinfo->phaseLength)) {
+            lastUnhaltedCycle = ownLeaveCycle;
+            state = HALTED;
+        }
+        return curCycle;
+    }
 
     // Adjust curCycle to account for contention simulation delay
 
@@ -264,7 +289,7 @@ void CoreRecorder::reportEventSimulated(TimingCoreEvent* ev) {
 
 //Stats
 uint64_t CoreRecorder::getUnhaltedCycles(uint64_t curCycle) const {
-    uint64_t cycle = MAX(curCycle, zinfo->globPhaseCycles);
+    uint64_t cycle = MAX(curCycle, ownClock ? pimidHostToDev(zinfo->globPhaseCycles) : zinfo->globPhaseCycles);   // (1.12.288)
     uint64_t haltedCycles =  totalHaltedCycles + ((state == HALTED)? (cycle - lastUnhaltedCycle) : 0);
     return cycle - haltedCycles;
 }

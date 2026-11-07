@@ -107,8 +107,11 @@ InOrderCore::InOrderCore(FilterCache* _l1i, FilterCache* _l1d, uint32_t _domain,
     directResteerPend = false; directBranches = btbMisses = 0; branchTarget = 0;   // 1.11.98
 }
 
+uint64_t InOrderCore::pimidClkIn(uint64_t t) const { return pimidDevClock ? pimidHostToDev(t) : t; }   // (1.12.288), core.h
+uint64_t InOrderCore::pimidClkOut(uint64_t c) const { return pimidDevClock ? pimidDevToHost(c) : c; }
+
 uint64_t InOrderCore::getPhaseCycles() const {
-    return curCycle % zinfo->phaseLength;
+    return curCycle % (pimidDevClock ? pimidPlDev() : zinfo->phaseLength);   // (1.12.288): core.h
 }
 
 void InOrderCore::initStats(AggregateStat* parentStat) {
@@ -274,7 +277,8 @@ void InOrderCore::join() {
     DEBUG_MSG("[%s] Joining, curCycle %ld phaseEnd %ld", name.c_str(), curCycle, phaseEndCycle);
     drainPipeline();  // scheduler boundary: outstanding completions charge here
     curCycle = cRec.notifyJoin(curCycle);
-    phaseEndCycle = zinfo->globPhaseCycles + zinfo->phaseLength;
+    phaseEndCycle = pimidDevClock ? pimidHostToDev(zinfo->globPhaseCycles) + pimidPlDev()   // (1.12.288): core.h
+                                  : zinfo->globPhaseCycles + zinfo->phaseLength;
     DEBUG_MSG("[%s] Joined, curCycle %ld phaseEnd %ld", name.c_str(), curCycle, phaseEndCycle);
 }
 
@@ -602,7 +606,7 @@ void InOrderCore::bblAndRecord(Address bblAddr, BblInfo* bblInfo) {
 
 void InOrderCore::heldPhase() {   /* (1.12.216), see core.h */
     cutHoldWait(phaseEndCycle + 1);
-    phaseEndCycle += zinfo->phaseLength;
+    phaseEndCycle += pimidDevClock ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
 }
 
 InstrFuncPtrs InOrderCore::GetFuncPtrs() {
@@ -622,14 +626,14 @@ void InOrderCore::BblAndRecordFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblIn
     core->bblAndRecord(bblAddr, bblInfo);
 
     while (core->curCycle > core->phaseEndCycle) {
-        core->phaseEndCycle += zinfo->phaseLength;
+        core->phaseEndCycle += core->pimidDevClock ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
         uint32_t cid = getCid(tid);
         uint32_t newCid = TakeBarrier(tid, cid);
         if (newCid != cid) break; /*context-switch*/
         /* (1.12.188): held by the cut hold (core.h): the next barrier without running, the clock frozen */
         while (cid < MAX_THREADS && g_peCutHold[cid].load(std::memory_order_acquire)) {
             core->cutHoldWait(core->phaseEndCycle + 1);   // the held phase (past its end, as the loop above), booked as waiting (core.h)
-            core->phaseEndCycle += zinfo->phaseLength;
+            core->phaseEndCycle += core->pimidDevClock ? pimidPlDev() : zinfo->phaseLength;   // (1.12.288): core.h
             newCid = TakeBarrier(tid, cid);
             if (newCid != cid) break;
         }
