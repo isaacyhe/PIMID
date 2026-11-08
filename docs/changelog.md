@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.297 -- a core's local clock nets above 32 nm take the measured 32 nm wire scaled by CACTI's node trend
+
+- **The problem.** The local clock nets of a core are priced at measured silicon wire capacitance at 22 and 32 nm
+  (0.169 and 0.2 fF/um, log-log between), but above 32 nm they fell back to CACTI's own local wire, which carries a
+  worst-case Miller factor and reads 1.23x the silicon value at 32 nm: the clock nets stepped up between 32 and 33 nm,
+  and only a debug run said so.
+- **The root cause.** No silicon value is published above 32 nm, and the fallback switched model instead of scaling
+  the measured one.
+- **The fix.** A node above 32 nm (to 90 nm) takes the 32 nm silicon value x CACTI's local-wire capacitance ratio
+  C(N) / C(32 nm), CACTI's node trend with its Miller factor cancelling in the ratio, and the run prints one
+  `[mcpat clock] a core's local clock nets at N nm` line with the factor (extrapolated). The 32 nm tables are read once
+  per projection and the run's tables are restored exactly. 22 and 32 nm, and the nodes between them, are unchanged.
+- **Data impact.** Every run at 22 to 32 nm is unchanged, bit for bit (smoke runs at 22, 28 and 32 nm, device and
+  co-simulation: System Total, run time and the full log at 22 nm). Above 32 nm the core clock nets fall slightly
+  (GEMV, 16 elements): HBM3 logic die 45 nm 4.982 to 4.979 W (`logic.pe_cores` -0.4 %), 65 nm 5.868 to 5.863 W,
+  90 nm 6.202 to 6.194 W; SRAM at 45 nm 3.810 to 3.807 W, at 90 nm 4.351 to 4.342 W. Run times and areas are
+  unchanged.
+
 ## 1.12.296 -- a run at a node other than 22 nm names the terms it holds at every node
 
 - **The problem.** At a node other than 22 nm several priced terms keep the same value as at 22 nm, and the run did not

@@ -34,6 +34,7 @@
 #include <vector>      /* PIMID 1.12.18: guard lists */
 #include <algorithm>
 #include <set>       /* PIMID (1.12.31): print each published register once */
+#include <map>       /* PIMID (1.12.297): the 32 nm local-wire capacitance, once per projection */
 #include "wire.h"   /* PIMID 1.12.18: ClockNetwork prices its tree with CACTI wires */
 void init_tech_params(double tech, bool is_tag);   /* PIMID 1.12.18: cacti/technology.cc (Ucache.h) */
 
@@ -958,8 +959,12 @@ double ClockNetwork::leaf_cluster_sinks = 30.0;   /* PIMID (1.12.30, F2): power.
  * Technology Featuring 2nd-Generation High-k + Metal-Gate Transistors ...", IEDM 2008, Fig. 13a). 22 nm: 0.169
  * fF/um, derived: the same layer family with "13-18% lower capacitance than 32nm" (Auth et al., "A 22nm
  * High-Performance and Low-Power CMOS Technology Featuring Fully-Depleted Tri-Gate Transistors ...", VLSI 2012),
- * the midpoint 15.5%. A node between the two is interpolated log-log. Other nodes: no published value
- * FOUND here; the CACTI local wire is kept and said so. Silicon comb structures are measured with the neighbours
+ * the midpoint 15.5%. A node between the two is interpolated log-log. PIMID (1.12.297): a node above 32 nm (to
+ * 90 nm) has no published silicon value either; it takes the 32 nm value x CACTI's own local-wire capacitance
+ * ratio C(N) / C(32 nm) (CACTI's node trend, its Miller factor cancelling in the ratio), and the run says so.
+ * Until then such a node fell back to CACTI's local wire itself, 1.23x the silicon value at 32 nm, so the
+ * clock nets stepped up by that much between 32 and 33 nm. Other nodes: the CACTI local wire, said so.
+ * Silicon comb structures are measured with the neighbours
  * grounded, which is the expected coupling of a clock net among independently switching or quiet signal wires
  * (CACTI's tables carry a worst-case Miller factor of 1.5 on both sidewalls: 0.246 / 0.239 fF/um at 32 / 22 nm). */
 static bool pimid_clock_local_wire_c(double nm, double &c, std::string &src)
@@ -972,6 +977,39 @@ static bool pimid_clock_local_wire_c(double nm, double &c, std::string &src)
 		const double a = log(nm / 22.0) / log(32.0 / 22.0);
 		c = exp(log(c22) + a * (log(c32) - log(c22)));
 		src = "DERIVED: log-log between the 22 and 32 nm silicon values";
+		return true;
+	}
+	if (nm > 32.0 && nm <= 90.0)
+	{   /* PIMID (1.12.297): the 32 nm silicon value x CACTI's local-wire ratio N / 32 nm (the comment above). g_tp
+	     * holds the run's tables (nm); the 32 nm tables are read at the 32 nm feature size and the run's tables
+	     * restored exactly, as pimid_node_energy_scale does. */
+		const double c_run = g_tp.wire_local.C_per_um;
+		/* the 32 nm value, once per interconnect projection, wire type, temperature and device type */
+		static std::map<std::string, double> c32_cache;
+		const std::string key = std::to_string((int)g_ip->ic_proj_type) + ":" + std::to_string((int)g_ip->wt) + ":"
+		                      + std::to_string(g_ip->temp) + ":" + std::to_string(g_ip->data_arr_peri_global_tech_type);
+		double c_32 = 0.0;
+		const auto hit = c32_cache.find(key);
+		if (hit != c32_cache.end()) c_32 = hit->second;
+		else
+		{
+			const TechnologyParameter tp_saved = g_tp;
+			const double f_um_saved = g_ip->F_sz_um, f_nm_saved = g_ip->F_sz_nm;
+			g_ip->F_sz_um = 0.032; g_ip->F_sz_nm = 32;
+			init_tech_params(0.032, false);
+			c_32 = g_tp.wire_local.C_per_um;
+			g_ip->F_sz_um = f_um_saved; g_ip->F_sz_nm = f_nm_saved;
+			g_tp = tp_saved;
+			c32_cache[key] = c_32;
+		}
+		if (!(c_run > 0) || !(c_32 > 0)) return false;
+		c = c32 * c_run / c_32;
+		src = "the 32 nm silicon value x CACTI's local-wire capacitance ratio (extrapolated)";
+		static std::set<int> said;
+		if (said.insert((int)(nm + 0.5)).second)
+			std::cerr << "[mcpat clock] a core's local clock nets at " << nm << " nm: " << c * 1e15 << " fF/um = 0.2 fF/um"
+			             " (measured at 32 nm, M2) x " << c_run / c_32 << " (CACTI's local-wire capacitance " << nm
+			          << " nm / 32 nm) (extrapolated)" << std::endl;
 		return true;
 	}
 	return false;
