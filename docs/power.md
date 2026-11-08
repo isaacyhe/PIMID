@@ -325,8 +325,9 @@ except the leaf nets). Above 32 nm (to 90 nm; since (1.12.297)) no silicon value
 published either: the nets take the 32 nm value x CACTI's local-wire
 capacitance ratio C(N) / C(32 nm), CACTI's node trend with its Miller
 factor cancelling (45 nm x 1.050, 65 nm x 1.115, 90 nm x 1.190), and the run
-prints the factor (extrapolated). Below 22 nm the CACTI local wire is kept;
-the tree prints which it used.
+prints the factor (extrapolated). Below 22 nm (since (1.12.298)) the nets hold
+the 22 nm value, as every wire there holds the 22 nm table's per-micrometre
+capacitance, and the run says so (held).
 
 Since 1.12.77, with the internal diagnostic switch on
 (PIMID_DEBUG_CHECKS=1), a core with DMA registers also prints its tree

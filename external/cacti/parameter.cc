@@ -523,6 +523,17 @@ void InterconnectType::assign(const string & in_file, int projection_type, int t
 		}
 	}
 	
+	/* PIMID (1.12.298): below the finest table (7-21 nm) the wire is drawn at the node: its absolute thicknesses
+	 * (barrier, dishing, inter-layer dielectric) shrink with F as the pitch does just below, so the wire keeps
+	 * the 22 nm cross-section in proportion (capacitance per um held, resistance per um ~ 1/F^2). Unscaled,
+	 * the 3 nm barriers would take a growing share of a wire 1.25 F wide. */
+	if (g_ip->F_sz_nm > 0 && g_ip->F_sz_nm < 22.0)
+	{
+		const double s = g_ip->F_sz_nm / 22.0;
+		barrier_thickness *= s;
+		dishing_thickness *= s;
+		ild_thickness *= s;
+	}
 	pitch *= g_ip->F_sz_um;
 	wire_width = pitch/ 2; //micron
     wire_thickness = aspect_ratio * wire_width;//micron
@@ -845,16 +856,20 @@ void TechnologyParameter::find_upper_and_lower_tech(double technology, int &tech
 		tech_hi = 22;
 		in_file_hi = "tech_params/22nm.dat";
 	}
-	else if (technology < 22 && technology >= 16)
+	else if (technology < 22 && technology >= 7)
 	{
+		/* PIMID (1.12.298): a node below the finest table (7 to 21 nm) reads the 22 nm table alone: its
+		 * per-micrometre device and wire parameters are held, and every geometry is drawn at the
+		 * node itself (devices, cells and wire pitches are sized from F_sz_um below). It used to blend
+		 * 22nm.dat with 16nm.dat, a stub that carries no table (16-21 nm), and to throw below 16 nm. */
 		tech_lo = 22;
 		in_file_lo = "tech_params/22nm.dat";
-		tech_hi = 16;
-		in_file_hi = "tech_params/16nm.dat";
+		tech_hi = 22;
+		in_file_hi = "tech_params/22nm.dat";
 	}
 	else
 	{
-		throw std::runtime_error("CACTI: Unsupported technology node " + std::to_string((int)technology) + "nm (supported: 16-180nm)");
+		throw std::runtime_error("CACTI: Unsupported technology node " + std::to_string((int)technology) + "nm (supported: 7-180nm)");
 	}
 }
 

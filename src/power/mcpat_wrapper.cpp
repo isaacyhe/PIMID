@@ -429,6 +429,9 @@ static bool cactiRowFile(int table_nm, const char* tag, double col[5], int temp)
  * the read failed (a refusal, rc 2). A table node reads its own file, exactly as
  * before. */
 static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1) {
+    /* (1.12.298): below the finest table, the 22 nm row, held (the device parameters CACTI itself
+     * uses there, external/cacti/parameter.cc). */
+    if (table_nm > 0 && table_nm < 22) return cactiRowFile(22, tag, col, temp);
     static const int kTables[] = {22, 32, 45, 65, 90};
     for (int i = 0; i + 1 < 5; ++i) {
         if (table_nm > kTables[i] && table_nm < kTables[i + 1]) {
@@ -1035,12 +1038,13 @@ void McPATWrapper::createMcPATInput() {
  * for one. Latched so the parent's warning is not repeated by the child that
  * inherits it across fork(). */
 void McPATWrapper::clampTechNodeForCacti() {
-    // CACTI reliably supports tech nodes 22-180nm.
-    if (config_.tech_node_nm < 22) {
+    /* (1.12.298): CACTI prices 7-180 nm; 7-21 nm on the 22 nm table at F = N (external/cacti/parameter.cc).
+     * It was 22-180 nm, with a node below 22 clamped to 22. */
+    if (config_.tech_node_nm < 7) {
         if (!warned_tech_clamp_) {
             warned_tech_clamp_ = true;
             std::cerr << "[McPATWrapper] Warning: " << config_.tech_node_nm
-                      << "nm not supported by CACTI (min 22nm). Clamping to 22nm for power estimation."
+                      << "nm not supported by CACTI (min 7nm). Clamping to 22nm for power estimation."
                       << " The configuration now READS 22nm everywhere, including"
                       << " the printed report -- the priced node and the reported"
                       << " node are the same number by construction."

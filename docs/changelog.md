@@ -6,6 +6,35 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.298 -- a process node from 7 to 21 nm runs the tools at its own feature size on the 22 nm table, not refused
+
+- **The problem.** Any node below 22 nm was a fatal configuration error (rc 1), so a 16 or 7 nm study had no timing,
+  area or power at all.
+- **The root cause.** CACTI has no table below 22 nm (its 16nm.dat is a stub, and below 16 nm it threw), McPAT rides
+  CACTI, and the node authority refused the nodes rather than say what it would do with them. Two pieces could not
+  have followed: CACTI's wire keeps absolute barrier, dishing and dielectric thicknesses while its pitch shrinks with
+  F, so the barriers took a growing share of the wire; and McPAT's front end, register files, forwarding multiplexers
+  and gate-equivalent logic, priced from Nangate 45 nm cells, took the node ratio of the ASAP7 library wherever ASAP7
+  is the nearest one (below 17.7 nm), which priced a 16 nm core's logic 6x its 22 nm value.
+- **The fix.** From 7 to 21 nm CACTI reads the 22 nm table alone and draws every geometry at the node: devices, cells
+  and wire pitches are sized from F as before, and the wire's thicknesses now shrink with F too, keeping the 22 nm
+  cross-section in proportion. CACTI and McPAT therefore give the timing, energy and area at the node, and McPAT's own
+  node rules apply as they are (per-operation energies on DeepScaleTool, ASAP7 cells below 17.7 nm, the gate-level
+  factors, the UCIe rows interpolated between 3 and 22 nm); the Nangate-based energies take the Nangate ratio (the two
+  agree from 17.7 nm up). The DRAM-periphery factor reads and a core's local clock wire hold their 22 nm values
+  (held). The run prints one `[tech] N nm is below CACTI's finest table` line saying that the timing, energy and area
+  all come from the tools at N on the 22 nm table's per-micrometre parameters (extrapolated). An STT_MRAM or RERAM
+  array below 22 nm is refused by name (NVSim has no device table there), and so is a node below 7 nm, the smallest
+  this release prices (rc 1).
+- **Data impact.** Every run at 22 nm and above is unchanged, bit for bit (smoke runs at 22, 28, 32 and 45 nm, device
+  and co-simulation: System Total and run time; the full log at 22 nm). New at 16 and 7 nm (GEMV, 16 elements): on
+  the HBM3 logic die 3.502 and 3.395 W against 3.591 W at 22 nm, logic area 8.46 and 3.78 mm^2 against 12.47 mm^2,
+  run time 48815 and 48817 against 48814 cycles; an SRAM device 0.440 and 0.199 W against 0.583 W, 5.67 and
+  1.30 mm^2 against 10.48 mm^2, run time 41387 and 41389 against 41386 cycles; a co-simulation with host and device
+  at the node (the device pinned to its DRAM table) 14.99 and 8.16 W against 20.20 W, 228.4 and 224.1 mm^2 against
+  232.8 mm^2, run time 134200 and 133769 against 134195 cycles. An element core's dynamic energy at 7 nm is 0.352 x
+  its 22 nm value, against DeepScaleTool's E(7) / E(22) = 0.367.
+
 ## 1.12.297 -- a core's local clock nets above 32 nm take the measured 32 nm wire scaled by CACTI's node trend
 
 - **The problem.** The local clock nets of a core are priced at measured silicon wire capacitance at 22 and 32 nm

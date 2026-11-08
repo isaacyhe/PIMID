@@ -111,7 +111,7 @@ static bool pimid_front_energy(double ilen, double pcw, double &e_fetch, double 
 	const double fifo_rd = ilen*(ad*(mux_ezab + 0.5*mux_cab*V2*wl) + 0.5*0.5*mux_cs*V2*wl);
 	const double addr    = 2.0*sw;
 	const double align   = 0.5*ilen*ad*sw;
-	ratio   = pub.ratio;
+	ratio   = pub.ratio45;   /* PIMID (1.12.298): Nangate cells take the Nangate ratio (logic.h ratio45) */
 	e_fetch = (fifo_wr + fifo_rd + addr + align)*fJ*ratio;
 	e_cycle = 1.0*sw*fJ*ratio;
 	regs    = 2.0*ilen + pcw + 0.5*ilen + 16.0;
@@ -1362,7 +1362,7 @@ static bool pimid_scm_rf_energy(double n, double w, double r, double &e_rd, doub
 	                 + 0.5*ad*w*n*lat_cd*V2*wl + w*(0.949653*V2*wl + 6.916056) + ad*w*(dff_sw_int + 0.5*dff_cd*V2*wl);
 	(void)dff_clk; (void)dff_sw;
 	const double cyc = (n + 1)*icg_dis;
-	ratio = pub.ratio;
+	ratio = pub.ratio45;   /* PIMID (1.12.298): Nangate cells take the Nangate ratio (logic.h ratio45) */
 	e_rd = rd*fJ*ratio; e_wr = wr*fJ*ratio; e_cyc = cyc*fJ*ratio;
 	return true;
 }
@@ -1522,7 +1522,7 @@ static bool pimid_fwd_energy(double w, double ops, double wire_um, double &e, do
 	const double levels = 2.0;   /* a 3:1 operand multiplexer */
 	const double wl = pimid_f1_wireload(), ad = PIMID_F1_ACT_LOGIC;   /* F1-WA */
 	const double per_bit = ad*levels*(mux_ezab + 0.5*mux_cab*V2*wl) + levels*0.5*0.5*mux_cs*V2*wl;
-	e_mux  = ops*w*per_bit*fJ*pub.ratio;
+	e_mux  = ops*w*per_bit*fJ*pub.ratio45;   /* PIMID (1.12.298): the Nangate ratio (logic.h ratio45) */
 	const double vr = g_tp.peri_global.Vdd;
 	e_wire = 0.5*ad*w*(wire_um > 0 ? wire_um : 0.0)*g_tp.wire_local.C_per_um*vr*vr;   /* F1-WA: p = ad toggles x 0.5 C V^2 */
 	e = e_mux + e_wire;
@@ -2515,7 +2515,7 @@ Core::Core(ParseXML* XML_interface, int ithCore_, InputParameter* interface_ip_)
 		  const double x_ot = p_lsu + 0.025*p_csr;   /* activity-weighted GE: LSU at the logic activity, CSR at 0.025 of it */
 		  (void)m_if; (void)m_id;
 		  const double V = 1.10, V2 = V*V;
-		  const double e_ge = (1.376 + 0.5*2.0*1.6316*V2*pimid_f1_wireload()) * 1e-15 * pub.ratio;   /* J per toggle */
+		  const double e_ge = (1.376 + 0.5*2.0*1.6316*V2*pimid_f1_wireload()) * 1e-15 * pub.ratio45;   /* J per toggle; (1.12.298): the Nangate ratio */
 		  const double e_cyc = PIMID_F1_ACT_LOGIC * e_ge;                                           /* J per GE per busy cycle */
 		  ifu->pimid_ml_cycle = (x_if + x_id + x_ot) * e_cyc;
 		  /* PIMID (F1-STRUCT): (a) the DATA energy of the flip-flops beyond the model (their clock pins are clock-tree

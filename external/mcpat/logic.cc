@@ -147,6 +147,14 @@ bool pimid_dff_published(double nm, double v, PimidDffPub &o)
 		const double cr = (libs[li].v * libs[li].v) / (v * v);   /* C = E / V^2 */
 		o.c_ck_lo = std::min(o.c_ck_lo, libs[li].c_ck * rlo * cr); o.c_ck_hi = std::max(o.c_ck_hi, libs[li].c_ck * rhi * cr);
 		o.e_clock_lo = std::min(o.e_clock_lo, ec_s * rlo); o.e_clock_hi = std::max(o.e_clock_hi, ec_s * rhi);
+		if (li == 0)
+		{   /* PIMID (1.12.298): ratio45, the arithmetic of the branch below for the Nangate library (logic.h) */
+			double r0 = 0.5 * (rlo + rhi);
+			double es0 = 0, et0 = 0;
+			if (pimid_dst_energy(libs[0].nm, es0) && pimid_dst_energy(nm, et0) && es0 > 0)
+				r0 = (et0 / es0) * (PIMID_DST_V45_NOMINAL / libs[0].v) * (PIMID_DST_V45_NOMINAL / libs[0].v);
+			o.ratio45 = r0;
+		}
 		if (li == pick)
 		{
 			double r = 0.5 * (rlo + rhi);
@@ -1010,6 +1018,18 @@ static bool pimid_clock_local_wire_c(double nm, double &c, std::string &src)
 			std::cerr << "[mcpat clock] a core's local clock nets at " << nm << " nm: " << c * 1e15 << " fF/um = 0.2 fF/um"
 			             " (measured at 32 nm, M2) x " << c_run / c_32 << " (CACTI's local-wire capacitance " << nm
 			          << " nm / 32 nm) (extrapolated)" << std::endl;
+		return true;
+	}
+	if (nm >= 7.0 && nm < 22.0)
+	{   /* PIMID (1.12.298): below 22 nm the tables hold their 22 nm per-micrometre wire parameters
+	     * (external/cacti/parameter.cc), and so does this net: the 22 nm silicon value. */
+		c = c22;
+		src = "the 22 nm silicon value (held)";
+		static std::set<int> said;
+		if (said.insert((int)(nm + 0.5)).second)
+			std::cerr << "[mcpat clock] a core's local clock nets at " << nm << " nm: " << c * 1e15 << " fF/um, the"
+			             " 22 nm value: the per-micrometre wire capacitance of the 22 nm table, as every wire below"
+			             " 22 nm (held)" << std::endl;
 		return true;
 	}
 	return false;

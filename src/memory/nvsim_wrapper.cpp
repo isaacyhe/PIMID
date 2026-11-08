@@ -197,9 +197,11 @@ void NVSimWrapper::validateConfiguration() {
     }
 
     // Validate technology node
-    if (config_.process_node_nm < 7 || config_.process_node_nm > 90) {
+    /* (1.12.298): NVSim has device tables from 22 nm up (external/nvsim/Technology.cpp); a node below 22 nm
+     * is refused here by name. It was let through from 7 nm and failed later in the design search. */
+    if (config_.process_node_nm < 22 || config_.process_node_nm > 90) {
         valid_ = false;
-        error_message_ = "Technology node out of range (7nm - 90nm)";
+        error_message_ = "Technology node out of range (22nm - 90nm: NVSim has no device table below 22 nm)";
         return;
     }
 }

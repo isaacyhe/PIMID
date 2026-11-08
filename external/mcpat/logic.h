@@ -393,6 +393,10 @@ struct PimidDffPub {
 	/* PIMID (DST): the ratio APPLIED is DeepScaleTool's when it covers the node (dst true);
 	 * the Stillmaker & Baas pair midpoint and the voltage-less DeepScaleTool ratio are kept for printing */
 	bool dst; double ratio_sb17, ratio_dst_vl;
+	/* PIMID (1.12.298): the Nangate 45 nm library's ratio to the node, whichever library is picked: the ratio
+	 * for a caller that scales Nangate 45 nm cell energies (core.cc). Equal to ratio wherever Nangate is
+	 * the nearest library (17.7 nm and above). */
+	double ratio45;
 };
 bool pimid_dff_published(double nm, double v, PimidDffPub &o);
 double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0, double *c_run = 0,

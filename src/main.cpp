@@ -11970,6 +11970,7 @@ static bool cactiBracket(int nm, int& lo, int& hi) {
 }
 /* (1.12.294): the table a node reads, as the run prints it: "22nm.dat" for a table node. */
 static std::string cactiTableLabel(int nm) {
+    if (nm > 0 && nm < 22) return std::to_string(nm) + " nm (22nm.dat, held)";   // (1.12.298): below the finest table
     int lo = 0, hi = 0;
     if (!cactiBracket(nm, lo, hi)) return std::to_string(nm) + "nm.dat";
     return std::to_string(nm) + " nm (" + std::to_string(lo) + "nm.dat/" + std::to_string(hi) + "nm.dat blend)";
@@ -11986,16 +11987,41 @@ static void noteInterpolatedNode(int nm) {
               << w << " of the " << hi << " nm table and " << (1.0 - w) << " of the " << lo
               << " nm table (interpolated)" << std::endl;
 }
+/* (1.12.298): a node below CACTI's finest table (7-21 nm). It used to be refused, so such a run had no
+ * timing, area or power. The tools now run at the node itself on the 22 nm table's per-micrometre
+ * device and wire parameters, every geometry drawn at N (CACTI sizes devices, cells and wire pitches
+ * from F: external/cacti/parameter.cc); McPAT's own node rules (the per-operation energies, the
+ * published cells, the gate-level factors, the UCIe rows) apply at N as they are. One line says so. */
+static void noteSubTableNode(int nm) {
+    if (!(nm > 0 && nm < 22)) return;
+    static std::set<int> said;
+    if (!said.insert(nm).second) return;
+    std::cout << "[tech] " << nm << " nm is below CACTI's finest table (22 nm): CACTI and McPAT run at " << nm
+              << " nm on the 22 nm table's per-micrometre device parameters and wire materials, every geometry"
+                 " (devices, cells, wire cross-sections) drawn at " << nm << " nm, so the timing, energy and area all"
+                 " come from the tools at " << nm << " nm (extrapolated)"
+              << std::endl;
+}
 static int validateTechNodeNm(int requested_nm, const char* site) {
     if (requested_nm <= 0) return 22;  // unset: the calibrated default
     if (requested_nm >= 22 && requested_nm <= 90) {   // (1.12.294): a node between two tables is interpolated
         noteInterpolatedNode(requested_nm);
         return requested_nm;
     }
+    if (requested_nm >= 7 && requested_nm < 22) {   // (1.12.298): below the finest table, the 22 nm table at F = N
+        noteSubTableNode(requested_nm);
+        return requested_nm;
+    }
+    if (requested_nm < 7) {   // (1.12.298): the smallest node priced is 7 nm
+        std::cerr << "ERROR: technology node " << requested_nm << " nm (" << site
+                  << ") is below 7 nm, the smallest node this release prices." << std::endl;
+        std::exit(1);
+    }
     std::cerr << "ERROR: technology node " << requested_nm << " nm (" << site
-              << ") is not supported. Valid nodes: 22 to 90 nm (CACTI's tables "
+              << ") is not supported. Valid nodes: 7 to 90 nm (CACTI's tables "
                  "at 22, 32, 45, 65 and 90 nm; a node between two tables is "
-                 "interpolated from them; 22 nm is the finest)." << std::endl;
+                 "interpolated from them; a node below 22 nm runs on the 22 nm table "
+                 "at its own feature size)." << std::endl;
     std::exit(1);
 }
 
@@ -25445,8 +25471,14 @@ int main(int argc, char** argv) {
                 std::string first_txt;
                 auto dieNode = [](int n, const std::string& path) -> int {
                     if (n >= 22 && n <= 90) { noteInterpolatedNode(n); return n; }   // (1.12.294): 22-90 nm
+                    if (n >= 7 && n < 22) { noteSubTableNode(n); return n; }   // (1.12.298): the 22 nm table at F = N
+                    if (n > 0 && n < 7) {   // (1.12.298): the smallest node priced is 7 nm
+                        std::cerr << "ERROR: " << path << " = " << n << " nm is below 7 nm, the smallest node this"
+                                     " release prices." << std::endl;
+                        std::exit(1);
+                    }
                     std::cerr << "ERROR: " << path << " = " << n << " nm is not a node CACTI covers."
-                                 " Supported: 22 to 90 nm (tables at 22, 32, 45, 65 and 90 nm; a node between"
+                                 " Supported: 7 to 90 nm (tables at 22, 32, 45, 65 and 90 nm; below 22 nm the 22 nm table; a node between"
                                  " two tables is interpolated from them). The UCIe link keeps its own key,"
                                  " power.link.process_node_nm (3 to 90 nm)." << std::endl;
                     std::exit(1);
@@ -27055,7 +27087,7 @@ int main(int argc, char** argv) {
          * remove, while an off-die placement in the same sweep failed at 28.
          * (1.12.294): refusal only here; the interpolation note waits for the node
          * the run uses (an on-die placement replaces it just below). */
-        if (!(config.tech_node_nm <= 0 || (config.tech_node_nm >= 22 && config.tech_node_nm <= 90)))
+        if (!(config.tech_node_nm <= 0 || (config.tech_node_nm >= 7 && config.tech_node_nm <= 90)))   // (1.12.298): 7-90 nm
             validateTechNodeNm(config.tech_node_nm, "config load: technology.node_nm");
         const std::string& mt = config.memory_tech;
         const std::string& pl = config.placement_level;
@@ -27300,6 +27332,27 @@ int main(int argc, char** argv) {
                       << (*off22.rbegin() > 45 ? "; above 45 nm the device element's gate-level wire-load (1.62) and"
                                                  " timing-repair (0.188) factors, their 45 nm values" : "")
                       << " (held)" << std::endl;
+        }
+    }
+
+    /* (1.12.298): an STT_MRAM or RERAM array below 22 nm is refused: NVSim has no device table below
+     * 22 nm, and its characterisation would otherwise fail inside the array queries. (A PCM die is
+     * pinned to its 22 nm memory-process table at every placement it accepts.) */
+    {
+        auto nvmBelow22 = [](const std::string& t, int nm) {
+            return (t == "STT_MRAM" || t == "RERAM") && nm > 0 && nm < 22;
+        };
+        auto refuse = [](const std::string& t, int nm, const std::string& who) {
+            std::cerr << "ERROR: " << who << t << " array at " << nm << " nm is not supported: NVSim has no"
+                         " device table below 22 nm (an SRAM array and the logic run there on CACTI's 22 nm"
+                         " table)." << std::endl;
+            std::exit(1);
+        };
+        if (config.scope != "system") {
+            if (nvmBelow22(config.memory_tech, config.tech_node_nm)) refuse(config.memory_tech, config.tech_node_nm, "the ");
+        } else {
+            for (const auto& n : config.system_nodes)
+                if (nvmBelow22(n.memory_tech, n.tech_node_nm)) refuse(n.memory_tech, n.tech_node_nm, n.name + ": the ");
         }
     }
 
