@@ -215,18 +215,24 @@ static const char* sramCellTypeName(int c) { return c == 1 ? "lstp" : c == 2 ? "
  * (125 - 38) mA x 1.5 V = 130.5 mW. Every default is per device (the device as one chip),
  * unscaled. The budget is supply-side power, compared with the array's write energy, which is
  * supply-side too (each NVM write energy carries its write pump's efficiency). */
-static double nvmWriteBudgetMw(const std::string& tech, double user_mw, std::string* src) {
+/* (1.12.296): node_nm, the node the array is characterised at. The STT_MRAM and RERAM defaults are an interface
+ * envelope (a DRAM chip's write power on the same interface, Xu et al.), not a property of the array's node,
+ * so they are held at every node, and a node other than 22 nm says so. (PCM never reaches another node: its
+ * placements pin the die to the 22 nm memory-process table.) */
+static double nvmWriteBudgetMw(const std::string& tech, double user_mw, std::string* src, int node_nm = 22) {
     if (user_mw > 0.0) { if (src) *src = "memory.nvm_write_budget.mw (user)"; return user_mw; }
+    const char* held = (node_nm > 0 && node_nm != 22)
+        ? "; held at every node: an interface envelope, not a property of the array's node (held)" : "";
     if (tech == "PCM") {
         if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Jiang et al. ISCA 2014 Table 4: 22 nm PCM chip, RESET pump 7 mA x 5 V = 35 mW out, at the 0.388 PCM write-supply efficiency (Luo et al. ASP-DAC 2016)";
         return 7.0 * 5.0 / 0.388;
     }
     if (tech == "STT_MRAM") {   // (1.12.245)
-        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Xu et al. HPCA 2015 Sec. 4.3 method: the DDR4-2400 x8 chip's write power, (IDD4W 123 - IDD3N 43) mA x 1.2 V";
+        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Xu et al. HPCA 2015 Sec. 4.3 method: the DDR4-2400 x8 chip's write power, (IDD4W 123 - IDD3N 43) mA x 1.2 V" + held;
         return (123.0 - 43.0) * 1.2;
     }
     if (tech == "RERAM") {   // (1.12.245)
-        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Xu et al. HPCA 2015 Sec. 4.3: the DDR3-1600 x8 chip's write power, (IDD4W 125 - IDD3N 38) mA x 1.5 V";
+        if (src) *src = std::string(pimid::provLabel("DERIVED, ")) + "Xu et al. HPCA 2015 Sec. 4.3: the DDR3-1600 x8 chip's write power, (IDD4W 125 - IDD3N 38) mA x 1.5 V" + held;
         return (125.0 - 38.0) * 1.5;
     }
     if (src) *src = (pimid::debugChecks() ? "no published budget for " : "no default budget for ") + tech;
@@ -10361,7 +10367,8 @@ static void emitZSimHierarchyBlock(std::ostream& out, const UnifiedConfig& confi
                     out << "        bankServiceCycles = " << sv.str() << ";\n";
                     if (config.nvm_wb_enabled) {   // (1.12.114): the device write-power budget, on
                         std::string src;
-                        const double b_mw = nvmWriteBudgetMw(t, config.nvm_wb_mw, &src);
+                        const double b_mw = nvmWriteBudgetMw(t, config.nvm_wb_mw, &src,
+                                                             validateTechNodeNm(config.tech_node_nm, "NVM write budget query"));   // (1.12.296): the array's node
                         double e_nj = -1.0;
                         if (t == "STT_MRAM" || t == "PCM" || t == "RERAM") {
                             pimid::NVSimWrapper::NVMConfig c;
@@ -17270,7 +17277,8 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                 << (config.nvm_wb_enabled ? "the device write-power budget is ON (memory.nvm_write_budget)"
                                           : "no device write-power budget is applied (memory.nvm_write_budget off)") << std::endl;
             std::string src;
-            const double b_mw = nvmWriteBudgetMw(config.memory_tech, config.nvm_wb_mw, &src);
+            const double b_mw = nvmWriteBudgetMw(config.memory_tech, config.nvm_wb_mw, &src,
+                                                 validateTechNodeNm(config.tech_node_nm, "NVM write budget report"));   // (1.12.296)
             if (b_mw > 0.0) {
                 const double need_s = e_j / (b_mw * 1e-3);   // the writes alone, at the budget
                 pimid::fmt_scoped(std::cout) << std::setprecision(6) << "  [nvm] write budget " << b_mw << " mW (" << src
@@ -27262,6 +27270,38 @@ int main(int argc, char** argv) {
      * node surface the config carries; power paths keep their own calls
      * (idempotent) so no path can regress to unvalidated. */
     validateTechNodeNm(config.tech_node_nm, "config load: technology.node_nm");
+    /* (1.12.296): the terms that do NOT follow the process node, said once when the run configures a node
+     * other than 22 nm (the anchor of every node rule, where nothing is said): each is a measured part or
+     * an interface figure with no node of its own in this model. The DRAM array is its part record (area
+     * from the measured density, energy from its IDD rows); the DRAM interface PHY (CACTI-IO has no node
+     * input; the HBM host PHYs are measured parts); the SerDes link classes (each at its published node);
+     * the RDIMM register (a part on the DIMM); the TSV capacitance (packaging); and, above 45 nm, the
+     * device element's gate-level wire-load and timing-repair factors, held at their 45 nm values (the
+     * routed runs stop at 45 nm, external/mcpat/core.cc). Device scope: the device's node after the
+     * on-die pin and the per-die nodes; system scope: every node's own. */
+    {
+        std::set<int> off22;
+        auto add = [&off22](int n) { if (n > 0 && n != 22) off22.insert(n); };
+        if (config.scope != "system") {
+            add(config.tech_node_nm);
+        } else {
+            for (const auto& n : config.system_nodes) add(n.tech_node_nm);
+            add(config.host_tech_node_nm);
+        }
+        if (config.pm_per_die_process) { add(config.proc_logic_node_nm); add(config.proc_dram_node_nm); }
+        if (!off22.empty()) {
+            std::ostringstream ns;
+            for (int n : off22) ns << (ns.tellp() > 0 ? ", " : "") << n;
+            std::cout << "[config] held at every process node (measured parts and interface figures, not scaled with"
+                         " the node; this run configures " << ns.str() << " nm): the DRAM array's area and IDD energy"
+                         " (its part record), the DRAM interface PHY energy, idle and static (CACTI-IO and the measured"
+                         " HBM PHYs), the SerDes link classes (each at its published node), the RDIMM register and the TSV"
+                         " capacitance"
+                      << (*off22.rbegin() > 45 ? "; above 45 nm the device element's gate-level wire-load (1.62) and"
+                                                 " timing-repair (0.188) factors, their 45 nm values" : "")
+                      << " (held)" << std::endl;
+        }
+    }
 
     /* 1.11.56: --print-mem-info, answered now that the config
      * has been read, at the run's real node and line size. */

@@ -982,7 +982,12 @@ with the same weight, and the run prints one `[tech] N nm lies between CACTI's
 ... tables` line naming the weights. Any value outside 22-90 is a FATAL
 configuration error (the old behavior -- silently clamping sub-22 requests to
 22 -- is removed; CACTI's 16nm table is a stub, so the reject guards a live
-failure mode). DRAM memory domains carry no
+failure mode). At a node other than 22 nm the run prints one `[config] held at
+every process node` line naming the terms that do not follow the node (the
+DRAM array's part record, the DRAM interface PHY, the SerDes link classes, the
+RDIMM register, the TSV capacitance and, above 45 nm, the element's gate-level
+wire-load and timing-repair factors), and the STT_MRAM and RERAM cells and
+write budgets say they are held. DRAM memory domains carry no
 free node at all: their periphery class is derived from the memory technology
 and printed. `power.device_corner` (`hp` default, `lstp`, `lop`) selects the
 CACTI device column for logic-family components; it is refused, with a printed

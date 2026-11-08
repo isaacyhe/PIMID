@@ -6,6 +6,26 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.296 -- a run at a node other than 22 nm names the terms it holds at every node
+
+- **The problem.** At a node other than 22 nm several priced terms keep the same value as at 22 nm, and the run did not
+  say which: the DRAM array (area and IDD energy), the DRAM interface PHY, the SerDes link classes, the RDIMM register,
+  the TSV capacitance, above 45 nm the device element's gate-level wire-load and timing-repair factors, the STT_MRAM and
+  RERAM cell energies, and the STT_MRAM and RERAM write budgets.
+- **The root cause.** Each is a measured part or an interface figure with no node of its own in the model (a DRAM part
+  record; CACTI-IO, which has no node input; the measured HBM PHYs; a SerDes class at its published node; the routed
+  gate-level runs, which stop at 45 nm; an NVM cell for which NVSim's own cell-scaling rule keeps the pulse energy
+  (STT_MRAM) or has no rule (RERAM); a write budget defined as a DRAM chip's write power on the same interface), and
+  holding it was a silent choice.
+- **The fix.** A run that configures a node other than 22 nm prints one `[config] held at every process node` line
+  naming the held terms (the wire-load and timing-repair clause only above 45 nm); an STT_MRAM or RERAM cell at such a
+  node prints one `[nvm] <technology> cell energies at N nm ... (held)` line with NVSim's reason; and the write-budget
+  lines of an STT_MRAM or RERAM device there say the budget is held at every node, an interface envelope. No value
+  changes.
+- **Data impact.** None: report text only. Every area, power and timing value is unchanged, bit for bit, at every node
+  (smoke runs at 22, 45 and 65 nm, device and co-simulation, SRAM, STT_MRAM and RERAM, the write budget on and off:
+  System Total and run time); at 22 nm the full log is unchanged.
+
 ## 1.12.295 -- a host at a node other than 22 nm scales its uncore terms by the logic switching-energy ratio
 
 - **The problem.** The host uncore terms of a co-simulation, the awake-idle floor `<host>.uncore_static` (18.5 W per

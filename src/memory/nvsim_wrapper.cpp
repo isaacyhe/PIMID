@@ -11,6 +11,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <map>
+#include <set>          // (1.12.296): one cell note per technology and node
 #include <memory>       // (1.12.103): std::unique_ptr for the fallback search
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -366,6 +367,24 @@ void NVSimWrapper::loadCellParameters() {
         const WriteOptions& o = writeOptions();
         if (o.pump_ideal) nvsim_cell_->writePumpEfficiency = 0;
         else if (o.pump_eff > 0) nvsim_cell_->writePumpEfficiency = o.pump_eff;
+    }
+    /* (1.12.296): an STT_MRAM or RERAM cell at a node other than 22 nm keeps the cell file's energies, and the run
+     * says why, once per technology and node: NVSim's own cell-scaling rule (MemCell::CellScaling) takes an
+     * MRAM cell's resistance ~ 1/F^2 and current ~ F, so a write pulse's energy is constant, and has no rule
+     * for a memristor. Nothing is changed. */
+    if (config_.process_node_nm > 0 && config_.process_node_nm != 22 &&
+        (nvsim_cell_->memCellType == MRAM || nvsim_cell_->memCellType == memristor)) {
+        static std::set<std::pair<int, int>> said;
+        if (said.insert({static_cast<int>(nvsim_cell_->memCellType), config_.process_node_nm}).second) {
+            if (nvsim_cell_->memCellType == MRAM)
+                std::cout << "[nvm] STT_MRAM cell energies at " << config_.process_node_nm << " nm: the cell's values,"
+                             " as at 22 nm; NVSim's MRAM cell-scaling rule (resistance ~ 1/F^2, current ~ F) keeps a write"
+                             " pulse's energy constant (held)" << std::endl;
+            else
+                std::cout << "[nvm] RERAM cell energies at " << config_.process_node_nm << " nm: the cell's values (the"
+                             " measured 40 nm macro's read and write energies), as at 22 nm; NVSim has no cell-scaling rule"
+                             " for a memristor (held)" << std::endl;
+        }
     }
     // NOTE: Don't set global cell here - do it in runNVSim() to match
     // NVSim's main() initialization order (after Technology is initialized)
