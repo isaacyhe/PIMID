@@ -6,6 +6,21 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.292 -- the memory area report no longer says a technology's area total lacks its DQ interface
+
+- **The problem.** For LPDDR5, HBM2 and HBM3 (no CACTI-IO parameter map) and GDDR6 (its CACTI-IO area withheld above
+  3162 MHz), the memory report printed "+ IO area: none for this technology ... so the total below carries no DQ
+  interface silicon (DDR3/DDR4/DDR5 do)", and a GDDR6 run warned that any area total "omits the DQ interface silicon
+  -- it is incomplete, not small".
+- **The root cause.** Both texts predate the interface revert of 1.11.60. Since then no technology adds CACTI-IO's IO
+  area to a total: the memory die area is a full-die calibration that already contains the die's IO, and McPAT prices
+  the controller-side PHY. The CACTI-IO figure, where there is one (DDR3, DDR4, DDR5), prints as an informational
+  line.
+- **The fix.** The line reads "CACTI-IO channel IO area: none for this technology -- <cause> [INFORMATIONAL; as for
+  every technology, the full-die area above contains the die's IO and McPAT prices the controller PHY]", in the same
+  form as the DDR3/DDR4/DDR5 line, and the GDDR6 warning says that only the informational figure is missing.
+- **Data impact.** None: report text only. Every area, power and timing value is unchanged, bit for bit.
+
 ## 1.12.291 -- a message-passing rank on an out-of-order element is not charged its wait for the controller's clock
 
 - **The problem.** An `ooo_core` message-passing `bfs` run (HBM3, 16 elements at BANK) took 257.0 M cycles since

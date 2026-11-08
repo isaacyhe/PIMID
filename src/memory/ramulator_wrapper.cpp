@@ -2808,10 +2808,12 @@ double RamulatorWrapper::getInterfaceAreaMM2() const {
                       << " MHz, where the cubic term dominates and the value "
                          "is an extrapolation. The interface ENERGY from the "
                          "same evaluation is reported normally (the power path "
-                         "does not use that polynomial); only the area is "
-                         "missing. Any area total for this technology omits "
-                         "the DQ interface silicon -- it is incomplete, not "
-                         "small. " << io.not_modelled << std::endl;
+                         "does not use that polynomial); only the "
+                         "informational CACTI-IO area figure is missing. No "
+                         "area total is affected: as for every technology, "
+                         "the full-die memory area contains the die's IO and "
+                         "McPAT prices the controller PHY (1.11.60). "
+                      << io.not_modelled << std::endl;
         }
         return 0.0;
     }

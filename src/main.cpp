@@ -16923,8 +16923,12 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                          * proxy -- the energy term being non-zero says the
                          * map is exact, not that the area was withheld. The
                          * two coincide today; the flag is the authority. */
+                        /* (1.12.292): the line said the total below "carries no DQ interface silicon (DDR3/DDR4/DDR5
+                         * do)". Since 1.11.60 no technology adds CACTI-IO's IO area to a total: the die area above
+                         * is a full-die calibration that contains the die's IO, and McPAT prices the controller
+                         * PHY. What this technology lacks is only the informational CACTI-IO figure. */
                         const bool iface_withheld = ram_oracle.interfaceAreaWithheld();
-                        std::cout << "    + IO area:     none for this"
+                        std::cout << "    CACTI-IO channel IO area: none for this"
                                      " technology -- "
                                   << (iface_withheld
                                       ? "CACTI-IO's area polynomial is an"
@@ -16932,8 +16936,10 @@ static void runPowerAnalysis(const UnifiedConfig& config,
                                         " withheld at this bus clock"
                                       : "CACTI-IO has no exact parameter map"
                                         " for it")
-                                  << ", so the total below carries no DQ"
-                                     " interface silicon (DDR3/DDR4/DDR5 do)."
+                                  << " [INFORMATIONAL; as for every technology,"
+                                     " the full-die area above contains the"
+                                     " die's IO and McPAT prices the controller"
+                                     " PHY]."
                                   << std::endl;
                     }
                     int dies = memorySystemDieCount(config.memory_tech,
