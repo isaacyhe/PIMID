@@ -399,6 +399,9 @@ double pimid_node_energy_scale(double src_nm, double src_vdd, double *c_src = 0,
                                double *v_run = 0, double *v_src_cacti = 0);
 /* PIMID (1.12.33, Z12): the published-silicon (DeepScaleTool) node ratio for published per-op logic energies (logic.cc). */
 double pimid_logic_op_scale(double src_nm, double src_vdd, bool *silicon = 0);
+/* PIMID (1.12.293): the published logic switching-energy table (DeepScaleTool, relative to 65 nm; logic.cc) at a
+ * node, for callers outside logic.cc. false outside the table's 7-130 nm. */
+bool pimid_dst_energy_at(double nm, double &e);
 
 class FunctionalUnit :public Component{
 public:

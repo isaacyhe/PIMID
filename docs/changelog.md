@@ -6,6 +6,27 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.293 -- a UCIe link at a node without a measured row is priced from the two rows, not refused
+
+- **The problem.** A co-simulation with an `interposer` link whose die sat at 32, 45, 65 or 90 nm stopped in McPAT
+  ("the UCIe link model supports exactly two process nodes", rc 3) unless `power.link.process_node_nm` named 22 or 3,
+  and that key refused every other value at load (rc 2). A run at any node other than 22 nm with an interposer link
+  therefore had no link energy at all.
+- **The root cause.** The UCIe energy rows are measured at 22 nm and 3 nm only, and the model had no rule for a node
+  between or beyond them.
+- **The fix.** A node from 3 to 90 nm is priced from the two rows of its package, and the run prints one
+  `[link] UCIe link at N nm` line naming the method. Above 22 nm (extrapolated): the analog PHY is held at the 22 nm
+  row, the nearest measured node (a link PHY's energy is set by its channel and signalling), and the digital interface
+  and the transaction layer take the 22 nm figure times the logic switching-energy ratio E(N) / E(22 nm) of
+  DeepScaleTool (Sarangi and Baas, ISCAS 2021), the table the per-operation energies already use. Between 3 and 22 nm
+  (interpolated): the analog PHY and the digital interface are each log-log in the node between the 3 nm and 22 nm
+  figures. `power.link.process_node_nm` accepts 3 to 90; 22 and 3 keep their rows exactly.
+- **Data impact.** Every run at 22 nm, and every link at the 3 nm row, is unchanged, bit for bit (device and
+  co-simulation smoke runs: System Total and run time). A co-simulation with host and device at 45 nm now completes:
+  advanced-package link 0.669 + 0.404 + 0.404 = 1.477 pJ/bit (22 nm row: 1.054), link 0.255 W where the same run with
+  the link held at the 22 nm row gives 0.182 W (System Total 21.92 W against 21.85 W). A 7 nm link key gives
+  0.414 + 0.132 + 0.132 = 0.678 pJ/bit (3 nm row: 0.49).
+
 ## 1.12.292 -- the memory area report no longer says a technology's area total lacks its DQ interface
 
 - **The problem.** For LPDDR5, HBM2 and HBM3 (no CACTI-IO parameter map) and GDDR6 (its CACTI-IO area withheld above

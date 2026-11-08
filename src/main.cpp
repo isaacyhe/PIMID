@@ -4300,7 +4300,8 @@ struct UnifiedConfig {
     bool ucie_link_model = true;
     /* 1.12.18 (two-node UCIe rows): the process node
      * (nm) of the die the interposer link sits on, which selects McPAT's UCIe
-     * energy row. power.link.process_node_nm; only 22 and 3 are priced
+     * energy row. power.link.process_node_nm; rows are measured at 22 and 3,
+     * and (1.12.293) any node from 3 to 90 nm is priced from them (iocontrollers.cc)
      * (3 nm is not a CACTI node, so the link has its own key). 0 = not given:
      * McPAT takes the node of the die it prices (its run node). */
     int  link_process_node_nm = 0;
@@ -25356,7 +25357,7 @@ int main(int argc, char** argv) {
              *   logic_die: { node_nm, device_type }      the logic / base die
              *   dram_die:  { generation | node_nm, family }  the DRAM core dies
              * A node must be one CACTI tabulates (22, 32, 45, 65, 90 nm); the UCIe
-             * link keeps its own power.link.process_node_nm (22 | 3). The system
+             * link keeps its own power.link.process_node_nm (3 to 90). The system
              * builds ONE device, so two devices giving different blocks are refused. */
             if (yaml_cfg["system"] && yaml_cfg["system"]["devices"] && yaml_cfg["system"]["devices"].IsSequence()) {
                 const YAML::Node devs = yaml_cfg["system"]["devices"];
@@ -25367,7 +25368,7 @@ int main(int argc, char** argv) {
                     std::cerr << "ERROR: " << path << " = " << n << " nm is not a node CACTI tabulates."
                                  " Supported: 22, 32, 45, 65, 90 nm (the nodes every linked tool evaluates"
                                  " from real tables). The UCIe link keeps its own key,"
-                                 " power.link.process_node_nm (22 | 3)." << std::endl;
+                                 " power.link.process_node_nm (3 to 90 nm)." << std::endl;
                     std::exit(1);
                 };
                 for (size_t di = 0; di < devs.size(); di++) {
@@ -25742,11 +25743,13 @@ int main(int argc, char** argv) {
                 const std::string pn_path = has_link ? "power.link" : "power.pcie";
                 if (pn && pn.IsMap() && pn["process_node_nm"]) {
                     config.link_process_node_nm = yamlInt(pn["process_node_nm"], 0, pn_path + ".process_node_nm");
-                    if (config.link_process_node_nm != 22 && config.link_process_node_nm != 3) {
+                    /* (1.12.293): 3 to 90 nm (was 22 or 3): the rows are measured at 22 and 3 nm, another
+                     * node is scaled from them by McPAT (iocontrollers.cc) and the run says how. */
+                    if (config.link_process_node_nm < 3 || config.link_process_node_nm > 90) {
                         std::cerr << "[config] FATAL: " << pn_path << ".process_node_nm = "
-                                  << config.link_process_node_nm << ": the UCIe link model supports exactly two"
-                                     " process nodes, 22 and 3 (nm), each priced from published measurements"
-                                     " (see docs/power.md, The host-device link (UCIe)) (1.12.18)." << std::endl;
+                                  << config.link_process_node_nm << ": the UCIe link model prices a node from 3"
+                                     " to 90 nm (measured rows at 22 and 3 nm, other nodes scaled from them; see"
+                                     " docs/power.md, The host-device link (UCIe))." << std::endl;
                         std::exit(2);
                     }
                 }

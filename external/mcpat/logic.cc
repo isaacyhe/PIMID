@@ -191,6 +191,12 @@ static bool pimid_dst_energy(double nm, double &e)
 	e = t[n-1][1]; return true;
 }
 
+/* PIMID (1.12.293): see logic.h. */
+bool pimid_dst_energy_at(double nm, double &e)
+{
+	return pimid_dst_energy(nm, e);
+}
+
 double pimid_logic_op_scale(double src_nm, double src_vdd, bool *silicon)
 {
 	double es = 0, er = 0;

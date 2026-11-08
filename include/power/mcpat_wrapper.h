@@ -320,7 +320,7 @@ public:
         bool   link_energy_end = true;
         /* 1.12.18 (two-node UCIe rows): process node
          * of the die the link sits on, which selects McPAT's UCIe energy row
-         * (22 or 3; power.link.process_node_nm). 0 = not given: McPAT uses
+         * (3 to 90; rows at 22 and 3; power.link.process_node_nm). 0 = not given: McPAT uses
          * its run's node. A structural parameter only -- the rows and their
          * arithmetic live in iocontrollers.cc. */
         int    link_node_nm = 0;

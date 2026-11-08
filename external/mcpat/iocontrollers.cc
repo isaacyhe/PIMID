@@ -828,7 +828,8 @@ void PCIeController::set_pcie_param()
 		  }
 		  /* PIMID 1.12.18: TWO-NODE UCIe ENERGY ROWS.
 		   * The link is priced per bit as ANALOG PHY + DIGITAL INTERFACE, from
-		   * published measurements, for exactly two process nodes: 22 and 3 nm. Sources:
+		   * published measurements, measured at two process nodes: 22 and 3 nm (a node
+		   * without a row: see NODE below). Sources:
 		   *  [CDN26] D. T. Melek et al. (Cadence), "A 0.29 pJ/b 5.27 Tb/s/mm
 		   *          UCIe Advanced Package Link With 2.5-D CoWoS Interposer and a
 		   *          0.52 pJ/b 0.448 Tb/s/mm UCIe Standard Package Link With
@@ -891,8 +892,21 @@ void PCIeController::set_pcie_param()
 		   * analog, 22 nm advanced derived: Cadence's same-node AP/SP ratio
 		   *   applied to Intel's 22 nm SP (caveats printed at runtime).
 		   * NODE: link_node_nm (PIMID: power.link.process_node_nm); <= 0 = the
-		   *   node of the die the link sits on, i.e. this McPAT run's node. Any
-		   *   node other than 22 or 3 is REFUSED. A user phy_pj_per_bit (>= 0)
+		   *   node of the die the link sits on, i.e. this McPAT run's node.
+		   *   PIMID (1.12.293): a node from 3 to 90 nm is priced; until then any
+		   *   node other than 22 or 3 was refused, so a co-simulation whose die
+		   *   sat at 32-90 nm stopped. A node with no row is extrapolated or
+		   *   interpolated from the two rows of its package, and says so:
+		   *     above 22 nm: the analog PHY is held at the 22 nm row (a link
+		   *       PHY's energy is set by its channel and signalling, and 22 nm
+		   *       is the nearest measured node); the digital interface (and so
+		   *       the transaction layer) is the 22 nm figure x the published
+		   *       logic switching-energy ratio E(node) / E(22 nm), DeepScaleTool
+		   *       (Sarangi and Baas, ISCAS 2021; the table logic.cc applies to
+		   *       the per-operation energies);
+		   *     between 3 and 22 nm: the analog PHY and the digital interface
+		   *       each log-log in the node between the 3 nm and 22 nm figures.
+		   *   22 and 3 nm keep their rows exactly. A user phy_pj_per_bit (>= 0)
 		   *   replaces the whole per-bit figure (analog + digital) and needs no
 		   *   node row. */
 		  ucie_user_pj = (XML->sys.pcie.phy_pj_per_bit >= 0.0);
@@ -911,13 +925,13 @@ void PCIeController::set_pcie_param()
 			            << " pJ/bit [user value: power.link.pj_per_bit_override] replaces the whole per-bit"
 			               " figure (analog PHY + digital interface); no node row applied." << std::endl;
 		  } else {
-			  if (ucie_node_nm != 22 && ucie_node_nm != 3) {
-				  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): the UCIe link model supports exactly two"
-				               " process nodes, 22 nm and 3 nm (published measurements: Intel ISSCC 2026 8.1 at"
-				               " 22 nm; Cadence JSSC 2026 and Microsoft ISSCC 2026 8.3 at 3 nm); the link's node is "
+			  if (ucie_node_nm < 3 || ucie_node_nm > 90) {   /* PIMID (1.12.293): 3-90 nm priced (NODE above) */
+				  std::cerr << "[link] FATAL (McPAT PIMID 1.12.18): the UCIe link model prices a node from 3 to 90 nm"
+				               " (rows measured at 22 nm, Intel ISSCC 2026 8.1, and 3 nm, Cadence JSSC 2026 and"
+				               " Microsoft ISSCC 2026 8.3; other nodes scaled from them); the link's node is "
 				            << ucie_node_nm << " nm"
 				            << ((XML->sys.pcie.link_node_nm > 0) ? " (link_node_nm)" : " (the die's node)")
-				            << ". Set power.link.process_node_nm to 22 or 3, or give"
+				            << ". Set power.link.process_node_nm (3 to 90), or give"
 				               " power.link.pj_per_bit_override." << std::endl;
 				  exit(2);
 			  }
@@ -1007,6 +1021,38 @@ void PCIeController::set_pcie_param()
 					  pimid::debugStream(std::cerr) << "[link] guard (McPAT PIMID 1.12.18): applied 22 nm digital interface "
 					            << ucie_digital_pj << " pJ/bit lies within the internal references [" << ref_min
 					            << ", " << ref_max << "] pJ/bit" << std::endl;
+				  /* PIMID (1.12.293): a node with no measured row (NODE above). The 22 nm figures just
+				   * computed are the anchor; at 22 nm nothing below runs, so its row is exactly as before. */
+				  if (ucie_node_nm != 22) {
+					  const double a22 = ucie_analog_pj, d22 = ucie_digital_pj;
+					  if (ucie_node_nm > 22) {
+						  double e_n = 0.0, e_22 = 0.0;
+						  if (!pimid_dst_energy_at(ucie_node_nm, e_n) || !pimid_dst_energy_at(22.0, e_22) || !(e_n > 0.0) || !(e_22 > 0.0)) {
+							  std::cerr << "[link] FATAL (McPAT PIMID (1.12.293)): no logic switching-energy ratio for "
+							            << ucie_node_nm << " nm (the published table covers 7-130 nm)." << std::endl;
+							  exit(2);
+						  }
+						  const double k = e_n / e_22;
+						  ucie_analog_pj  = a22;
+						  ucie_digital_pj = d22 * k;
+						  std::cerr << "[link] UCIe link at " << ucie_node_nm << " nm, " << pkg_s << " package: no measured row at"
+						               " this node (rows at 22 and 3 nm). Analog PHY held at the 22 nm row, " << ucie_analog_pj
+						            << " pJ/bit (the nearest measured node; a link PHY's energy is set by its channel and"
+						               " signalling); digital interface and transaction layer each " << d22 << " pJ/bit (22 nm) x "
+						            << k << " (logic switching energy " << ucie_node_nm << " nm / 22 nm, DeepScaleTool, Sarangi and"
+						               " Baas, ISCAS 2021) = " << ucie_digital_pj << " pJ/bit (extrapolated)" << std::endl;
+					  } else {
+						  const double a3 = (pkg == 1) ? cdn_ap : cdn_sp, d3 = ms_dig;
+						  const double w = std::log(ucie_node_nm / 3.0) / std::log(22.0 / 3.0);
+						  ucie_analog_pj  = std::exp(std::log(a3) + w * (std::log(a22) - std::log(a3)));
+						  ucie_digital_pj = std::exp(std::log(d3) + w * (std::log(d22) - std::log(d3)));
+						  std::cerr << "[link] UCIe link at " << ucie_node_nm << " nm, " << pkg_s << " package: no measured row at"
+						               " this node (rows at 22 and 3 nm). Analog PHY " << ucie_analog_pj << " pJ/bit (3 nm "
+						            << a3 << ", 22 nm " << a22 << ") and digital interface and transaction layer each "
+						            << ucie_digital_pj << " pJ/bit (3 nm " << d3 << ", 22 nm " << d22
+						            << "), log-log in the node between the two rows (interpolated)" << std::endl;
+					  }
+				  }
 			  }
 		  }
 		  /* PIMID: THE TRANSACTION LAYER, the protocol layer above the FDI (packet handling,
@@ -1022,7 +1068,8 @@ void PCIeController::set_pcie_param()
 		  ucie_pj_per_bit = ucie_analog_pj + ucie_digital_pj + ucie_tl_pj;
 		  pimid::debugStream(std::cerr) << "[link] UCIe link model (McPAT PIMID 1.12.18): " << pkg_s << " package, "
 		            << XML->sys.pcie.lanes << " lanes x " << r << " GT/s, "
-		            << (ucie_user_pj ? std::string("user value") : std::to_string(ucie_node_nm) + " nm row")
+		            << (ucie_user_pj ? std::string("user value") : std::to_string(ucie_node_nm)
+		                + ((ucie_node_nm == 22 || ucie_node_nm == 3) ? " nm row" : " nm, scaled from the 22 and 3 nm rows"))
 		            << ": analog PHY " << ucie_analog_pj << " + digital interface " << ucie_digital_pj << " + transaction layer " << ucie_tl_pj
 		            << " = " << ucie_pj_per_bit << " pJ/bit, charged once per crossing bit" << std::endl;
 	  }

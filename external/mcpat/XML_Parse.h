@@ -694,7 +694,8 @@ typedef struct{
 	 *                 link is priced once, at one end); 0 = the far end.
 	 * link_node_nm    PIMID 1.12.18 (two nodes):
 	 *                 process node (nm) of the die the link sits on, which
-	 *                 selects the UCIe energy row; only 22 and 3 are priced
+	 *                 selects the UCIe energy row (rows at 22 and 3; (1.12.293):
+	 *                 any node from 3 to 90 nm, scaled from them)
 	 *                 (iocontrollers.cc). <= 0 = this McPAT run's node.
 	 * clockrate <= 0 asks McPAT to DERIVE the D2D adapter / controller clock
 	 * as lanes x lane_rate_gts / (8 bits x fdi_width_bytes). */

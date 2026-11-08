@@ -557,12 +557,24 @@ PHY + digital interface + transaction layer, from the row of the die's node (pJ/
 - **Cross-check against McPAT** (printed, never charged): McPAT's own link
   controller dynamic for the same link (lanes x GT/s at the derived clock),
   per bit, beside the applied digital interface.
-- **Node selection**: `power.link.process_node_nm` (22 or 3; anything else is
+- **Node selection**: `power.link.process_node_nm` (3 to 90; anything else is
   refused at load; the key alone does not mark the link timing as configured). Absent, McPAT uses the node of the die it prices
-  (`power.tech_node_nm`, default 22); a die at any other node is refused,
-  naming the two supported nodes. 3 nm is not a CACTI node, so the key changes
+  (`power.tech_node_nm`, default 22). 3 nm is not a CACTI node, so the key changes
   only the link's per-bit energy. `power.link.pj_per_bit_override` replaces the
   whole per-bit figure (analog + digital + transaction layer) and needs no row.
+- **A node without a row** (any node other than 22 and 3; until this release
+  such a node was refused, so a co-simulation whose die sat at 32-90 nm stopped
+  in McPAT). The link is priced from the two rows of its package, and the run
+  prints a `[link] UCIe link at N nm` line naming the method:
+  - above 22 nm (extrapolated): the analog PHY is held at the 22 nm row, the
+    nearest measured node (a link PHY's energy is set by its channel and
+    signalling); the digital interface, and so the transaction layer, is the
+    22 nm figure x the logic switching-energy ratio E(N) / E(22 nm) of
+    DeepScaleTool (Sarangi and Baas, ISCAS 2021), the table the per-operation
+    energies use. 45 nm: analog 1.2 (standard package) or 0.669 (advanced),
+    digital 0.192 x 0.63 / 0.30 = 0.404 pJ/bit, the transaction layer the same.
+  - between 3 and 22 nm (interpolated): the analog PHY and the digital
+    interface each log-log in the node between the 3 nm and 22 nm figures.
 
 What McPAT computes for the interposer class (UCIe advanced package, 64 lanes,
 16 GT/s):

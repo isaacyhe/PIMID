@@ -94,7 +94,8 @@ class PCIeController : public Component {
     bool   clock_derived = false;
     /* PIMID 1.12.18 (two-node UCIe rows; sources in
      * iocontrollers.cc set_pcie_param):
-     *   ucie_node_nm      process node of the row applied (22 or 3)
+     *   ucie_node_nm      process node of the link (22 or 3: a measured row;
+     *                     PIMID (1.12.293): another node from 3 to 90 nm, scaled)
      *   ucie_analog_pj    analog PHY pJ/bit applied
      *   ucie_digital_pj   digital interface pJ/bit applied (ucie_pj_per_bit =
      *                     analog + digital)
