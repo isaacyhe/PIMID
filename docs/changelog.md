@@ -6,6 +6,24 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.291 -- a message-passing rank on an out-of-order element is not charged its wait for the controller's clock
+
+- **The problem.** An `ooo_core` message-passing `bfs` run (HBM3, 16 elements at BANK) took 257.0 M cycles since
+  1.12.279, 75 % longer than before (146.8 M), with the same instructions and, within 0.5 %, the same cache misses and
+  DRAM requests. The senders' balances moved the message arrivals later by 79.0 M cycles (1.2 M before 1.12.279).
+- **The root cause.** Since 1.12.216 an access that a rank on a device element issues behind the DRAM controller's
+  clock makes the rank wait for the clock, and the wait is added to what the access measured, for the rank's balance.
+  An out-of-order core charged more than measured is timed at its stamps (1.12.189): its accesses are released behind
+  the clock, and its refunds bring its clock back. The wait charged it a second time for the same time; each message
+  carried the sender's balance to the receiver's arrival, which put the receiver's next accesses further behind the
+  clock, and the charges grew with the run.
+- **The fix.** A rank on an out-of-order core waits for the controller's clock without the charge. A blocking core
+  (`alu_core`, `in_order_core`) keeps it: timed at its balance, it is held to the controller's clock by that wait.
+- **Data impact.** The `ooo_core` message-passing runs change: `bfs` 257.0 M to 146.0 M cycles (-43.2 %; the senders'
+  balances move the arrivals later by 0.5 M cycles), `stencil_2d` +1.3 % (78.4 M to 79.4 M), GEMV and STREAM triad by
+  under 0.01 %; histogram is unchanged, bit for bit. Every other run (`alu_core` and `in_order_core` elements, OpenMP
+  runs, host cores, co-simulations) is unchanged, bit for bit.
+
 ## 1.12.290 -- the data-impact notes of 1.12.279 and 1.12.282 name the runs they left out
 
 - **The problem.** Two data-impact notes left runs out. The note of 1.12.279 (corrected in 1.12.289) said that inside
@@ -274,7 +292,8 @@ release commit messages.
   34.7 %, ReRAM 46.7 %). The `in_order_core` and `ooo_core` stencil runs are unchanged. An `ooo_core` message-passing
   `bfs` run (HBM3, 16 elements at BANK) takes 75 % longer (146.8 M to 257.0 M cycles with the `per_rank` layout of
   1.12.281), while its instructions are the same and its cache misses and DRAM requests stay within 0.5 %; the
-  `ooo_core` runs of the other kernels move by under 1 %. Before it, the OpenMP kernels
+  `ooo_core` runs of the other kernels move by under 1 %; the `bfs` run's slowdown came from the rendezvous settlement
+  of 1.12.216 and is fixed in 1.12.291. Before it, the OpenMP kernels
   clear and copy each element's data with REP string instructions, so far fewer requests reach the device's memory
   before the region of interest (a 64-element HBM3 triad: 90.4 M instead of 177.0 M), and the region of interest
   starts from another DRAM state: an `alu_core` OpenMP run without a copy inside the region of interest moves by up to

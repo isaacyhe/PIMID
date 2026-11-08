@@ -1397,7 +1397,12 @@ void DramEpochReplay::clRelease(CoreCL& k) {
             t = k.dmaT0 + (double)(h.r.stamp > k.dmaS0 ? h.r.stamp - k.dmaS0 : 0) * ticksPerCycle_;
         uint64_t tgt = (t > 0.0) ? (uint64_t)t : 0;
         if (tgt < curTick_) {   // (1.12.216): behind the controller's clock; a settling core waits for it (setRealTime)
-            if (roiMarked_ && !h.out) { lateN_++; lateT_ += curTick_ - tgt; if (k.rt && h.r.hold) h.late = curTick_ - tgt; }
+            /* (1.12.291): the wait is added to what the access measured only for a blocking core, which is timed at its
+             * balance, so that the wait holds it to the controller's clock. An out-of-order core is timed at its stamps
+             * (above) and its refunds bring its clock back: charged the wait as well, it paid the same time twice, the
+             * senders' balances carried the charge to the receivers' arrivals, and their next accesses fell further
+             * behind the clock. */
+            if (roiMarked_ && !h.out) { lateN_++; lateT_ += curTick_ - tgt; if (k.rt && h.r.hold && !k.ooo) h.late = curTick_ - tgt; }
             tgt = curTick_;
         }
         clShiftSum_ += (double)tgt - (double)h.target; clShiftN_++;

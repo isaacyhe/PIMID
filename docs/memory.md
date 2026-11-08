@@ -113,7 +113,7 @@ earliest time a PE can still release an access at -- a running PE's clock plus i
 its wake bound on that axis -- so no access is released behind its clock; the epochs are still folded at the cut, for
 the prices. An access a rank issues behind the controller's clock all the same (its balance shrank, a rewind) makes
 the rank wait for the clock: the wait is added to what the access measured, for the rank's balance (not to the
-prices). At a rendezvous the rank waits, taking the phase barriers without running, until the controller has
+prices); a rank on an out-of-order core, timed at its stamps, waits for the clock without the charge (1.12.291). At a rendezvous the rank waits, taking the phase barriers without running, until the controller has
 completed the accesses its settlement needs: at a barrier, every rank's accesses before its arrival, and the release
 is the latest settled arrival; at a receive, the sender's accesses before its send and the receiver's before its
 receive, and the message arrives at the send time plus the sender's balance then (both ways, an over-charge no
