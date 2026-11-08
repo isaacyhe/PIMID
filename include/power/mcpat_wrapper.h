@@ -467,6 +467,10 @@ public:
      * dev_b at table_nm: (C_g_ideal + C_fringe) x Vdd / I_on_n. False when a
      * row or a column is missing/zero. */
     static bool deviceDelayRatio(int table_nm, int dev_a, int dev_b, double& ratio);
+    /* (1.12.295): the published logic switching-energy ratio E(nm) / E(ref_nm), DeepScaleTool
+     * (Sarangi and Baas, ISCAS 2021; the table external/mcpat/logic.cc applies to the
+     * per-operation energies). False outside the table's 7-130 nm. */
+    static bool logicEnergyRatio(double nm, double ref_nm, double& ratio);
 
     /**
      * Device profile: controls core microarchitecture type in McPAT XML.

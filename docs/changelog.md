@@ -6,6 +6,23 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.295 -- a host at a node other than 22 nm scales its uncore terms by the logic switching-energy ratio
+
+- **The problem.** The host uncore terms of a co-simulation, the awake-idle floor `<host>.uncore_static` (18.5 W per
+  socket) and the rise under load `<host>.uncore_load` (0.31 W per MB of L3), were used unchanged at every host node:
+  a host at 45 nm, whose cores, caches and controllers McPAT prices at 45 nm, kept a 22 nm uncore, and the run did not
+  say so.
+- **The root cause.** Each term is measured on one socket (the floor on Haswell-EP, Intel's 22 nm process; the load term
+  on Broadwell-EP), and no node rule was applied to either.
+- **The fix.** Both defaults are the host's at 22 nm, as every run has used them; a host at another node takes each x
+  the logic switching-energy ratio E(N) / E(22 nm) of DeepScaleTool (Sarangi and Baas, ISCAS 2021), the table the
+  per-operation energies already use, and the uncore lines print the factor (extrapolated). A value given in
+  `power.host_uncore` is used as given at any node.
+- **Data impact.** Every run with its host at 22 nm is unchanged, bit for bit (device and co-simulation smoke runs:
+  System Total, run time and the full log), and so is every device run. A co-simulation with its host at 45 nm (x 2.1):
+  `host.uncore_static` 18.375 W to 38.725 W and `host.uncore_load` 0.023 W to 0.123 W, System Total 21.60 W to
+  42.05 W (GEMV, one in-order host core, 8 device elements); its run time is unchanged.
+
 ## 1.12.294 -- a process node between two CACTI tables is interpolated from them, not refused
 
 - **The problem.** A node between CACTI's tables (for example 28 or 40 nm, anything in 23-89 nm other than 32, 45

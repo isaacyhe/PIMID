@@ -605,6 +605,15 @@ static bool periphFamilyFactors(int dram_table_nm, int logic_node_nm,
     return true;
 }
 
+/* (1.12.295): see mcpat_wrapper.h. */
+bool McPATWrapper::logicEnergyRatio(double nm, double ref_nm, double& ratio) {
+    double e = 0.0, er = 0.0;
+    ratio = 0.0;
+    if (!::pimid_dst_energy_at(nm, e) || !::pimid_dst_energy_at(ref_nm, er) || !(e > 0.0) || !(er > 0.0)) return false;
+    ratio = e / er;
+    return true;
+}
+
 /* 1.12.18: the CV/I delay ratio between two device columns, the
  * same physics the DRAM-periphery clock ceiling uses (1.11.35). */
 bool McPATWrapper::deviceDelayRatio(int table_nm, int dev_a, int dev_b, double& ratio) {

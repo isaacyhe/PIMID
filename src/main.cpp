@@ -18278,6 +18278,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         double run_frac_max = -1.0;             // (1.12.154): the busiest host core's running fraction of the window
         double l3_mb = 0.0;                     // (1.12.154): host L3 capacity
         double uncore_clock_priced_w = 0.0;     // (1.12.154): McPAT L3 + NoC + MC clock networks (runtime)
+        int node_nm = 22;                       // (1.12.295): the host's process node (the uncore terms' node scale)
     };
     std::vector<NodePowerResult> results;
 
@@ -19758,6 +19759,7 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                     for (CT t : {CT::L3_CACHE, CT::NOC, CT::MEMORY_CONTROLLER})
                         result.uncore_clock_priced_w += mcpat.getClockPower(t).runtime_dynamic;
                     result.l3_mb = (node.enable_l3 && node.l3_kb > 0) ? node.l3_kb / 1024.0 : 0.0;
+                    result.node_nm = mcfg.tech_node_nm;   // (1.12.295)
                     const auto rc = zsim_stats.runCyclesPerCore(1);
                     if (!rc.empty() && node_cycles > 0) {
                         double m = 0.0;
@@ -20555,6 +20557,25 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
      * Caveats, printed:
      * C1E is an awake-idle floor (the uncore runs faster under load); the datasheet
      * figure includes on-die regulator loss, which PIMID leaves out. The host is awake for the whole window (no package sleep state). */
+    /* (1.12.295): both uncore terms are measured on one socket each (the floor on Haswell-EP, Intel's 22 nm
+     * process; the load term on Broadwell-EP) and are the host's at 22 nm, as every run so far used them.
+     * At another host node each default takes the published logic switching-energy ratio E(N) / E(22 nm)
+     * (DeepScaleTool, the table the per-operation energies use) and the run says so (extrapolated); a
+     * user value is the user's at any node. At 22 nm nothing is multiplied. */
+    auto uncoreNodeScale = [](int node_nm) -> double {
+        if (node_nm <= 0 || node_nm == 22) return 1.0;
+        double k = 0.0;
+        if (!pimid::McPATWrapper::logicEnergyRatio(node_nm, 22.0, k)) {
+            std::cerr << "[power] FATAL: no logic switching-energy ratio for a host at " << node_nm
+                      << " nm (the published table covers 7-130 nm)" << std::endl;
+            std::exit(2);
+        }
+        return k;
+    };
+    auto uncoreLoadWPerMb = [&](const NodePowerResult& r) -> double {
+        if (config.host_uncore_load_user_set || r.node_nm == 22) return config.host_uncore_load_w_per_mb;
+        return config.host_uncore_load_w_per_mb * uncoreNodeScale(r.node_nm);
+    };
     std::vector<std::pair<std::string, double>> host_uncore_w;
     double host_uncore_total_w = 0.0;
     if (config.pm_host_uncore_static) {
@@ -20567,10 +20588,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
              * is off) is what is above the floor, and the rest of the priced clocking is the
              * floor's own idle clocking. */
             const double load_rise = config.pm_host_uncore_load
-                ? config.host_uncore_load_w_per_mb * r.l3_mb * ((r.run_frac_max >= 0.0) ? r.run_frac_max : 1.0) : 0.0;
+                ? uncoreLoadWPerMb(r) * r.l3_mb * ((r.run_frac_max >= 0.0) ? r.run_frac_max : 1.0) : 0.0;
             const double clk_idle = std::max(0.0, r.uncore_clock_priced_w - load_rise);
             const double priced = r.uncore_priced_mc_leak_w + phy + r.uncore_priced_trunk_w + clk_idle;
-            const double ref = config.host_uncore_w_per_socket;
+            const bool ref_scaled = !config.host_uncore_w_per_socket_user_set && r.node_nm != 22;   // (1.12.295)
+            const double ref_k = ref_scaled ? uncoreNodeScale(r.node_nm) : 1.0;
+            const double ref = ref_scaled ? config.host_uncore_w_per_socket * ref_k : config.host_uncore_w_per_socket;
             const double w = std::max(0.0, ref - priced);
             host_uncore_w.push_back({r.name, w});
             host_uncore_total_w += w;
@@ -20585,7 +20608,12 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
                       << (config.host_uncore_w_per_socket_user_set ? " (power.host_uncore.w_per_socket)"
                                                                    : (pimid::debugChecks()
                                                                       ? " (DERIVED: Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)"
-                                                                      : " (Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)"))
+                                                                      : " (Intel 330783-002 Sec. 2.10, Haswell-EP package C1E over 34 SKUs = 18.5 W + 1.91 W/core; the intercept)"));
+            if (ref_scaled)
+                pimid::fmt_scoped(std::cout) << " at " << r.node_nm << " nm: " << config.host_uncore_w_per_socket << " W (22 nm) x "
+                          << ref_k << " (logic switching energy " << r.node_nm << " nm / 22 nm, DeepScaleTool, Sarangi and Baas,"
+                             " ISCAS 2021; extrapolated)";
+            pimid::fmt_scoped(std::cout)
                       << " minus what this run prices of it (MC leakage " << r.uncore_priced_mc_leak_w
                       << " W + MC PHY static " << phy << " W + die clock trunk " << r.uncore_priced_trunk_w
                       << " W + uncore clock networks above the load term's rise " << clk_idle
@@ -20635,16 +20663,22 @@ static void runPerNodePowerAnalysis(const UnifiedConfig& config,
         for (const auto& r : results) {
             if (!r.valid || r.cores <= 0) continue;
             const double a = (r.run_frac_max >= 0.0) ? r.run_frac_max : 1.0;
-            const double full = config.host_uncore_load_w_per_mb * r.l3_mb;
+            const double wpm = uncoreLoadWPerMb(r);   // (1.12.295): the host's node
+            const double full = wpm * r.l3_mb;
             const double w = std::max(0.0, full * a - r.uncore_clock_priced_w);
             host_uncore_load_w.push_back({r.name, w});
             host_uncore_load_total_w += w;
             pimid::fmt_scoped(std::cout) << "  [power] " << r.name << " uncore load (power.models.host_uncore_load): "
-                      << config.host_uncore_load_w_per_mb << " W/MB"
+                      << wpm << " W/MB"
                       << (config.host_uncore_load_user_set ? " (power.host_uncore.load_w_per_mb_llc)"
                                                            : (pimid::debugChecks()
                                                               ? " (DERIVED: Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)"
-                                                              : " (Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)"))
+                                                              : " (Gholkar et al. SC19, Fig. 2a, one E5-2620 v4 socket, 20 MB LLC: 6.2 W between the 1.2 and 2.7 GHz uncore clock at no LLC/memory traffic)"));
+            if (!config.host_uncore_load_user_set && r.node_nm != 22)
+                pimid::fmt_scoped(std::cout) << " at " << r.node_nm << " nm: " << config.host_uncore_load_w_per_mb << " W/MB (22 nm) x "
+                          << uncoreNodeScale(r.node_nm) << " (logic switching energy " << r.node_nm << " nm / 22 nm,"
+                             " DeepScaleTool; extrapolated)";
+            pimid::fmt_scoped(std::cout)
                       << " x L3 " << r.l3_mb << " MB = " << full << " W at the raised uncore clock x running fraction "
                       << a << (r.run_frac_max >= 0.0 ? " (busiest host core, measured)" : " (not measured: 1)")
                       << " minus the uncore clock networks McPAT prices (L3 + NoC + MC) " << r.uncore_clock_priced_w

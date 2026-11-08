@@ -741,7 +741,12 @@ misses, interconnect packets and hops, memory reads and writes, cycles.
   20 MB LLC) both terms are extrapolated from them: the static term is the
   fit's core-count-independent intercept at any core count, and the load term
   grows linearly with the host's L3 (one 1.875 MB slice per core, 0.58 W per
-  core at the raised clock). A run of a larger host says so.
+  core at the raised clock). A run of a larger host says so. Both defaults are
+  the host's at 22 nm; a host at another node takes each x the logic
+  switching-energy ratio E(N) / E(22 nm) of DeepScaleTool (Sarangi and Baas,
+  ISCAS 2021), the table the per-operation energies use (extrapolated; at
+  45 nm x 2.1), and the run prints the factor. A value given in
+  `power.host_uncore` is used as given at any node.
 - **L2 and L3 writes.** Every line written into an L2 or an L3 besides its
   write requests is priced as a write of that cache (the cache's `fill`
   counter), so the levels and both kinds of L3 count alike: an L2's or an
