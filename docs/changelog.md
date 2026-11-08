@@ -6,6 +6,29 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.299 -- an NVM array from 7 to 21 nm runs NVSim at its own feature size on the 22 nm device branch, not refused
+
+- **The problem.** An STT_MRAM or RERAM array below 22 nm was refused (rc 1 at load, or rc 2 when the array was
+  characterised), while the logic and an SRAM array from 7 to 21 nm are priced; a 16 or 7 nm NVM device had no area
+  or power.
+- **The root cause.** NVSim has device tables from 22 nm up and initialised nothing below them, and its wire model gave
+  every node at or below 22 nm the 22 nm wire geometry.
+- **The fix.** From 7 to 21 nm NVSim reads its 22 nm device branch with the feature size set to the node, so every geometry
+  it draws (cells in F^2, transistor widths) is at the node, as CACTI does there; its wire is drawn at the node too
+  (pitch, barrier and dielectric thicknesses x N / 22, the cross-section kept in proportion). An STT_MRAM cell's area
+  follows the published bitcell-area trend instead of F^2 (TSMC 22 nm 0.0456 um^2, ISSCC 2020 13.3; Samsung 14 nm
+  0.024 and 8 nm about 0.017 um^2, IEDM 2024 11-3): the file's 54 F^2 x [A(N) / A(22)] / (N / 22)^2, log-log through
+  the anchors (interpolated) and along the 14 -> 8 nm slope at 7 nm (extrapolated), 65 F^2 at 16 nm and 183 F^2 at
+  7 nm, with its own cache entry; a RERAM cell keeps its 53 F^2, no same-family bitcell area being published there
+  (held). Each prints one `[nvm] <technology> cell at N nm` line. The cell energies are held, as at every node. The
+  `[tech] N nm is below CACTI's finest table` line now names NVSim with CACTI and McPAT.
+- **Data impact.** Every run at 22 nm and above is unchanged, bit for bit (smoke runs, STT_MRAM at 22 and 45 nm and
+  RERAM at 45 nm included: System Total and run time). New (GEMV, 16 elements, STT_MRAM): 16 and 7 nm complete at
+  0.356 and 0.176 W against 0.443 W at 22 nm; memory area 0.587 and 0.161 mm^2 against 1.062 mm^2 (device 4.75 and
+  1.17 against 8.71 mm^2); the 64 KB bank's read energy 0.122 nJ at every node (the held cell dominates), its read
+  latency 3.35 and 3.80 ns against 3.30 ns; run time 43236 and 44882 against 46618 cycles. RERAM at 16 and 7 nm
+  completes at 0.806 and 0.666 W.
+
 ## 1.12.298 -- a process node from 7 to 21 nm runs the tools at its own feature size on the 22 nm table, not refused
 
 - **The problem.** Any node below 22 nm was a fatal configuration error (rc 1), so a 16 or 7 nm study had no timing,

@@ -11996,7 +11996,7 @@ static void noteSubTableNode(int nm) {
     if (!(nm > 0 && nm < 22)) return;
     static std::set<int> said;
     if (!said.insert(nm).second) return;
-    std::cout << "[tech] " << nm << " nm is below CACTI's finest table (22 nm): CACTI and McPAT run at " << nm
+    std::cout << "[tech] " << nm << " nm is below CACTI's finest table (22 nm): CACTI, McPAT and NVSim run at " << nm
               << " nm on the 22 nm table's per-micrometre device parameters and wire materials, every geometry"
                  " (devices, cells, wire cross-sections) drawn at " << nm << " nm, so the timing, energy and area all"
                  " come from the tools at " << nm << " nm (extrapolated)"
@@ -27332,27 +27332,6 @@ int main(int argc, char** argv) {
                       << (*off22.rbegin() > 45 ? "; above 45 nm the device element's gate-level wire-load (1.62) and"
                                                  " timing-repair (0.188) factors, their 45 nm values" : "")
                       << " (held)" << std::endl;
-        }
-    }
-
-    /* (1.12.298): an STT_MRAM or RERAM array below 22 nm is refused: NVSim has no device table below
-     * 22 nm, and its characterisation would otherwise fail inside the array queries. (A PCM die is
-     * pinned to its 22 nm memory-process table at every placement it accepts.) */
-    {
-        auto nvmBelow22 = [](const std::string& t, int nm) {
-            return (t == "STT_MRAM" || t == "RERAM") && nm > 0 && nm < 22;
-        };
-        auto refuse = [](const std::string& t, int nm, const std::string& who) {
-            std::cerr << "ERROR: " << who << t << " array at " << nm << " nm is not supported: NVSim has no"
-                         " device table below 22 nm (an SRAM array and the logic run there on CACTI's 22 nm"
-                         " table)." << std::endl;
-            std::exit(1);
-        };
-        if (config.scope != "system") {
-            if (nvmBelow22(config.memory_tech, config.tech_node_nm)) refuse(config.memory_tech, config.tech_node_nm, "the ");
-        } else {
-            for (const auto& n : config.system_nodes)
-                if (nvmBelow22(n.memory_tech, n.tech_node_nm)) refuse(n.memory_tech, n.tech_node_nm, n.name + ": the ");
         }
     }
 

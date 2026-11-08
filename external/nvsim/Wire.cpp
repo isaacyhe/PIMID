@@ -472,6 +472,17 @@ void Wire::Initialize(int _featureSizeInNano, WireType _wireType, WireRepeaterTy
 		}
 	}
 
+	/* PIMID (1.12.299): below the finest wire table (7-21 nm) the 22 nm wire is drawn at the node: its pitch and
+	 * its absolute thicknesses (barrier, inter-layer dielectric) x N / 22, the cross-section kept in
+	 * proportion, as CACTI does there (external/cacti/parameter.cc). The chain above gave the 22 nm
+	 * geometry to every node at or below 22 nm. */
+	if (_featureSizeInNano > 0 && _featureSizeInNano < 22) {
+		const double s = _featureSizeInNano / 22.0;
+		featureSize = _featureSizeInNano * 1e-9;
+		wirePitch *= s;
+		ildThickness *= s;
+		barrierThickness *= s;
+	}
 	wireWidth = wirePitch / 2;
 	wireThickness = aspectRatio * wireWidth;
 	wireSpacing = wirePitch - wireWidth;

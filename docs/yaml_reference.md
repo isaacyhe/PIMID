@@ -974,16 +974,17 @@ iso-process study. A per-node YAML `tech_node_nm` under `system.hosts[]` /
 
 **Valid nodes: 7 to 90 nm.** CACTI tabulates 22, 32, 45, 65 and 90 nm, and
 every linked tool evaluates those from its own tables; 22 nm is the finest. A
-node below it (7-21 nm, accepted since (1.12.298); refused before) runs CACTI and
-McPAT at the node itself on the 22 nm table's per-micrometre device parameters
+node below it (7-21 nm, accepted since (1.12.299); refused before) runs CACTI,
+McPAT and NVSim at the node itself on the 22 nm table's per-micrometre device parameters
 and wire materials, every geometry (devices, cells, wire cross-sections) drawn
 at the node, so its timing, energy and area all come from the tools at the
 node; McPAT's own node rules (per-operation energies, published cells,
 gate-level factors, the UCIe rows) apply as they are, the DRAM-periphery factor
 reads and a core's local clock wire hold their 22 nm values, and the run prints
-one `[tech] N nm is below CACTI's finest table` line (extrapolated). An
-STT_MRAM or RERAM array below 22 nm is refused: NVSim has no device table
-there. A node below 7 nm is refused (rc 1). A
+one `[tech] N nm is below CACTI's finest table` line (extrapolated). NVSim
+reads its 22 nm device branch at the node's feature size (the STT_MRAM and
+RERAM cell energies are held, as at every node). A node below 7 nm is
+refused (rc 1). A
 node between two tables (accepted since (1.12.294); refused before) is
 interpolated from the two bracketing tables, linearly, the way CACTI itself
 does it (the larger table's share is (N - smaller) / (larger - smaller)); NVSim

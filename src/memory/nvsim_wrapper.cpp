@@ -197,11 +197,11 @@ void NVSimWrapper::validateConfiguration() {
     }
 
     // Validate technology node
-    /* (1.12.298): NVSim has device tables from 22 nm up (external/nvsim/Technology.cpp); a node below 22 nm
-     * is refused here by name. It was let through from 7 nm and failed later in the design search. */
-    if (config_.process_node_nm < 22 || config_.process_node_nm > 90) {
+    /* (1.12.299): 7-90 nm. NVSim has device tables from 22 nm up (external/nvsim/Technology.cpp); a node
+     * below them (7-21 nm) runs on the 22 nm branch at its own feature size (runNVSim). */
+    if (config_.process_node_nm < 7 || config_.process_node_nm > 90) {
         valid_ = false;
-        error_message_ = "Technology node out of range (22nm - 90nm: NVSim has no device table below 22 nm)";
+        error_message_ = "Technology node out of range (7nm - 90nm)";
         return;
     }
 }
@@ -386,6 +386,38 @@ void NVSimWrapper::loadCellParameters() {
                 std::cout << "[nvm] RERAM cell energies at " << config_.process_node_nm << " nm: the cell's values (the"
                              " measured 40 nm macro's read and write energies), as at 22 nm; NVSim has no cell-scaling rule"
                              " for a memristor (held)" << std::endl;
+        }
+    }
+    /* (1.12.299): below the 22 nm device table (7-21 nm) a cell file's F^2 count would shrink the cell as F^2, but
+     * published STT-MRAM bitcells do not: TSMC 22 nm 0.0456 um^2 (ISSCC 2020, 13.3; about 94 F^2), Samsung 14 nm
+     * 0.024 um^2 and 8 nm about 0.017 um^2 (IEDM 2024, 11-3). An STT_MRAM cell there takes that trend as a ratio
+     * to 22 nm: F2(N) = F2_file x [A(N) / A(22)] / (N / 22)^2, A log-log in the node through 22 / 14 / 8 nm
+     * (interpolated) and along the 14 -> 8 nm slope below 8 nm (extrapolated). A RERAM cell keeps its F^2 count:
+     * no 1T1R bitcell area of the same family is published at 22 nm and below to scale it by (held). The scaled
+     * cell gets its own cache entry (runNVSim). */
+    if (config_.process_node_nm >= 7 && config_.process_node_nm < 22 &&
+        (nvsim_cell_->memCellType == MRAM || nvsim_cell_->memCellType == memristor)) {
+        const int n = config_.process_node_nm;
+        static std::set<std::pair<int, int>> told;
+        const bool first = told.insert({static_cast<int>(nvsim_cell_->memCellType), n}).second;
+        if (nvsim_cell_->memCellType == MRAM) {
+            const double f2_file = nvsim_cell_->area;
+            const double n_lo = (n >= 14) ? 14.0 : 8.0, n_hi = (n >= 14) ? 22.0 : 14.0;
+            const double a_lo = (n >= 14) ? 0.024 : 0.017, a_hi = (n >= 14) ? 0.0456 : 0.024;
+            const double a_n = std::exp(std::log(a_lo) + (std::log(n / n_lo) / std::log(n_hi / n_lo)) * (std::log(a_hi) - std::log(a_lo)));
+            const double k = (a_n / 0.0456) / ((n / 22.0) * (n / 22.0));
+            nvsim_cell_->area = f2_file * k;
+            nvsim_cell_->heightInFeatureSize = std::sqrt(nvsim_cell_->area * nvsim_cell_->aspectRatio);
+            nvsim_cell_->widthInFeatureSize = std::sqrt(nvsim_cell_->area / nvsim_cell_->aspectRatio);
+            if (first)
+                std::cout << "[nvm] STT_MRAM cell at " << n << " nm: the cell file's " << f2_file << " F^2 scaled to the"
+                             " published bitcell-area trend (22 nm 0.0456, 14 nm 0.024, 8 nm 0.017 um^2) = " << nvsim_cell_->area
+                          << " F^2, x " << k << " (the trend's area ratio to 22 nm over (N / 22)^2) ("
+                          << (n < 8 ? "extrapolated" : "interpolated") << ")" << std::endl;
+        } else if (first) {
+            std::cout << "[nvm] RERAM cell at " << n << " nm: the cell file's " << nvsim_cell_->area << " F^2, as at 22 nm:"
+                         " no 1T1R bitcell area of the same family is published at 22 nm and below to scale it by (held)"
+                      << std::endl;
         }
     }
     // NOTE: Don't set global cell here - do it in runNVSim() to match
@@ -871,13 +903,15 @@ namespace {
  * calibration revision joins it: bump kNvsimCalibrationRev whenever the NVSim characterization code changes
  * what a cell's numbers produce. FNV-1a, 64 bit. */
 static const char* kNvsimCalibrationRev = "1";
-static std::string nvsimCellHash(const std::string& path) {
+/* (1.12.299): extra = what the run changed in the cell after reading it ("" = nothing: the hash exactly as before). */
+static std::string nvsimCellHash(const std::string& path, const std::string& extra = "") {
     uint64_t h = 1469598103934665603ULL;
     auto mix = [&h](const std::string& s) {
         for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; }
         h ^= static_cast<unsigned char>('\n'); h *= 1099511628211ULL;
     };
     mix(std::string("rev ") + kNvsimCalibrationRev);
+    if (!extra.empty()) mix(extra);
     std::ifstream f(path);
     if (!f.good()) {
         mix("no cell file");
@@ -923,7 +957,10 @@ void NVSimWrapper::runNVSim() {
 #ifdef NVSIM_DATA_DIR
                          std::string(NVSIM_DATA_DIR) + "/" +
 #endif
-                         getCellFileName()) };   // (1.12.265): the cell file's content
+                         getCellFileName(),
+                         (nvsim_cell_ && nvsim_cell_->memCellType == MRAM && config_.process_node_nm >= 7 &&
+                          config_.process_node_nm < 22) ? std::string("stt cell area on the published bitcell trend")
+                                                        : std::string()) };   // (1.12.265): the cell file's content; (1.12.299): its area
     // Reads (both the in-memory map and the on-disk XML) are skipped unless the
     // warehouse mode permits reading -- OFF/WO must truly recompute.
     if (pimid::cache::readEnabled()) {
@@ -997,10 +1034,21 @@ void NVSimWrapper::runNVSim() {
         if (tech == nullptr) {
             tech = new Technology();
         }
-        tech->Initialize(nvsim_input_->processNode, nvsim_input_->deviceRoadmap);
+        /* (1.12.299): below NVSim's finest device table (7-21 nm) the 22 nm branch is read, its per-micrometre
+         * device parameters held, and the feature size set to the node, so every geometry NVSim draws from
+         * it (cells in F^2, transistor widths, the wire pitches) is at the node, as CACTI does there. NVSim
+         * initialised nothing below 22 nm. No interpolation follows: there is no second table. */
+        int pn = nvsim_input_->processNode;
+        const bool below_tables = (pn > 0 && pn < 22);
+        if (below_tables) {
+            tech->Initialize(22, nvsim_input_->deviceRoadmap);
+            tech->featureSizeInNano = pn;
+            tech->featureSize = pn * 1e-9;
+        } else {
+            tech->Initialize(nvsim_input_->processNode, nvsim_input_->deviceRoadmap);
+        }
 
         // Technology interpolation for intermediate nodes (matching NVSim main.cpp:97-123)
-        int pn = nvsim_input_->processNode;
         Technology techHigh;
         double alpha = 0;
         if (pn > 200) {
@@ -1024,7 +1072,7 @@ void NVSimWrapper::runNVSim() {
             techHigh.Initialize(32, nvsim_input_->deviceRoadmap);
             alpha = (pn - 22.0) / 10;
         }
-        tech->InterpolateWith(techHigh, alpha);
+        if (!below_tables) tech->InterpolateWith(techHigh, alpha);
 
         // Set global cell pointer
         cell = nvsim_cell_;
