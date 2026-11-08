@@ -6,6 +6,28 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.294 -- a process node between two CACTI tables is interpolated from them, not refused
+
+- **The problem.** A node between CACTI's tables (for example 28 or 40 nm, anything in 23-89 nm other than 32, 45
+  and 65) was a fatal configuration error ("technology node 28 nm ... is not supported", rc 1), so such a run had no
+  area or power at all; `system.devices[].process.*.node_nm` refused it the same way.
+- **The root cause.** The node authority accepted only the five table nodes, although CACTI and NVSim interpolate
+  between their tables themselves. Two pieces could not have followed it: PIMID's own reads of the CACTI tables (the
+  DRAM-periphery factors) opened `<N>nm.dat`, which does not exist between tables, and NVSim's wire model gave a node
+  between tables the geometry of the next larger table.
+- **The fix.** Any node from 22 to 90 nm is accepted. A node between two tables is interpolated from the two bracketing
+  tables, linearly, the way CACTI does it (the larger table's share is (N - smaller) / (larger - smaller)): CACTI and
+  NVSim's device tables as before, the DRAM-periphery factor reads with the same blend, and NVSim's wire resistance,
+  capacitance and geometry blended with the next smaller table at the same weight. The run prints one
+  `[tech] N nm lies between CACTI's ... tables` line naming the weights (interpolated). A table node reads its own
+  table exactly as before; a node outside 22-90 nm is still refused.
+- **Data impact.** Every run at a table node (22, 32, 45, 65, 90 nm) is unchanged, bit for bit (smoke runs at 22, 32
+  and 45 nm, device and co-simulation: System Total, run time and the full log). Runs at 28 and 40 nm now complete,
+  between their tables (GEMV, 16 elements on the HBM3 logic die): 28 nm 3.818 W and 817.3 mm^2 (22 nm 3.591 W,
+  812.5 mm^2; 32 nm 4.015 W, 820.8 mm^2); 40 nm 4.558 W and 829.1 mm^2 (45 nm 4.982 W, 835.0 mm^2). An HBM3 DRAM die
+  at 28 nm (`process.dram_die.node_nm`) prices its elements with the blended factors (area 2.456x, between 2.444x at
+  22 nm and 2.462x at 32 nm).
+
 ## 1.12.293 -- a UCIe link at a node without a measured row is priced from the two rows, not refused
 
 - **The problem.** A co-simulation with an `interposer` link whose die sat at 32, 45, 65 or 90 nm stopped in McPAT

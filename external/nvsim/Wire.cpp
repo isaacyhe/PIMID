@@ -485,6 +485,35 @@ void Wire::Initialize(int _featureSizeInNano, WireType _wireType, WireRepeaterTy
 		ildThickness, 1.5 /* miller value */, horizontalDielectric, 3.9 /* Vertical Dielectric */,
 		1.15e-10 /* Fringe Capacitance (Unit: F/m), TO-DO: CACTI assumes a fixed number here */);
 
+	/* PIMID (1.12.294): a node BETWEEN two wire tables (23-89 nm other than 32, 45 and 65).
+	 * The chain above gave the wire the geometry of the next LARGER table, which until
+	 * now stood in for the node. The wire's resistance and capacitance per unit length
+	 * and its geometry are now blended linearly with the next SMALLER table's, at the
+	 * weight NVSim's device tables and CACTI use (the larger table's share =
+	 * (N - smaller) / (larger - smaller)); the repeaters below are sized on the blend.
+	 * A table node is untouched. */
+	{
+		static const int kWireTables[] = {22, 32, 45, 65, 90};
+		for (int i = 0; i + 1 < 5; i++) {
+			if (_featureSizeInNano > kWireTables[i] && _featureSizeInNano < kWireTables[i + 1]) {
+				Wire sm;
+				sm.Initialize(kWireTables[i], wireType, repeated_none, temperature, false);
+				const double w = (double)(_featureSizeInNano - kWireTables[i]) / (double)(kWireTables[i + 1] - kWireTables[i]);
+				resWirePerUnit = w * resWirePerUnit + (1 - w) * sm.resWirePerUnit;
+				capWirePerUnit = w * capWirePerUnit + (1 - w) * sm.capWirePerUnit;
+				barrierThickness = w * barrierThickness + (1 - w) * sm.barrierThickness;
+				horizontalDielectric = w * horizontalDielectric + (1 - w) * sm.horizontalDielectric;
+				wirePitch = w * wirePitch + (1 - w) * sm.wirePitch;
+				aspectRatio = w * aspectRatio + (1 - w) * sm.aspectRatio;
+				ildThickness = w * ildThickness + (1 - w) * sm.ildThickness;
+				wireWidth = w * wireWidth + (1 - w) * sm.wireWidth;
+				wireThickness = w * wireThickness + (1 - w) * sm.wireThickness;
+				wireSpacing = w * wireSpacing + (1 - w) * sm.wireSpacing;
+				break;
+			}
+		}
+	}
+
 	if (wireRepeaterType != repeated_none) {
 		/* If the repeaters are inserted in the wire */
 		findOptimalRepeater();

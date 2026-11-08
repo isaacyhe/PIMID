@@ -972,11 +972,17 @@ value, inherits the device node so a single `power.tech_node_nm` yields a unifor
 iso-process study. A per-node YAML `tech_node_nm` under `system.hosts[]` /
 `system.devices[]` still wins over these `power.*` knobs.
 
-**Valid nodes (since 1.11.2): 22, 32, 45, 65, 90 nm -- a positive list.** These
-are the nodes every linked tool evaluates from real, calibrated tables; 22 nm is
-the finest. Any other value is a FATAL configuration error (the old behavior --
-silently clamping sub-22 requests to 22 -- is removed; CACTI's 16nm table is a
-stub, so the reject guards a live failure mode). DRAM memory domains carry no
+**Valid nodes: 22 to 90 nm.** CACTI tabulates 22, 32, 45, 65 and 90 nm, and
+every linked tool evaluates those from its own tables; 22 nm is the finest. A
+node between two tables (accepted since (1.12.294); refused before) is
+interpolated from the two bracketing tables, linearly, the way CACTI itself
+does it (the larger table's share is (N - smaller) / (larger - smaller)); NVSim
+blends its device and wire tables, and PIMID its DRAM-periphery factor reads,
+with the same weight, and the run prints one `[tech] N nm lies between CACTI's
+... tables` line naming the weights. Any value outside 22-90 is a FATAL
+configuration error (the old behavior -- silently clamping sub-22 requests to
+22 -- is removed; CACTI's 16nm table is a stub, so the reject guards a live
+failure mode). DRAM memory domains carry no
 free node at all: their periphery class is derived from the memory technology
 and printed. `power.device_corner` (`hp` default, `lstp`, `lop`) selects the
 CACTI device column for logic-family components; it is refused, with a printed
@@ -1227,7 +1233,7 @@ system:
       core_type: ooo_core
       num_cores: 4
       frequency_mhz: 3000
-      tech_node_nm: 22   # valid: 22/32/45/65/90 (positive list, fatal otherwise)
+      tech_node_nm: 22   # valid: 22-90 (tables 22/32/45/65/90, others interpolated; fatal outside)
       memory:
         technology: DDR5
       cache:
@@ -1247,7 +1253,7 @@ system:
 | `system.hosts[].num_cores` | int | `4` | Number of host cores. |
 | `system.hosts[].allowed_address_ranges` | list of `{ base, size }` | every window of the run | What the host may address (1.12.12). Given, the ranges must contain every device's and memory's window (a host that does not reach a node is not supported; refused naming the node); a range covering addresses no node owns is kept with a WARNING. `system.hosts[].address` is refused by name: a host has no window of its own. |
 | `system.hosts[].frequency_mhz` | double | `3000.0` | Host frequency. |
-| `system.hosts[].tech_node_nm` | int | inherits device (`22`) | Host technology node. Valid: 22/32/45/65/90 positive list -- any other value is a fatal error (see Process-node resolution). |
+| `system.hosts[].tech_node_nm` | int | inherits device (`22`) | Host technology node. Valid: 22-90 nm (tables at 22/32/45/65/90, a node between two tables interpolated) -- any other value is a fatal error (see Process-node resolution). |
 | `system.hosts[].memory.technology` | string | `"DDR4"` | Host memory technology. When the device is the host's memory (`is_default_mem` derived `true`) it is forced = the device tech; with a `system.memories[]` entry (1.12.10) it is that memory's `memory.technology`. `system.hosts[].mem` is retired. |
 | `system.hosts[].memory.bandwidth_mbs` | int | `-1` | Per-channel host memory bandwidth (MB/s). `-1` = auto from tech. |
 | `system.hosts[].memory.topology` | string | per technology | (1.12.65). The memory node's topology: `rdimm`, `udimm`, `sodimm` or `soldered`. It sets the DQ/DQS series stub between the connector and the DRAM in the termination loop: DDR3/DDR4 DIMMs 15 ohm, DDR5 RDIMM 15 ohm, DDR5 UDIMM/SODIMM 0, soldered 0. Defaults: DDR3/DDR4/DDR5 `rdimm` (the host baselines are server class), LPDDR5/GDDR6/HBM2/HBM3 `soldered` (their only topology). Refused: any other value, a DIMM topology on LPDDR5/GDDR6/HBM, any value on a non-DRAM memory, `lrdimm` (data buffers not modelled), `camm2`/`lpcamm2`. The log prints the topology, the stub and its source. Under `is_default_mem: true` the host memory is the device's array and takes the device's topology. |
@@ -1452,10 +1458,10 @@ key written inside a node was ignored in silence; 1.11.106 refused it.
 | `system.devices[].frequency_mhz` | double | the top-level `pim.pe.frequency_mhz` / `noc.clock_mhz`, else `1000` | Device frequency. Alias of `pim.pe.frequency_mhz` (an integer there) and `noc.clock_mhz` in the node. |
 | `system.devices[].tech_node_nm` | int | the device node (`22`) | Device technology node. Alias of `technology.node_nm` in the node. |
 | `system.devices[].process` | map | absent (today's pricing) | PIMID 1.12.18 (per-die process; `power.models.per_die_process`). One block per die the device has; every component is priced at the die it physically sits on. Where a component sits follows the placement matrix: at a DRAM-periphery placement (SUBARRAY..CHIP, and CHANNEL on LPDDR/GDDR/HBM) the PEs, their caches and element controllers and the NoC levels marked on the DRAM die are on the DRAM die (priced at the DRAM die's node through the CACTI periphery transform); the off-die NoC levels (rank/channel/system tier) and the link controller on the logic die; at a logic placement (RANK and above, LOGIC_DIE) every logic component is on the logic die. The fabric's on-die links and TSVs take the DRAM die's node, its off-die links the logic die's. The memory array itself is the memory model's (`memory.technology`). One device is built, so two devices giving different blocks are refused. Absent: every number is today's. |
-| `system.devices[].process.logic_die.node_nm` | int | the chip node (DRAM-periphery placement: the McPAT chip node for the off-die routers and `power.tech_node_nm` for the off-die links, as before; logic placement: `tech_node_nm`) | Node of the logic / base die. One of 22, 32, 45, 65, 90 (the nodes CACTI tabulates); anything else is refused (rc 1). The UCIe link keeps its own `power.link.process_node_nm` (3 to 90). |
+| `system.devices[].process.logic_die.node_nm` | int | the chip node (DRAM-periphery placement: the McPAT chip node for the off-die routers and `power.tech_node_nm` for the off-die links, as before; logic placement: `tech_node_nm`) | Node of the logic / base die. 22 to 90 (CACTI's tables at 22, 32, 45, 65, 90; a node between two tables is interpolated); anything else is refused (rc 1). The UCIe link keeps its own `power.link.process_node_nm` (3 to 90). |
 | `system.devices[].process.logic_die.device_type` | string | `power.device_corner` if written, else `hp` (1.12.18, whole logic die at one corner; lop and lstp tried and rejected) | CACTI logic device of the logic die: `hp`, `lstp` or `lop`; anything else is refused. |
 | `system.devices[].process.dram_die.generation` | string | the device's `memory.technology` | The DRAM generation of the core dies (a DRAM technology: DDR3, DDR4, DDR5, LPDDR5, GDDR6, HBM2, HBM3): its CACTI DRAM table (32 nm for DDR3, 22 nm otherwise) is the DRAM die's node. Give this or `node_nm`, not both (refused). |
-| `system.devices[].process.dram_die.node_nm` | int | the generation's CACTI table | Node of the DRAM core dies (22, 32, 45, 65, 90; refused otherwise). The DRAM-periphery factors are read from this node's table; a node whose table does not populate the family's column is refused by the factor derivation (FATAL, rc 2). |
+| `system.devices[].process.dram_die.node_nm` | int | the generation's CACTI table | Node of the DRAM core dies (22 to 90; refused otherwise). The DRAM-periphery factors are read from this node's table (a node between two tables: the two tables blended, as CACTI does); a node whose table does not populate the family's column is refused by the factor derivation (FATAL, rc 2). |
 | `system.devices[].process.dram_die.family` | string | `comm-dram` | The CACTI DRAM periphery device the DRAM die is built from (the column the area and dynamic factors are read from): `comm-dram` or `lp-dram` (all-zero at 22 nm: refused there by the factor derivation; real data at 32 and 45 nm). The leakage column stays `power.periphery_device`. |
 | `system.devices[].memory` | map | - | Device memory: every `memory.*` key (1.11.107; `technology`, `banks` and `ports_per_bank` only before). |
 | `system.devices[].is_default_mem` | bool | derived | `true`: this PIM device is the host's main memory (host tech = device tech by construction). Since 1.12.10 the system decides: a `system.memories[]` entry present makes that memory the host's and the device not (`false`); a written `true` beside a memory is dropped with a warning; `false` without a memory is refused, naming `system.memories[]`. |
@@ -2025,7 +2031,7 @@ system:
       core_type: ooo_core
       num_cores: 8
       frequency_mhz: 3500
-      tech_node_nm: 22         # valid: 22/32/45/65/90
+      tech_node_nm: 22         # valid: 22-90 (tables 22/32/45/65/90, others interpolated)
       memory: { technology: DDR5 }
       cache:
         l1d_kb: 48

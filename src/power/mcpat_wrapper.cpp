@@ -389,7 +389,7 @@ void McPATWrapper::setNoCActivity(const NoCActivityStats& stats) {
  * hp, lstp, lop, lp-dram, comm-dram in that order. temp >= 0 selects the
  * temperature-indexed variant (I_off_n), where the first number on the line is
  * the temperature in Celsius and the five columns follow it. */
-static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1) {
+static bool cactiRowFile(int table_nm, const char* tag, double col[5], int temp) {
 #ifndef CACTI_DATA_DIR
     (void)table_nm; (void)tag; (void)col; (void)temp; return false;
 #else
@@ -419,6 +419,27 @@ static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1
     }
     return false;
 #endif
+}
+
+/* PIMID (1.12.294): a row at a node BETWEEN two CACTI tables (23-89 nm other than 32,
+ * 45 and 65), blended from the two bracketing tables the way CACTI blends them
+ * (external/cacti/parameter.cc: alpha x larger + (1 - alpha) x smaller, alpha =
+ * (N - smaller) / (larger - smaller)), so a factor derived here and the McPAT run
+ * it multiplies describe one interpolated node. Before, no such file existed and
+ * the read failed (a refusal, rc 2). A table node reads its own file, exactly as
+ * before. */
+static bool cactiRow(int table_nm, const char* tag, double col[5], int temp = -1) {
+    static const int kTables[] = {22, 32, 45, 65, 90};
+    for (int i = 0; i + 1 < 5; ++i) {
+        if (table_nm > kTables[i] && table_nm < kTables[i + 1]) {
+            double lg[5], sm[5];
+            if (!cactiRowFile(kTables[i + 1], tag, lg, temp) || !cactiRowFile(kTables[i], tag, sm, temp)) return false;
+            const double alpha = static_cast<double>(table_nm - kTables[i]) / static_cast<double>(kTables[i + 1] - kTables[i]);
+            for (int k = 0; k < 5; ++k) col[k] = alpha * lg[k] + (1 - alpha) * sm[k];
+            return true;
+        }
+    }
+    return cactiRowFile(table_nm, tag, col, temp);
 }
 
 /* PIMID (1.12.105): a temperature-indexed row (I_off_n, I_g_on_n) at ANY integer
@@ -989,7 +1010,8 @@ void McPATWrapper::createMcPATInput() {
  *
  * WHY IT WAS INVISIBLE. No reachable path can request a sub-22 nm node any
  * more. Every McPATWrapper construction in main.cpp routes its node through
- * validateTechNodeNm(), which accepts only {22, 32, 45, 65, 90} and exits
+ * validateTechNodeNm(), which accepts only 22-90 nm ((1.12.294): a node between
+ * the 22, 32, 45, 65 and 90 nm tables is interpolated) and exits
  * otherwise, and the process-family pins can only reassign 22 or 32. So the
  * clamp has not fired since that validator landed, and the wrapper's own
  * 7-90 nm window in validateConfiguration() is never the binding constraint.

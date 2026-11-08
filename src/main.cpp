@@ -11940,17 +11940,55 @@ static bool applyProcessFamily(pimid::McPATWrapper::SystemConfig& mcfg,
  * 65 and 90 nm (CACTI exact tables; NVSim branches; McPAT rides the CACTI
  * params; 22 is also the McPAT calibration floor). Anything else is now a
  * fatal configuration error naming the valid set -- not a clamp, not a warn:
- * a swept study must fail loudly at the invalid point, not plateau silently. */
+ * a swept study must fail loudly at the invalid point, not plateau silently.
+ *
+ * (1.12.294): a node BETWEEN two tables (23-89 nm other than 32, 45 and 65) is
+ * accepted and interpolated, and the run says so (noteInterpolatedNode). Until
+ * now it was refused, so such a run had no area or power at all. CACTI blends
+ * the two bracketing tables linearly (external/cacti/parameter.cc: the larger
+ * node's share (N - smaller) / (larger - smaller)); NVSim blends its device
+ * tables with the same weight (nvsim_wrapper.cpp) and, since this release, its
+ * wire tables (external/nvsim/Wire.cpp); the DRAM-periphery factors read the
+ * tables with the same blend (mcpat_wrapper.cpp cactiRow). A table node reads
+ * its own table exactly as before. Outside 22-90 nm the node is still refused:
+ * there is no table below 22 nm (16nm.dat is a stub). */
+static const int kCactiTableNodes[] = {22, 32, 45, 65, 90};
+/* (1.12.294): the bracketing tables of a node between two of them (lo < nm < hi), else false. */
+static bool cactiBracket(int nm, int& lo, int& hi) {
+    for (int i = 0; i + 1 < 5; ++i)
+        if (nm > kCactiTableNodes[i] && nm < kCactiTableNodes[i + 1]) {
+            lo = kCactiTableNodes[i]; hi = kCactiTableNodes[i + 1]; return true;
+        }
+    return false;
+}
+/* (1.12.294): the table a node reads, as the run prints it: "22nm.dat" for a table node. */
+static std::string cactiTableLabel(int nm) {
+    int lo = 0, hi = 0;
+    if (!cactiBracket(nm, lo, hi)) return std::to_string(nm) + "nm.dat";
+    return std::to_string(nm) + " nm (" + std::to_string(lo) + "nm.dat/" + std::to_string(hi) + "nm.dat blend)";
+}
+/* (1.12.294): one line per interpolated node a run uses, naming the method. */
+static void noteInterpolatedNode(int nm) {
+    int lo = 0, hi = 0;
+    if (!cactiBracket(nm, lo, hi)) return;
+    static std::set<int> said;
+    if (!said.insert(nm).second) return;
+    const double w = static_cast<double>(nm - lo) / static_cast<double>(hi - lo);
+    std::cout << "[tech] " << nm << " nm lies between CACTI's " << lo << " and " << hi << " nm tables: CACTI,"
+                 " NVSim (devices and wires) and the DRAM-periphery factors blend the two tables linearly, "
+              << w << " of the " << hi << " nm table and " << (1.0 - w) << " of the " << lo
+              << " nm table (interpolated)" << std::endl;
+}
 static int validateTechNodeNm(int requested_nm, const char* site) {
     if (requested_nm <= 0) return 22;  // unset: the calibrated default
-    static const int kValidNodes[] = {22, 32, 45, 65, 90};
-    for (int n : kValidNodes) {
-        if (requested_nm == n) return requested_nm;
+    if (requested_nm >= 22 && requested_nm <= 90) {   // (1.12.294): a node between two tables is interpolated
+        noteInterpolatedNode(requested_nm);
+        return requested_nm;
     }
     std::cerr << "ERROR: technology node " << requested_nm << " nm (" << site
-              << ") is not supported. Valid nodes: 22, 32, 45, 65, 90 nm "
-                 "(the nodes all linked tools evaluate from real, calibrated "
-                 "tables; 22 nm is the finest)." << std::endl;
+              << ") is not supported. Valid nodes: 22 to 90 nm (CACTI's tables "
+                 "at 22, 32, 45, 65 and 90 nm; a node between two tables is "
+                 "interpolated from them; 22 nm is the finest)." << std::endl;
     std::exit(1);
 }
 
@@ -13864,8 +13902,8 @@ static void applyCornerAndPeripheryPricing(
             double pitch = (mcfg.subarray_pitch_factor > 0.0)
                                ? mcfg.subarray_pitch_factor : 1.0;
             std::cout << "  [tech] " << label << "periphery factors READ: comm-dram from "
-                      << mcfg.dram_periph_table_nm << "nm.dat / baseline from "
-                      << mcfg.tech_node_nm << "nm.dat at "
+                      << cactiTableLabel(mcfg.dram_periph_table_nm) << " / baseline from "
+                      << cactiTableLabel(mcfg.tech_node_nm) << " at "
                       << (mcfg.temperature_k - 273) << "C: area " << fa
                       << "x, dynamic " << fd_c << "x, leakage " << fl_c << "x ("
                       << (config.periphery_leakage_device == 0 ? "hp" : config.periphery_leakage_device == 1 ? "lstp"
@@ -25356,18 +25394,18 @@ int main(int argc, char** argv) {
             /* PIMID 1.12.18 (per-die process): system.devices[].process
              *   logic_die: { node_nm, device_type }      the logic / base die
              *   dram_die:  { generation | node_nm, family }  the DRAM core dies
-             * A node must be one CACTI tabulates (22, 32, 45, 65, 90 nm); the UCIe
+             * A node must lie in 22-90 nm (CACTI's tables, a node between two of
+             * them interpolated since (1.12.294)); the UCIe
              * link keeps its own power.link.process_node_nm (3 to 90). The system
              * builds ONE device, so two devices giving different blocks are refused. */
             if (yaml_cfg["system"] && yaml_cfg["system"]["devices"] && yaml_cfg["system"]["devices"].IsSequence()) {
                 const YAML::Node devs = yaml_cfg["system"]["devices"];
                 std::string first_txt;
                 auto dieNode = [](int n, const std::string& path) -> int {
-                    static const int kNodes[] = {22, 32, 45, 65, 90};
-                    for (int v : kNodes) if (v == n) return n;
-                    std::cerr << "ERROR: " << path << " = " << n << " nm is not a node CACTI tabulates."
-                                 " Supported: 22, 32, 45, 65, 90 nm (the nodes every linked tool evaluates"
-                                 " from real tables). The UCIe link keeps its own key,"
+                    if (n >= 22 && n <= 90) { noteInterpolatedNode(n); return n; }   // (1.12.294): 22-90 nm
+                    std::cerr << "ERROR: " << path << " = " << n << " nm is not a node CACTI covers."
+                                 " Supported: 22 to 90 nm (tables at 22, 32, 45, 65 and 90 nm; a node between"
+                                 " two tables is interpolated from them). The UCIe link keeps its own key,"
                                  " power.link.process_node_nm (3 to 90 nm)." << std::endl;
                     std::exit(1);
                 };
@@ -26972,8 +27010,11 @@ int main(int argc, char** argv) {
          * a table node -- so a sweep over technology.node_nm in {22, 28, 32}
          * quietly produced identical numbers at 22 and 28 for every on-die
          * placement, which is exactly the plateau 1.11.51 (L75) set out to
-         * remove, while an off-die placement in the same sweep failed at 28. */
-        validateTechNodeNm(config.tech_node_nm, "config load: technology.node_nm");
+         * remove, while an off-die placement in the same sweep failed at 28.
+         * (1.12.294): refusal only here; the interpolation note waits for the node
+         * the run uses (an on-die placement replaces it just below). */
+        if (!(config.tech_node_nm <= 0 || (config.tech_node_nm >= 22 && config.tech_node_nm <= 90)))
+            validateTechNodeNm(config.tech_node_nm, "config load: technology.node_nm");
         const std::string& mt = config.memory_tech;
         const std::string& pl = config.placement_level;
         bool dft = memoryProcessTech(mt);   // (1.12.238): DRAM and PCM
