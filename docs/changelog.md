@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.290 -- the data-impact notes of 1.12.279 and 1.12.282 name the runs they left out
+
+- **The problem.** Two data-impact notes left runs out. The note of 1.12.279 (corrected in 1.12.289) said that inside
+  the region of interest only the message-passing payload copies change and that an `alu_core` OpenMP run moves by up
+  to about 1 %. It left out the OpenMP `stencil_2d` kernel, whose master thread copies the grid's two boundary rows
+  with `memcpy` (a `rep movsb` above 2112 B) in every iteration inside the region of interest, so that its `alu_core`
+  runs are 0.5 % to 46.7 % faster since 1.12.279; and an `ooo_core` message-passing `bfs` run that takes 75 % longer.
+  The note of 1.12.282 gave only the co-simulation changes at smoke size, all faster; at full size a DDR5
+  co-simulation with 16 host cores runs up to 4.8 % slower.
+- **The fix.** Both notes are corrected.
+- **Data impact.** None: documentation only.
+
 ## 1.12.289 -- the run log's REP string access counts are split at the region of interest
 
 - **The problem.** The line `[core] REP string accesses in the ROI` (1.12.279) counted every REP string access the run
@@ -188,8 +200,11 @@ release commit messages.
   co-simulations) change: a host page no element placed is now spread at 256 B. A one-core 16 MB copy went from
   13.70 M to 7.60 M cycles (read latency 317 to 136 ns); a DDR5 triad host baseline (4 M elements) -20% at 1 core and
   -23% at 4 cores; GEMV and stencil about -1% and -3%. At smoke size the DDR5 co-simulations moved -20% (MPI GEMV) and
-  -48% (OpenMP GEMV), where the host's coherence flush before the doorbell is most of the run. DDR5 device-only runs
-  (no host traffic) and every other technology are unchanged, bit for bit.
+  -48% (OpenMP GEMV), where the host's coherence flush before the doorbell is most of the run. At full size a
+  co-simulation with many host cores can run slower instead: with 16 host cores the DDR5 message-passing triad takes
+  4.8% longer and GEMV 1.3% (256 B against 4096 B on the same release); with 4 host cores the triad is unchanged.
+  DDR5 device-only runs (no host traffic) and every other technology are unchanged, bit for bit. (Corrected in
+  1.12.290: this note gave only the co-simulation changes at smoke size.)
 
 ## 1.12.281 -- a message-passing rank reads its own copy of the program's data
 
@@ -249,16 +264,26 @@ release commit messages.
   interest since 1.12.289).
 - **Data impact.** Runs that execute a REP string instruction on a simulated thread change, before the region of
   interest as well as inside it. Inside it, a copy, fill or scan of more than a few bytes costs about one access per
-  line instead of one per element: in the benchmark kernels, the message-passing payload copies of 2112 B or more
-  (`stencil_2d` halo rows, `bfs` frontier exchanges, the collectives' buffers), on every core type. Before it, the
-  OpenMP kernels clear and copy each element's data with REP string instructions, so far fewer requests reach the
-  device's memory before the region of interest (a 64-element HBM3 triad: 90.4 M instead of 177.0 M), and the region
-  of interest starts from another DRAM state: an `alu_core` OpenMP run moves by up to about 1 % (-0.85 % for that
-  triad, -0.27 % for gemv on PCM, +0.17 % for a 16-element HBM3 triad), its row-buffer miss fraction by up to about
-  0.3 % (relative), an `ooo_core` run by a few hundredths of a percent, and an `in_order_core` run counts fewer L1D
-  accesses with its cycles unchanged. Only runs that execute no REP string instruction on a simulated thread are
-  unchanged. (Corrected in 1.12.289: this note first said the OpenMP kernels' REP instructions before the region of
-  interest leave their runs unchanged.)
+  line instead of one per element. In the benchmark kernels these are the message-passing payload copies of 2112 B or
+  more (`stencil_2d` halo rows, `bfs` frontier exchanges, the collectives' buffers), on every core type, and the
+  OpenMP `stencil_2d` boundary rows: in every iteration the master thread copies the grid's first and last rows
+  (11,312 B each at the benchmark size) with `memcpy` while the other threads wait for the next parallel loop. On
+  `alu_core` that copy now takes about 16.5 M cycles less per run at 8 to 64 elements, so the gain grows with the
+  element count: an HBM3 stencil runs 0.5 % faster at one element, 12.4 % at 16 and 30.7 % at 64; at 16 elements HBM2
+  gains 14.1 %, GDDR6 9.5 % and LPDDR5 8.9 %, and the non-volatile memories, whose writes are slower, more (STT-MRAM
+  34.7 %, ReRAM 46.7 %). The `in_order_core` and `ooo_core` stencil runs are unchanged. An `ooo_core` message-passing
+  `bfs` run (HBM3, 16 elements at BANK) takes 75 % longer (146.8 M to 257.0 M cycles with the `per_rank` layout of
+  1.12.281), while its instructions are the same and its cache misses and DRAM requests stay within 0.5 %; the
+  `ooo_core` runs of the other kernels move by under 1 %. Before it, the OpenMP kernels
+  clear and copy each element's data with REP string instructions, so far fewer requests reach the device's memory
+  before the region of interest (a 64-element HBM3 triad: 90.4 M instead of 177.0 M), and the region of interest
+  starts from another DRAM state: an `alu_core` OpenMP run without a copy inside the region of interest moves by up to
+  about 1 % (-0.85 % for that triad, -0.27 % for gemv on PCM, +0.17 % for a 16-element HBM3 triad), its row-buffer
+  miss fraction by up to about 0.3 % (relative), an `ooo_core` run by a few hundredths of a percent, and an
+  `in_order_core` run counts fewer L1D accesses with its cycles unchanged. Only runs that execute no REP string
+  instruction on a simulated thread are unchanged. (Corrected in 1.12.289: this note first said the OpenMP kernels'
+  REP instructions before the region of interest leave their runs unchanged. Corrected in 1.12.290: it then left out
+  the OpenMP `stencil_2d` boundary rows and the `ooo_core` message-passing `bfs` run.)
 
 ## 1.12.278 -- the replay's drain serves every request it was fed, so a backlog at the ROI end is no longer written off as unserved
 
