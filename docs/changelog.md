@@ -6,6 +6,18 @@ gives the defect fixed, a one-line root cause, and a data-impact note (which
 sweep generations the fix invalidates or corrects). Authoritative source is the
 release commit messages.
 
+## 1.12.300 -- the data-impact note of 1.12.291 gives the ooo_core GEMV, STREAM triad and histogram runs as they are
+
+- **The problem.** The note of 1.12.291 said that the `ooo_core` message-passing GEMV and STREAM triad runs move by
+  under 0.01 % and that the histogram run is unchanged, bit for bit. The reverse holds: GEMV is unchanged, bit for
+  bit, and STREAM triad too except its `reconcilePending` count; histogram keeps its run time and energy, and its
+  row-miss fraction moves in the seventh digit (0.0843941 to 0.0843937).
+- **The root cause.** The note's GEMV and STREAM triad figures were read from the run log's last `[roi] run time`
+  line, which reads `... A -> B cycles` when the DRAM balance no barrier applied raises the run time: the note took A,
+  the elapsed cycles before the balance, instead of B, the run time the run reports.
+- **The fix.** The note of 1.12.291 is corrected.
+- **Data impact.** None: documentation only.
+
 ## 1.12.299 -- an NVM array from 7 to 21 nm runs NVSim at its own feature size on the 22 nm device branch, not refused
 
 - **The problem.** An STT_MRAM or RERAM array below 22 nm was refused (rc 1 at load, or rc 2 when the array was
@@ -185,8 +197,10 @@ release commit messages.
 - **The fix.** A rank on an out-of-order core waits for the controller's clock without the charge. A blocking core
   (`alu_core`, `in_order_core`) keeps it: timed at its balance, it is held to the controller's clock by that wait.
 - **Data impact.** The `ooo_core` message-passing runs change: `bfs` 257.0 M to 146.0 M cycles (-43.2 %; the senders'
-  balances move the arrivals later by 0.5 M cycles), `stencil_2d` +1.3 % (78.4 M to 79.4 M), GEMV and STREAM triad by
-  under 0.01 %; histogram is unchanged, bit for bit. Every other run (`alu_core` and `in_order_core` elements, OpenMP
+  balances move the arrivals later by 0.5 M cycles), `stencil_2d` +1.3 % (78.4 M to 79.4 M); GEMV is unchanged, bit
+  for bit, and STREAM triad too except its `reconcilePending` count; histogram keeps its run time and energy, and its
+  row-miss fraction moves in the seventh digit (0.0843941 to 0.0843937). (Corrected in 1.12.300: the note gave GEMV and
+  STREAM triad as moving by under 0.01 % and histogram as unchanged.) Every other run (`alu_core` and `in_order_core` elements, OpenMP
   runs, host cores, co-simulations) is unchanged, bit for bit.
 
 ## 1.12.290 -- the data-impact notes of 1.12.279 and 1.12.282 name the runs they left out
